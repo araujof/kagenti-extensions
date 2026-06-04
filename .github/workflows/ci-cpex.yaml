@@ -1,0 +1,142 @@
+# CI - cpex plugin + authbridge-cpex binary
+#
+# Runs ONLY when the cpex plugin source, the new binary's tree, or
+# this workflow itself is touched. Keeps the main `ci.yaml` matrix
+# pure-Go and fast — adding CGO + the FFI artifact download to every
+# CI run on every PR would slow the existing pipeline down.
+#
+# Build path. The job exercises:
+#   1. The version-pin invariant (CPEX_FFI_VERSION ↔ go.mod) via
+#      scripts/check-cpex-version.sh.
+#   2. Default-tag authlib build (cpex package excluded; nothing
+#      should regress).
+#   3. -tags cpex authlib build + tests against the fake Manager
+#      (no CGO required — exercises the decode + CMF mapping).
+#   4. The full CGO build of cmd/authbridge-cpex against the
+#      downloaded libcpex_ffi.a, so ABI drift between the linked
+#      library and the Go binding surfaces here rather than at pod
+#      start.
+name: CI (cpex)
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+    paths:
+      - 'authbridge/authlib/plugins/cpex/**'
+      - 'authbridge/cmd/authbridge-cpex/**'
+      - 'scripts/check-cpex-version.sh'
+      - '.github/workflows/ci-cpex.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'authbridge/authlib/plugins/cpex/**'
+      - 'authbridge/cmd/authbridge-cpex/**'
+      - 'scripts/check-cpex-version.sh'
+      - '.github/workflows/ci-cpex.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  version-pin:
+    name: CPEX FFI Version Pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - run: ./scripts/check-cpex-version.sh
+
+  go-ci-cpex-plugin:
+    name: Go CI (authlib cpex plugin)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: authbridge/authlib
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+        with:
+          go-version-file: authbridge/authlib/go.mod
+          cache-dependency-path: authbridge/authlib/go.sum
+
+      # Default-tag build first — confirms the cpex package addition
+      # didn't accidentally pull a non-tagged dep into the standard
+      # authlib surface.
+      - name: Default-tag build
+        run: go build ./...
+
+      # Then the cpex-tagged build + tests using the fake Manager.
+      # CGO is OFF — the cpex package is structured so the pure-Go
+      # part can be exercised without the FFI library on disk.
+      - name: cpex-tagged build
+        env:
+          CGO_ENABLED: '0'
+        run: go build -tags cpex ./plugins/cpex/
+
+      - name: cpex-tagged test
+        env:
+          CGO_ENABLED: '0'
+        run: go test -tags cpex -race -cover ./plugins/cpex/
+
+  go-ci-cpex-binary:
+    name: Go CI (authbridge-cpex)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: version-pin
+    defaults:
+      run:
+        working-directory: authbridge/cmd/authbridge-cpex
+    env:
+      # Per the per-cmd convention used by the other authbridge-*
+      # workflows: the binary's own go.mod's replace directive points
+      # at ../../authlib, and we don't want the workspace to drag in
+      # sibling modules.
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+        with:
+          go-version-file: authbridge/cmd/authbridge-cpex/go.mod
+          cache-dependency-path: authbridge/cmd/authbridge-cpex/go.sum
+
+      - name: Read pinned CPEX_FFI_VERSION
+        id: pin
+        run: echo "version=$(tr -d '[:space:]' < CPEX_FFI_VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Fetch + verify (cosign + sha256) the libcpex_ffi.a artifact
+      # via the upstream helper. The script is pinned to the same
+      # CPEX release tag, so reviewers see a single source of truth.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download libcpex_ffi.a
+        env:
+          CPEX_VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://raw.githubusercontent.com/contextforge-org/cpex/${CPEX_VERSION}/scripts/download-ffi-artifact.sh" \
+            -o /tmp/download-ffi-artifact.sh
+          chmod +x /tmp/download-ffi-artifact.sh
+          mkdir -p /tmp/cpex-ffi
+          OS=linux ARCH=amd64 DEST=/tmp/cpex-ffi /tmp/download-ffi-artifact.sh
+
+      - name: Lint
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS: '-L/tmp/cpex-ffi/lib -lcpex_ffi'
+        run: |
+          go fmt ./...
+          go vet -tags cpex ./...
+
+      - name: Build (CGO + tags cpex)
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS: '-L/tmp/cpex-ffi/lib -lcpex_ffi'
+        run: go build -tags cpex -v ./...

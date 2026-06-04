@@ -21,6 +21,18 @@ repos:
         language: script
         stages: [commit-msg]
 
+      # Enforce that authbridge/cmd/authbridge-cpex/CPEX_FFI_VERSION
+      # and the CPEX Go binding pin in the same module's go.mod move
+      # in lockstep. ABI mismatches between the linked .a and the
+      # binding panic at binary load — this hook catches drift before
+      # commit. Runs only when one of the relevant files changes.
+      - id: check-cpex-version
+        name: cpex FFI version pin
+        entry: scripts/check-cpex-version.sh
+        language: script
+        files: ^authbridge/cmd/authbridge-cpex/(CPEX_FFI_VERSION|go\.mod)$
+        pass_filenames: false
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10
     hooks:
