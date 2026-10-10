@@ -81,7 +81,7 @@ func checkUnread(env *setupEnv, ui *checklist.UI) {
 			"security add-trusted-cert -k "+env.tilde(keychain)+" -p ssl "+env.tilde(filepath.Join(cfg.TLSBridge.CADir, "ca.crt")))
 		ui.Faint("    once macOS trusts the CA, Cortex reads Go programs' traffic to the hosts it intercepts, within a minute") // at the fix's indent
 		ui.Faint("    programs that relay another system's traffic (gvproxy, for the podman VM) or bring their own CA list are then shown " +
-			"Cortex's certificate, and fail up to three times per Cortex run before Cortex passes them through again")
+			"Cortex's certificate, and fail before Cortex passes them through again")
 	}
 }
 

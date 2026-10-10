@@ -82,9 +82,39 @@ func TestCheckUnread_AdviceSaysAGoAgentIsNotPricedAndPromisesOnlyInterceptedHost
 	if !strings.Contains(out, "Go programs' traffic to the hosts it intercepts") {
 		t.Errorf("the advice does not say trusting the CA reads only intercepted hosts:\n%s", out)
 	}
-	for _, want := range []string{"gvproxy", "own CA list", "fail up to three times per Cortex run"} {
+	for _, want := range []string{"gvproxy", "own CA list", "fail before Cortex passes them through again"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the advice does not warn that some Go programs then fail (lacks %q):\n%s", want, out)
+		}
+	}
+	assertNoFailureBound(t, "the advice", out)
+}
+
+// The docs paragraph on Go programs that trusting the CA does not have read makes the
+// same warning as doctor, and must not bound the failures either.
+func TestLaptopServiceDoc_GoProgramsTrustingTheCADoesNotReadStateNoFailureBound(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "laptop-service.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start = "Trusting the CA does not have every Go program read."
+	_, para, ok := strings.Cut(string(doc), start)
+	if !ok {
+		t.Fatalf("laptop-service.md has no paragraph starting %q", start)
+	}
+	para, _, _ = strings.Cut(para, "\n\n")
+	assertNoFailureBound(t, "laptop-service.md", start+para)
+}
+
+// assertNoFailureBound fails when text bounds how often a program shown Cortex's
+// certificate fails. A failure read as handshake-failed never stops the retries, and a
+// completed handshake clears the count.
+func assertNoFailureBound(t *testing.T, where, text string) {
+	t.Helper()
+	flat := strings.Join(strings.Fields(text), " ") // the docs wrap mid-phrase
+	for _, bound := range []string{" times", "per Cortex run"} {
+		if strings.Contains(flat, bound) {
+			t.Errorf("%s bounds the failures (%q):\n%s", where, bound, text)
 		}
 	}
 }
