@@ -88,6 +88,13 @@ func (er eventRow) invocations() []pipeline.Invocation {
 	return invs
 }
 
+// partnerActive reports whether row i's paired request or response is one a plugin
+// acted on, so hideInactive keeps row i with it.
+func partnerActive(ctxs []cellContext, partner map[int]int, i int) bool {
+	p, ok := partner[i]
+	return ok && !eventInactive(ctxs[p].invs)
+}
+
 // rebuildEventsTable populates the events table from the cache for the
 // currently selected session, applying hideInactive, marking the search's
 // matches and preserving the cursor. Also
@@ -186,8 +193,10 @@ func (m *model) rebuildEventsTable() {
 		// hideInactive (the `s` toggle) is off by default — every message is
 		// shown, including passthrough/skip-only ones, per "I should see all
 		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow).
-		if m.hideInactive && eventInactive(cc.invs) {
+		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
+		// partner is shown is shown too, or a routed request refused for its model —
+		// no plugin acts on the 403 — would look as if it never got an answer.
+		if m.hideInactive && eventInactive(cc.invs) && !partnerActive(ctxs, partner, j) {
 			m.hiddenInactive++
 			continue
 		}

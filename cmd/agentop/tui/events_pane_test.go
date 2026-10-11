@@ -495,6 +495,43 @@ func TestRebuildEventsTable_HideInactive(t *testing.T) {
 	}
 }
 
+// The `s` toggle hides exchanges, not halves of one: a request it shows keeps its
+// response, and a response it shows keeps its request. The live case is a routed
+// request refused for its model: no plugin acts on the 403, and hiding it left the
+// request looking as if it never got an answer.
+func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
+	routed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
+		{Plugin: "inference-router", Action: pipeline.ActionModify, Reason: "routed"},
+	}}
+	observed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
+		{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+	}}
+	events := []pipeline.SessionEvent{
+		// A request a plugin acted on, and its response no plugin did: shown.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "a", Invocations: routed},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "a", StatusCode: 403},
+		// A request no plugin acted on, and a response one did: shown.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "b"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "b", StatusCode: 200, Invocations: observed},
+		// Neither half acted on: hidden, both rows.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "s3", RequestID: "c"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "s3", RequestID: "c", StatusCode: 200},
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}, hideInactive: true}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+
+	if len(m.visibleRows) != 4 || m.hiddenInactive != 2 {
+		t.Fatalf("rows=%d hidden=%d, want 4/2", len(m.visibleRows), m.hiddenInactive)
+	}
+	for i, want := range []*pipeline.SessionEvent{&events[0], &events[1], &events[2], &events[3]} {
+		if got := m.visibleRows[i].event; got != want {
+			t.Errorf("row %d = %s %s %d, want %s %s %d", i,
+				got.RequestID, got.Phase, got.StatusCode, want.RequestID, want.Phase, want.StatusCode)
+		}
+	}
+}
+
 // TestComputeEventPairIDs pairs each response row with its preceding request
 // row by direction + host + method, sharing one # across the exchange and
 // minting fresh integers for unpaired rows.
