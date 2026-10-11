@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -62,7 +63,7 @@ func limitRefusal(status int, body []byte) (limitKind, int, bool) {
 	default:
 		return 0, 0, false
 	}
-	text := string(body)
+	text := errorMessage(body)
 	for _, p := range limitPatterns {
 		if m := p.re.FindStringSubmatch(text); m != nil {
 			n, _ := strconv.Atoi(m[1])
@@ -70,6 +71,46 @@ func limitRefusal(status int, body []byte) (limitKind, int, bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// errorMessage is the message a refusal states — the error's message, a top-level
+// message, or the error itself when it is a string — and "" for a body with none.
+func errorMessage(body []byte) string {
+	for _, path := range []string{"error.message", "message", "error"} {
+		if v := gjson.GetBytes(body, path); v.Type == gjson.String {
+			return v.String()
+		}
+	}
+	return ""
+}
+
+const (
+	// minOutput and minWindow are the smallest output cap and window learned from a
+	// refusal: below them a number names something other than a model's limit.
+	minOutput = 256
+	minWindow = 1024
+)
+
+// plausible reports whether limit n of kind can be the limit that refused a request
+// with body: at least the smallest a model has, and, for an output cap, below what
+// the request asked for, or, for a window, below the request's estimate and output.
+func plausible(kind limitKind, n int, body []byte) bool {
+	out := outputValue(body)
+	if kind == limitOutput {
+		return n >= minOutput && (out == 0 || n < out)
+	}
+	return n >= minWindow && n < estimate(body)+out
+}
+
+// outputValue is the body's output limit, from whichever output field it has, 0 when
+// it has none.
+func outputValue(body []byte) int {
+	for _, f := range outputFields {
+		if v := gjson.GetBytes(body, f); v.Type == gjson.Number {
+			return int(v.Int())
+		}
+	}
+	return 0
 }
 
 // learn is l with a refusal's limit n, which only ever lowers what is known.

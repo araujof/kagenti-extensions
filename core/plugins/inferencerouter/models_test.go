@@ -798,3 +798,49 @@ func TestRouter_EachConversationKeepsItsOwnCut(t *testing.T) {
 		t.Errorf("main thread dropped %s after a subagent's request, want its own cut kept (%s)", main2, main1)
 	}
 }
+
+// An agent that talks to a server serving its own model, at the host it named, was
+// not switched: the router leaves its limits to the agent.
+func TestRouter_DoesNotFitARequestThatWasNotSwitched(t *testing.T) {
+	store := newStore(t)
+	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	pctx := chat(store, "glm.example.com:8443", "/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+	r.saveLimits(pctx, "glm", glmMain, limits{Output: 1000, Window: 100})
+	withOutput(t, pctx, 256000)
+	before := string(pctx.Body)
+	run(t, p, pctx)
+	if !pctx.Redirected() {
+		t.Fatal("the request was not routed; the test needs a routed request that was not switched")
+	}
+	if string(pctx.Body) != before {
+		t.Errorf("body = %s, want a request that was not switched unchanged", pctx.Body)
+	}
+	if resend(p, pctx, http.StatusBadRequest, bedrockCap) {
+		t.Error("a limit refusal of a request that was not switched was resent")
+	}
+}
+
+// A limit is read from the server's error message, and only a number that makes sense
+// for the refused request is learned.
+func TestResend_LearnsOnlyAPlausibleLimitFromTheErrorMessage(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"a limit quoted from the request's own text", `{"error":{"message":"invalid request","detail":[{"input":"maximum context length is 64 tokens"}]}}`},
+		{"a window below any real model's", `{"error":{"message":"This model's maximum context length is 64 tokens."}}`},
+		{"an output cap below any real model's", `{"error":{"message":"The maximum tokens you requested exceeds the model limit of 5."}}`},
+		{"an output cap above what was asked for", `{"error":{"message":"The maximum tokens you requested exceeds the model limit of 300000."}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+			pctx := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+			withOutput(t, pctx, 256000)
+			run(t, p, pctx)
+			if resend(p, pctx, http.StatusBadRequest, tc.body) {
+				t.Error("the request was resent on an implausible limit")
+			}
+			if got := r.loadLimits(pctx, "glm", glmMain); got != (limits{}) {
+				t.Errorf("learned %+v, want nothing", got)
+			}
+		})
+	}
+}

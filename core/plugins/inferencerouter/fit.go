@@ -254,6 +254,9 @@ const (
 // because its body was fitted once already and its cut would not index the client's
 // messages.
 func (p *Router) applyLimits(pctx *pipeline.Context, server string, remember bool) bool {
+	if !switched(pctx) {
+		return false
+	}
 	model, ok := pctx.RequestModel()
 	if !ok {
 		return false
@@ -294,4 +297,12 @@ func (p *Router) applyLimits(pctx *pipeline.Context, server string, remember boo
 			"field": r.field, "from": strconv.Itoa(r.from), "to": strconv.Itoa(r.to)}})
 	}
 	return true
+}
+
+// switched reports whether a routed request goes somewhere other than the agent
+// asked, or with another model: only then can the model it reaches have limits the
+// agent did not size the request for.
+func switched(pctx *pipeline.Context) bool {
+	ext := pctx.Extensions.Inference
+	return pctx.RequestedHost() != "" || (ext != nil && ext.RequestedModel != "")
 }

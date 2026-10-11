@@ -176,7 +176,7 @@ func (p *Router) Resend(_ context.Context, pctx *pipeline.Context, status int, b
 // with and fits the request to it. A refusal that states no number teaches a window
 // 90% of the request's estimate, which is below what the server refused.
 func (p *Router) resendForLimit(pctx *pipeline.Context, kind limitKind, n int) bool {
-	if !pctx.Redirected() || slices.Contains(pctx.ResendReasons(), "limit") {
+	if !switched(pctx) || slices.Contains(pctx.ResendReasons(), "limit") {
 		return false
 	}
 	server, ok := p.byHost[routerconfig.Hostname(pctx.Host)]
@@ -190,6 +190,9 @@ func (p *Router) resendForLimit(pctx *pipeline.Context, kind limitKind, n int) b
 	stated := n > 0
 	if !stated {
 		n = estimate(pctx.Body) * 9 / 10
+	}
+	if !plausible(kind, n, pctx.Body) {
+		return false
 	}
 	p.saveLimits(pctx, server, model, p.loadLimits(pctx, server, model).learn(kind, n))
 	which := "window"
