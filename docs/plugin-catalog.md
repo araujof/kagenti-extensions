@@ -283,6 +283,18 @@ decides:
   agent as the server sent it. The lists are fetched from `GET /v1/models` with
   each server's key when the router starts and hourly after, the last good one
   kept in the plugin store. A request whose body names no model is routed as it is.
+- **Limits.** When the server refuses a routed request because its output field or its
+  prompt is too large for the model it was sent with, the router learns that limit
+  (`inference-router/limit/<server>/<model>`, 30 days), fits the request and resends it
+  once (`modify/resent` with `limit`, `value`, `stated`). Later requests are fitted
+  before they are sent: `modify/output_capped` lowers `max_tokens`,
+  `max_completion_tokens` or `max_output_tokens`; `modify/context_trimmed` drops the
+  oldest turns after the first user message once a request passes 85% of the window,
+  down to under 60%, and puts a one-line note in the first message kept. A request one
+  turn of which is larger than the window is sent unchanged (`skip/limit_unfittable`);
+  one for which a limit is learned but fitting changes nothing is recorded as
+  `skip/limit_not_fitted`. The agent is not told: its own display keeps the whole
+  conversation.
 - A redirect the listener refuses: `deny/redirect_failed`, a 503.
 - Under `on_error: observe` nothing moves, the client's key stays and no model is
   chosen or re-sent. The timeline shows two rows: the framework's shadow
