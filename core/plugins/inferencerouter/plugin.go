@@ -342,6 +342,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// The model is chosen only once the request has moved, so an observed router
 	// changes nothing.
 	p.chooseModel(pctx, name)
+	p.applyLimits(pctx, name, true)
 	pin.settle(name)
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)

@@ -3,7 +3,11 @@ package inferencerouter
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -204,4 +208,57 @@ func contains(xs []int, x int) bool {
 		}
 	}
 	return false
+}
+
+const (
+	// cutPrefix namespaces a session's last cut, kept in process memory only: after a
+	// restart the first trim is computed afresh.
+	cutPrefix = Name + "/cut/"
+	cutFor    = 24 * time.Hour
+)
+
+// applyLimits fits a request routed to server to what is known about the model it is
+// sent with, records what it changed, and reports whether it changed the body.
+// remember keeps the cut for the session's next request; a resend passes false,
+// because its body was fitted once already and its cut would not index the client's
+// messages.
+func (p *Router) applyLimits(pctx *pipeline.Context, server string, remember bool) bool {
+	model, ok := pctx.RequestModel()
+	if !ok {
+		return false
+	}
+	l := p.loadLimits(pctx, server, model)
+	if l == (limits{}) {
+		return false
+	}
+	key := ""
+	if pctx.Shared != nil && pctx.Session != nil && pctx.Session.ID != "" && !synthetic(pctx.Session.ID) {
+		key = cutPrefix + pctx.Session.ID
+	}
+	cut := 0
+	if key != "" && remember {
+		if v, ok := pctx.Shared.Get(key); ok {
+			cut, _ = v.(int)
+		}
+	}
+	r := fitBody(pctx.Body, l, cut)
+	if r.unfittable {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "limit_unfittable",
+			Details: map[string]string{"estimate": strconv.Itoa(estimate(pctx.Body)), "window": strconv.Itoa(l.Window)}})
+	}
+	if string(r.body) == string(pctx.Body) || !pctx.SetBody(r.body) {
+		return false
+	}
+	if key != "" && remember && r.cut > 0 {
+		pctx.Shared.Put(key, r.cut, cutFor)
+	}
+	if r.dropped > 0 {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "context_trimmed", Details: map[string]string{
+			"dropped": strconv.Itoa(r.dropped), "estimate": strconv.Itoa(r.estimate), "window": strconv.Itoa(l.Window)}})
+	}
+	if r.field != "" {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "output_capped", Details: map[string]string{
+			"field": r.field, "from": strconv.Itoa(r.from), "to": strconv.Itoa(r.to)}})
+	}
+	return true
 }
