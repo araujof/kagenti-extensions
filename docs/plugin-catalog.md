@@ -226,7 +226,12 @@ decides:
   3. A Claude Code request's own turn: an opening turn, with no assistant reply
      yet, goes to its agent's current server; a continuation, a conversation the
      router did not see begin, is not routed, and is pinned so; a one-shot with no
-     tools, or a subagent's request, pins nothing.
+     tools, or a subagent's request, pins nothing. A one-shot — the title request,
+     auto mode's classifier, the permission monitor — goes to its agent's current
+     server, since it is no part of the conversation and a new session's title
+     request can arrive before its opening turn. A subagent's request to a server's
+     host is not routed: it is a conversation of its own, which a `/clear` can carry
+     onto a new session id mid-task.
   4. Otherwise its agent's current server.
 
   The router reads the `inference` record `inference-parser` puts on each request,

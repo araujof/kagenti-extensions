@@ -167,7 +167,9 @@ if the session's history shows which server its conversation's last request
 reached, Cortex keeps it there with that server's key, and otherwise it goes where
 Claude Code sends it, unrouted. Claude Code's one-shot requests (the title, auto
 mode's classifier) and its subagents' requests decide nothing; they follow the
-session's pin once there is one. Pins are kept in `~/.cortex/plugin-state.json`,
+session's pin once there is one. Before then a one-shot goes to the server you
+chose, since a new session's title request can arrive before its opening turn, and
+a subagent's request addressed to one of the servers stays on it. Pins are kept in `~/.cortex/plugin-state.json`,
 so a proxy restart moves no conversation.
 
 A conversation carried to a new session id is one Cortex did not see begin, so it
