@@ -836,17 +836,37 @@ func TestRouter_AClaudeCodeOpeningTurnGoesToItsAgentsServer(t *testing.T) {
 }
 
 // Claude Code's one-shots — the title request, auto mode's classifier, the
-// permission monitor — carry no tools and come at any point in a conversation, and
-// a subagent's requests are its own conversation's, not the session's. None says
-// whether the session began now, so none decides: it goes where Claude Code sent
-// it, and the session stays unpinned for its conversation's next request.
-func TestRouter_AClaudeCodeSideRequestDecidesNothing(t *testing.T) {
+// permission monitor — carry no tools and come at any point in a conversation, so
+// none says whether the session began now, and none decides: the session stays
+// unpinned for its conversation's next request. Each goes to its agent's server all
+// the same. A conversation already running, which a one-shot cannot vouch for, has
+// history, and history is read first; with none the session is new. The live case:
+// left where Claude Code sent it, a new session's title request — always its first
+// request — reached the provider the agent was routed away from.
+func TestRouter_AClaudeCodeOneShotGoesToItsAgentsServer(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"claude-code": "glm"`))
+	pctx := claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 0, 0)
+	run(t, p, pctx)
+
+	assertRouted(t, pctx, glmHost, "glm-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNone})
+	if _, pinned := pinOf(t, store, "s1"); pinned {
+		t.Error("a one-shot pinned the session")
+	}
+}
+
+// A subagent's requests are its own conversation's, not the session's, and one can
+// be running already: a /clear moves Claude Code's background subagents onto the new
+// session id mid-task. None says whether the session began now, so none decides: it
+// goes where Claude Code sent it, and the session stays unpinned for its
+// conversation's next request.
+func TestRouter_AClaudeCodeSubagentRequestDecidesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		role         pipeline.AgentRole
 		tools, turns int
 	}{
-		{"a one-shot with no tools", pipeline.AgentRoleMain, 0, 0},
 		{"a subagent's first turn", pipeline.AgentRoleSubagent, 11, 0},
 		{"a subagent mid-task", pipeline.AgentRoleSubagent, 11, 4},
 	} {
@@ -865,8 +885,11 @@ func TestRouter_AClaudeCodeSideRequestDecidesNothing(t *testing.T) {
 	}
 }
 
-// After a side request, the conversation's own next request decides: an opening turn
-// starts the session on its agent's server, a continuation leaves it unrouted.
+// After a one-shot, the conversation's own next request decides: an opening turn
+// starts the session on its agent's server, a continuation leaves it unrouted. The
+// one-shot went to the agent's server either way, and its row there is no history.
+// The opening turn is the live sequence: a new session's title request, then its
+// first prompt.
 func TestRouter_AfterASideRequestTheConversationDecides(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -882,6 +905,7 @@ func TestRouter_AfterASideRequestTheConversationDecides(t *testing.T) {
 			p := build(t, routerConfig(`"claude-code": "glm"`))
 			side := claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 0, 0)
 			run(t, p, side)
+			assertRouted(t, side, glmHost, "glm-key")
 			// The forward proxy records the side request's row, which the next request sees.
 			pctx := withHistory(claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 26, tc.turns),
 				recorded(side))

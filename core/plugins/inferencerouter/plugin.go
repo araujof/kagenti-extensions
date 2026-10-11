@@ -68,7 +68,15 @@
 // it is not routed and pinned so, rather than taken for new and moved
 // mid-conversation. The one-shots Claude Code interleaves with a conversation carry
 // no tools, and a subagent's requests are its own conversation's; neither says
-// whether the session began, so neither decides: each leaves the session unpinned. Only Claude Code is read this way, because no
+// whether the session began, so neither decides: each leaves the session unpinned.
+// A one-shot still goes to the agent's current server. It is no part of the
+// conversation, so answering it there moves nothing, and a new session's first
+// request can be one — Claude Code's title request reaches the router before the
+// opening turn — which, left where Claude Code sent it, put a new session's title on
+// the provider the agent was routed away from. A subagent's request is a
+// conversation of its own, which may be running already — a /clear moves background
+// subagents onto the new session id — so it stays where Claude Code sent it unless
+// the router captured it. Only Claude Code is read this way, because no
 // other agent states its role, and one that switches providers, as OpenCode does,
 // sends earlier turns that went elsewhere. A session routed to a server keeps it by
 // its pin and its history, so a restart that keeps neither sends such a conversation
@@ -463,8 +471,10 @@ func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
 //     decides nothing.
 //  4. A Claude Code request's own turn (see turnOf): a conversation's opening turn
 //     goes to the agent's current choice; a continuation, a conversation the router
-//     did not see begin, is not routed; a side request decides nothing. turn names
-//     the last two, for the record.
+//     did not see begin, is not routed; a side request decides nothing, and goes to
+//     the agent's current choice when it is a one-shot or was captured, and is not
+//     routed when it is a subagent's to a server's host. turn names the last two,
+//     for the record.
 //  5. The agent's current choice.
 func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides bool) {
 	if choice == "" {
@@ -480,7 +490,12 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured
 	case turnContinuation:
 		return "", turnContinuation, true
 	case turnAside:
-		if captured {
+		// A one-shot is sent beside the main conversation and is no part of it, so the
+		// agent's server answering it moves nothing. A subagent's request is a
+		// conversation of its own, which may be running already, so it is left where
+		// Claude Code sent it unless captured: then leaving it would send the user's
+		// credential to the provider the agent was routed away from.
+		if captured || pctx.Extensions.Inference.AgentRole == pipeline.AgentRoleMain {
 			return choice, turnAside, false
 		}
 		return "", turnAside, false
