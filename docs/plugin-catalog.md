@@ -283,8 +283,10 @@ decides:
   agent as the server sent it. The lists are fetched from `GET /v1/models` with
   each server's key when the router starts and hourly after, the last good one
   kept in the plugin store. A request whose body names no model is routed as it is.
-- **Limits.** When the server refuses a routed request because its output field or its
-  prompt is too large for the model it was sent with, the router learns that limit
+- **Limits.** When the server refuses a switched request — one the router sent to
+  another host, or with another model, than the agent asked for — because its output
+  field or its prompt is too large for the model it was sent with, the router learns
+  that limit from the error message
   (`inference-router/limit/<server>/<model>`, 30 days), fits the request and resends it
   once (`modify/resent` with `limit`, `value`, `stated`). Later requests are fitted
   before they are sent: `modify/output_capped` lowers `max_tokens`,

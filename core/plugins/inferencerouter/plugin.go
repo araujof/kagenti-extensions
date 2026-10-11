@@ -112,7 +112,7 @@
 // thinking.budget_tokens; and once an Anthropic messages or OpenAI chat-completions
 // request passes 85% of the window its oldest turns after the first user message are
 // dropped to under 60%, with a note saying how many. A responses-format request only
-// has its output field lowered, as does one with a single turn larger than the window. Only requests the router routed are fitted, and each kind of
+// has its output field lowered, as does one with a single turn larger than the window. Only requests the router switched — to another host or another model — are fitted, and each kind of
 // refusal is resent at most once per request.
 package inferencerouter
 
