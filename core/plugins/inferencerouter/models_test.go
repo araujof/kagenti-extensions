@@ -765,3 +765,36 @@ func TestResend_ALimitRefusalStatingNoNumberLearnsAWindowBelowTheRequest(t *test
 		t.Errorf("learned window = %d, want %d", got, want)
 	}
 }
+
+// Two conversations in one session — the main thread and a subagent — each keep their
+// own cut, so one's recut does not move the other's.
+func TestRouter_EachConversationKeepsItsOwnCut(t *testing.T) {
+	store := newStore(t)
+	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	send := func(first string, turns int, text string) *pipeline.Context {
+		pctx := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+		msgs := []string{user(first)}
+		for i := 0; i < turns; i++ {
+			msgs = append(msgs, asst(text), user(text))
+		}
+		pctx.Body = []byte(`{"model":"` + glmMain + `","messages":[` + strings.Join(msgs, ",") + `]}`)
+		r.saveLimits(pctx, "glm", glmMain, limits{Window: 1000})
+		run(t, p, pctx)
+		return pctx
+	}
+	dropped := func(pctx *pipeline.Context) string {
+		for _, inv := range pctx.Extensions.Invocations.Outbound {
+			if inv.Reason == "context_trimmed" {
+				return inv.Details["dropped"]
+			}
+		}
+		return ""
+	}
+	// The subagent's messages are longer, so its cut lands later than the main
+	// thread's — at an index that is a valid cut in the main thread too.
+	main1 := dropped(send("the main task", 9, pad))
+	send("a subagent's task", 9, pad+pad)
+	if main2 := dropped(send("the main task", 9, pad)); main2 != main1 {
+		t.Errorf("main thread dropped %s after a subagent's request, want its own cut kept (%s)", main2, main1)
+	}
+}

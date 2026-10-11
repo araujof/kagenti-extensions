@@ -85,7 +85,7 @@ func TestFitBody_TrimsTheOldestTurnsOfAnAnthropicConversation(t *testing.T) {
 		t.Errorf("estimate = %d after trimming, want at most 60%% of 1000", r.estimate)
 	}
 	msgs := gjson.GetBytes(r.body, "messages").Array()
-	if msgs[0].Get("content").String() != "the task" {
+	if !strings.HasPrefix(msgs[0].Get("content").String(), "the task") {
 		t.Errorf("first message = %s, want the task kept", msgs[0].Raw)
 	}
 	first := msgs[1]
@@ -113,7 +113,7 @@ func TestFitBody_TrimsAnOpenAIConversationWithoutSplittingAToolCall(t *testing.T
 		t.Fatalf("result = %+v, want turns dropped to at most 600", r)
 	}
 	msgs := gjson.GetBytes(r.body, "messages").Array()
-	if msgs[0].Get("role").String() != "system" || msgs[1].Get("content").String() != "the task" {
+	if msgs[0].Get("role").String() != "system" || !strings.HasPrefix(msgs[1].Get("content").String(), "the task") {
 		t.Errorf("head = %s %s, want the system message and the task", msgs[0].Raw, msgs[1].Raw)
 	}
 	if role := msgs[2].Get("role").String(); role != "user" {
@@ -165,13 +165,13 @@ func TestFitBody_LeavesWhatCannotBeTrimmedUnchanged(t *testing.T) {
 	}
 }
 
-func TestTurnStart_AUserMessageCarryingAToolResultIsNot(t *testing.T) {
+func TestCutPoint_AToolResultIsNot(t *testing.T) {
 	mixed := gjson.Parse(`{"role":"user","content":[{"type":"text","text":"see"},{"type":"tool_result","tool_use_id":"t1","content":"x"}]}`)
-	if turnStart(mixed) {
-		t.Error("a user message with a tool_result block was taken as a turn start")
+	if cutPoint(mixed) || cutPoint(gjson.Parse(`{"role":"tool","tool_call_id":"c1","content":"x"}`)) {
+		t.Error("a tool result was taken as a cut point")
 	}
-	if !turnStart(gjson.Parse(user("hi"))) || turnStart(gjson.Parse(asst("hi"))) {
-		t.Error("turnStart misjudged a plain user or assistant message")
+	if !cutPoint(gjson.Parse(user("hi"))) || cutPoint(gjson.Parse(asst("hi"))) {
+		t.Error("cutPoint misjudged a plain user or assistant message")
 	}
 }
 
@@ -187,5 +187,45 @@ func TestFitBody_NeverCapsOutputToOrBelowTheThinkingBudget(t *testing.T) {
 	r := fitBody(body(10000), limits{Output: 64000}, 0)
 	if got := gjson.GetBytes(r.body, "max_tokens").Int(); got != 64000 {
 		t.Errorf("budget 10000: max_tokens = %d, want 64000", got)
+	}
+}
+
+// A stored cut applies only while the request still needs trimming: one that fits is
+// sent whole, whatever cut the session holds.
+func TestFitBody_ACutIsNotReusedOnARequestThatFits(t *testing.T) {
+	small := anthropicBody(user("the task"), asst("a"), user("b"), asst("c"), user("d"), asst("e"), user("latest"))
+	for _, cut := range []int{2, 4, 6} {
+		if r := fitBody(small, limits{Window: 100000}, cut); string(r.body) != string(small) || r.dropped != 0 {
+			t.Errorf("cut %d: %d messages dropped from a request far inside the window", cut, r.dropped)
+		}
+	}
+}
+
+func toolUse(id string) string {
+	return `{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Read","input":{}}]}`
+}
+func toolOutput(id, text string) string {
+	return `{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + strconv.Quote(text) + `}]}`
+}
+
+// One prompt followed by many tool calls has no user message to cut at: it is
+// unfittable and sent unchanged, never cut inside the task.
+func TestFitBody_DoesNotCutInsideOneLongToolCallingTurn(t *testing.T) {
+	anthropic := []string{user("the task")}
+	openai := []string{user("the task")}
+	for i := 0; i < 30; i++ {
+		id := "t" + strconv.Itoa(i)
+		anthropic = append(anthropic, toolUse(id), toolOutput(id, pad))
+		openai = append(openai,
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"`+id+`","type":"function","function":{"name":"Read","arguments":"{}"}}]}`,
+			`{"role":"tool","tool_call_id":"`+id+`","content":`+strconv.Quote(pad)+`}`)
+	}
+	for name, body := range map[string][]byte{"anthropic": anthropicBody(anthropic...), "openai": openaiBody(openai...)} {
+		t.Run(name, func(t *testing.T) {
+			r := fitBody(body, limits{Window: 4000}, 0)
+			if r.dropped != 0 || !r.unfittable {
+				t.Errorf("result = dropped %d unfittable %v, want nothing dropped and unfittable", r.dropped, r.unfittable)
+			}
+		})
 	}
 }

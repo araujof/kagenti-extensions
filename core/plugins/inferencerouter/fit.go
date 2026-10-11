@@ -1,6 +1,8 @@
 package inferencerouter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -58,29 +60,19 @@ func fitBody(body []byte, l limits, cut int) fitResult {
 	return capOutput(r, l)
 }
 
-// trim drops whole turns after the first user message, oldest first, by the package
-// rules: kept while the last cut still fits under trimAbove, else a new cut that
-// brings the body under trimTo, made only where a user turn without a tool result
-// starts. A body it cannot bring within the window is left as it was.
+// trim drops whole messages after the first user message, oldest first, by the
+// package rules: the session's last cut is kept while it still brings a request that
+// needs trimming under trimAbove, else a new cut brings the body under trimTo. A cut
+// is made only where a user message without a tool result starts. A body it
+// cannot bring within the window is left as it was.
 func trim(r fitResult, window, cut int) fitResult {
-	msgs := gjson.GetBytes(r.body, "messages")
-	if !msgs.IsArray() {
-		return r
-	}
-	items := msgs.Array()
-	head := -1
-	for i, m := range items {
-		if m.Get("role").String() == "user" {
-			head = i + 1
-			break
-		}
-	}
+	items, head := conversation(r.body)
 	if head < 0 {
 		return r
 	}
 	var starts []int
 	for i := head + 1; i < len(items); i++ {
-		if turnStart(items[i]) {
+		if cutPoint(items[i]) {
 			starts = append(starts, i)
 		}
 	}
@@ -95,10 +87,10 @@ func trim(r fitResult, window, cut int) fitResult {
 	total := estimate(r.body)
 	k := 0
 	switch {
-	case contains(starts, cut) && size(cut) <= high:
-		k = cut
 	case total <= high:
 		return r
+	case contains(starts, cut) && size(cut) <= high:
+		k = cut
 	default:
 		for _, s := range starts {
 			if size(s) <= low {
@@ -130,10 +122,41 @@ func trim(r fitResult, window, cut int) fitResult {
 	return r
 }
 
-// turnStart reports whether m opens a turn a kept tail may start at: a user message
-// carrying no tool result, so no tool result is kept without the call it answers.
-// Chat completions puts tool results in role "tool", which is not "user".
-func turnStart(m gjson.Result) bool {
+// conversation is body's messages and the index after its first user message, which
+// trimming always keeps; -1 when there is no user message.
+func conversation(body []byte) ([]gjson.Result, int) {
+	msgs := gjson.GetBytes(body, "messages")
+	if !msgs.IsArray() {
+		return nil, -1
+	}
+	items := msgs.Array()
+	for i, m := range items {
+		if m.Get("role").String() == "user" {
+			return items, i + 1
+		}
+	}
+	return items, -1
+}
+
+// conversationKey names the conversation body belongs to by the messages trimming
+// always keeps, so two conversations sent under one session — a main thread and a
+// subagent — and a conversation its client compacted each get their own cut.
+func conversationKey(body []byte) string {
+	items, head := conversation(body)
+	if head < 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, m := range items[:head] {
+		h.Write([]byte(m.Raw))
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// cutPoint reports whether a kept tail may start at m: a user message carrying no
+// tool result, so a kept tool result keeps the call it answers. Chat completions puts
+// tool results in role "tool", which is not "user".
+func cutPoint(m gjson.Result) bool {
 	if m.Get("role").String() != "user" {
 		return false
 	}
@@ -241,7 +264,9 @@ func (p *Router) applyLimits(pctx *pipeline.Context, server string, remember boo
 	}
 	key := ""
 	if pctx.Shared != nil && pctx.Session != nil && pctx.Session.ID != "" && !synthetic(pctx.Session.ID) {
-		key = cutPrefix + pctx.Session.ID
+		if conv := conversationKey(pctx.Body); conv != "" {
+			key = cutPrefix + pctx.Session.ID + "/" + conv
+		}
 	}
 	cut := 0
 	if key != "" && remember {
