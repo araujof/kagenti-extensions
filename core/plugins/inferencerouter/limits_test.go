@@ -1,8 +1,6 @@
 package inferencerouter
 
 import (
-	"context"
-	"net/http"
 	"testing"
 )
 
@@ -67,6 +65,12 @@ func TestLimits_LearnOnlyLowers(t *testing.T) {
 	if l = l.learn(limitWindow, 300000); l.Window != 262144 {
 		t.Errorf("Window = %d after a larger refusal, want 262144 kept", l.Window)
 	}
+	if got := l.learn(limitWindow, 0); got != l {
+		t.Errorf("learn(limitWindow, 0) = %+v, want %+v unchanged", got, l)
+	}
+	if got := l.learn(limitOutput, 0); got != l {
+		t.Errorf("learn(limitOutput, 0) = %+v, want %+v unchanged", got, l)
+	}
 }
 
 func TestLimits_KeptInTheDurableStoreForThirtyDays(t *testing.T) {
@@ -95,6 +99,4 @@ func TestLimits_WithoutAStoreKeptInProcessMemory(t *testing.T) {
 	if got := r.loadLimits(pctx, "glm", glmMain); got.Output != 64000 {
 		t.Errorf("loadLimits = %+v, want Output 64000", got)
 	}
-	_ = context.Background
-	_ = http.StatusOK
 }

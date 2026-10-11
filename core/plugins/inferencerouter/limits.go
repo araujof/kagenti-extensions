@@ -74,6 +74,9 @@ func limitRefusal(status int, body []byte) (limitKind, int, bool) {
 
 // learn is l with a refusal's limit n, which only ever lowers what is known.
 func (l limits) learn(kind limitKind, n int) limits {
+	if n <= 0 {
+		return l // a refusal that states no number teaches no limit
+	}
 	switch kind {
 	case limitOutput:
 		if l.Output == 0 || n < l.Output {
