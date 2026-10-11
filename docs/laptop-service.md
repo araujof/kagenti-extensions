@@ -14,10 +14,11 @@ agentop service uninstall   # stop it and remove the service
 ```
 
 Two commands cover the whole install rather than just the service. `agentop doctor`
-runs setup's checks, and its own of the CA, without changing anything — the binaries,
-PATH, the config, the service, Claude Code's routing — and ends each problem with the
-command that fixes it, usually `agentop setup`. `agentop uninstall` removes it, and
-`~/.cortex` too with `--purge`, as [Remove it](#remove-it) describes.
+runs setup's checks, and its own of the CA and of the programs Cortex is not reading,
+without changing anything — the binaries, PATH, the config, the service, Claude Code's
+routing — and ends each problem with the command that fixes it, usually `agentop setup`.
+`agentop uninstall` removes it, and `~/.cortex` too with `--purge`, as
+[Remove it](#remove-it) describes.
 
 **Never use `kill` or `pkill` to stop it.** The proxy is supervised, so killing it gets
 it restarted within a couple of seconds, which looks like a process refusing to die.
@@ -620,6 +621,21 @@ Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, a
 working as intended or point somewhere other than your agents — which is why the reason
 is worth reading before acting on it.
 
+`program-refused` and `os-trust-only` are about a program rather than a host, so Cortex
+also keeps them as a list, which `agentop doctor` prints and the stats listener serves:
+
+```sh
+curl -s http://127.0.0.1:47602/tls-bridge/unread
+```
+
+`programs` has one entry per program Cortex is not reading: `program` and `agent` (the
+executables), `reason`, `connections` (how many of the program's connections Cortex has
+passed through unread since Cortex started), `failures` and `stopped` (on `program-refused`),
+and `lastHost`. `pid` appears on an entry kept for one process that started before Cortex's
+CA. `hosts` is the host memory behind `skip-cached`: the hosts passed through for clients
+whose program cannot be named. On macOS, `osTrustsCA` is whether macOS trusted Cortex's CA
+when it last checked.
+
 ### Developer tooling is not intercepted at all
 
 `gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The
@@ -666,14 +682,20 @@ security delete-certificate -c authbridge-tls-bridge-ca \
   ~/Library/Keychains/login.keychain-db
 ```
 
+Trusting the CA does not have every Go program read. One that relays another system's
+traffic — `gvproxy`, which carries the podman VM's, whose clients trust their own CAs — or
+that trusts a CA list of its own without Cortex's CA in it (`helm --ca-file` naming another
+CA, say) is shown Cortex's certificate once macOS trusts it, and refuses it. That
+connection fails, and Cortex passes the program through as `program-refused` for a window.
+
 `git`, `curl` and Python are **not** affected on macOS — they read their bundles
 through OpenSSL/LibreSSL, which honours the variables on every platform. On Linux
 `SSL_CERT_FILE` works normally, so a Go program there is read like any other.
 `agentop configure claude-code enable` prints a short form of this note on macOS
 when it changes your settings (not on a re-run that finds them already enabled).
-Setup does not print it. `agentop doctor` gives the same advice, with the command above,
-as a `! Go tools` line, when Claude Code is routed and the CA is not in your login
-keychain.
+Setup does not print it. `agentop doctor` lists every program Cortex is passing through
+unread, and why, from the proxy's `/tls-bridge/unread` report; on macOS it adds the
+command above when Go programs are among them.
 
 ### Remove it
 
