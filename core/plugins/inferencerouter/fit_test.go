@@ -63,10 +63,15 @@ func TestFitBody_ACombinedWindowLeavesRoomForThePrompt(t *testing.T) {
 	if want := 256000 - estimate(r.body); r.to != want {
 		t.Errorf("max_completion_tokens = %d, want window − estimate = %d", r.to, want)
 	}
-	// A prompt the size of the window leaves at least 1, never 0 or less.
+	// The estimate runs high, so a prompt it puts at or over the window may still
+	// fit: the output field is left as the client sent it.
 	huge := []byte(`{"model":"m","max_tokens":5000,"messages":[{"role":"user","content":"` + strings.Repeat("w", 9000) + `"}]}`)
-	if r := fitBody(huge, limits{Window: 1000, Combined: true}, 0); r.to != 1 {
-		t.Errorf("max_tokens = %d for a prompt as large as the window, want 1", r.to)
+	if r := fitBody(huge, limits{Window: 1000, Combined: true}, 0); r.field != "" || gjson.GetBytes(r.body, "max_tokens").Int() != 5000 {
+		t.Errorf("result = %s %d, body %s; want max_tokens left at 5000", r.field, r.to, r.body)
+	}
+	// A plain output cap still applies there.
+	if r := fitBody(huge, limits{Output: 2000, Window: 1000, Combined: true}, 0); r.field != "max_tokens" || r.to != 2000 {
+		t.Errorf("result = %s %d, want max_tokens capped at the output limit 2000", r.field, r.to)
 	}
 }
 

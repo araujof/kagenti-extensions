@@ -174,12 +174,15 @@ func noted(m gjson.Result, note string) string {
 }
 
 // capOutput lowers the body's output field to l's cap, and for a window that counts
-// input and output together to what r's estimate leaves, never below 1. A value is
-// never raised, and a field that is absent or not a number is left alone.
+// input and output together to what r's estimate leaves of it. The estimate runs
+// high, so when it reaches the window the combined cap is skipped rather than asking
+// for a one-token answer to a request that may well fit; the plain cap still
+// applies. A value is never raised, and a field that is absent or not a number is
+// left alone.
 func capOutput(r fitResult, l limits) fitResult {
 	limit := l.Output
-	if l.Combined && l.Window > 0 {
-		room := max(l.Window-r.estimate, 1)
+	if l.Combined && l.Window > 0 && r.estimate < l.Window {
+		room := l.Window - r.estimate
 		if limit == 0 || room < limit {
 			limit = room
 		}
