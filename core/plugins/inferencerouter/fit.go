@@ -178,7 +178,9 @@ func noted(m gjson.Result, note string) string {
 // high, so when it reaches the window the combined cap is skipped rather than asking
 // for a one-token answer to a request that may well fit; the plain cap still
 // applies. A value is never raised, and a field that is absent or not a number is
-// left alone.
+// left alone. Neither is one when the body's thinking.budget_tokens is at least the
+// cap: Anthropic and Bedrock refuse a max_tokens that is not above the budget, so the
+// field stays as the agent sent it and the server's own answer reaches the agent.
 func capOutput(r fitResult, l limits) fitResult {
 	limit := l.Output
 	if l.Combined && l.Window > 0 && r.estimate < l.Window {
@@ -188,6 +190,9 @@ func capOutput(r fitResult, l limits) fitResult {
 		}
 	}
 	if limit == 0 {
+		return r
+	}
+	if b := gjson.GetBytes(r.body, "thinking.budget_tokens"); b.Type == gjson.Number && limit <= int(b.Int()) {
 		return r
 	}
 	for _, f := range outputFields {

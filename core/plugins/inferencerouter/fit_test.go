@@ -174,3 +174,18 @@ func TestTurnStart_AUserMessageCarryingAToolResultIsNot(t *testing.T) {
 		t.Error("turnStart misjudged a plain user or assistant message")
 	}
 }
+
+// Anthropic and Bedrock refuse a max_tokens that is not above thinking.budget_tokens,
+// so a cap that would reach the budget leaves the field alone.
+func TestFitBody_NeverCapsOutputToOrBelowTheThinkingBudget(t *testing.T) {
+	body := func(budget int) []byte {
+		return []byte(`{"model":"m","max_tokens":128000,"thinking":{"type":"enabled","budget_tokens":` + strconv.Itoa(budget) + `},"messages":[{"role":"user","content":"hi"}]}`)
+	}
+	if r := fitBody(body(100000), limits{Output: 64000}, 0); string(r.body) != string(body(100000)) || r.field != "" {
+		t.Errorf("budget 100000: body = %s, want it unchanged", r.body)
+	}
+	r := fitBody(body(10000), limits{Output: 64000}, 0)
+	if got := gjson.GetBytes(r.body, "max_tokens").Int(); got != 64000 {
+		t.Errorf("budget 10000: max_tokens = %d, want 64000", got)
+	}
+}

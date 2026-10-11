@@ -739,3 +739,29 @@ func TestRouter_TrimsARoutedConversationNearTheWindow(t *testing.T) {
 		t.Errorf("timeline = %v, want modify/context_trimmed", outboundReasons(pctx))
 	}
 }
+
+const bedrockTooLong = `{"error":{"message":"litellm.BadRequestError: BedrockException - {\"message\":\"Input is too long for requested model.\"}","type":null,"param":null,"code":"400"}}`
+
+func TestResend_ALimitRefusalStatingNoNumberLearnsAWindowBelowTheRequest(t *testing.T) {
+	store := newStore(t)
+	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	pctx := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+	var msgs []string
+	for i := 0; i < 40; i++ {
+		msgs = append(msgs, `{"role":"user","content":"`+pad+`"}`, `{"role":"assistant","content":"`+pad+`"}`)
+	}
+	msgs = append(msgs, `{"role":"user","content":"last"}`)
+	pctx.Body = []byte(`{"model":"` + glmMain + `","max_completion_tokens":1000,"messages":[` + strings.Join(msgs, ",") + `]}`)
+	run(t, p, pctx)
+
+	refused := append([]byte(nil), pctx.Body...)
+	if !resend(p, pctx, http.StatusBadRequest, bedrockTooLong) {
+		t.Fatal("Resend = false for a limit refusal that states no number")
+	}
+	want := estimate(refused) * 9 / 10
+	assertRecord(t, pctx, pipeline.ActionModify, "resent",
+		map[string]string{"server": "glm", "model": glmMain, "limit": "window", "value": strconv.Itoa(want), "stated": "false"})
+	if got := r.loadLimits(pctx, "glm", glmMain).Window; got != want {
+		t.Errorf("learned window = %d, want %d", got, want)
+	}
+}

@@ -385,4 +385,10 @@ func TestResend_NoThirdRound(t *testing.T) {
 	if _, models := upstream.seen(); len(models) != 1+pipeline.MaxResends {
 		t.Errorf("upstream saw %d attempts, want %d", len(models), 1+pipeline.MaxResends)
 	}
+	plugin.mu.Lock()
+	asked := plugin.asked
+	plugin.mu.Unlock()
+	if asked != pipeline.MaxResends {
+		t.Errorf("plugin was asked %d times, want %d", asked, pipeline.MaxResends)
+	}
 }

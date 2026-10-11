@@ -108,9 +108,11 @@
 // Anthropic's and vLLM's wording, behind LiteLLM — is learned for the server and model,
 // kept in the durable store for 30 days, and the request is fitted and sent again
 // before the agent sees the refusal. Later requests are fitted before they are sent:
-// the output field is lowered, never raised, and once a request passes 85% of the
-// window its oldest turns after the first user message are dropped to under 60%, with
-// a note saying how many. Only requests the router routed are fitted, and each kind of
+// the output field is lowered, never raised, nor to or below the body's
+// thinking.budget_tokens; and once an Anthropic messages or OpenAI chat-completions
+// request passes 85% of the window its oldest turns after the first user message are
+// dropped to under 60%, with a note saying how many. A responses-format request only
+// has its output field lowered, as does one with a single turn larger than the window. Only requests the router routed are fitted, and each kind of
 // refusal is resent at most once per request.
 package inferencerouter
 

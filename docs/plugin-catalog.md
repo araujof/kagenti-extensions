@@ -288,10 +288,14 @@ decides:
   (`inference-router/limit/<server>/<model>`, 30 days), fits the request and resends it
   once (`modify/resent` with `limit`, `value`, `stated`). Later requests are fitted
   before they are sent: `modify/output_capped` lowers `max_tokens`,
-  `max_completion_tokens` or `max_output_tokens`; `modify/context_trimmed` drops the
-  oldest turns after the first user message once a request passes 85% of the window,
-  down to under 60%, and puts a one-line note in the first message kept. A request one
-  turn of which is larger than the window is sent unchanged (`skip/limit_unfittable`);
+  `max_completion_tokens` or `max_output_tokens`, except that it is left alone when the
+  new value would not be above the body's `thinking.budget_tokens`, which Anthropic and
+  Bedrock refuse; `modify/context_trimmed` drops the oldest turns after the first user
+  message once a request passes 85% of the window, down to under 60%, and puts a
+  one-line note in the first message kept. Trimming applies to Anthropic messages and
+  OpenAI chat-completions bodies only: a responses-format request (`input`) has only
+  its output field lowered. A request one turn of which is larger than the window has
+  no turns dropped, though its output field may still be lowered (`skip/limit_unfittable`);
   one for which a limit is learned but fitting changes nothing is recorded as
   `skip/limit_not_fitted`. The agent is not told: its own display keeps the whole
   conversation.
