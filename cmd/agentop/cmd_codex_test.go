@@ -197,6 +197,27 @@ func TestCodexEnable_RefusesForeignValueInEveryDotenvySpelling(t *testing.T) {
 	}
 }
 
+// SSL_CERT_FILE IS A SHARED NAME, which is the one real cost of writing the CA
+// there instead of under Codex's own CODEX_-prefixed name: anything could already
+// have put its own bundle in this file. Refusing rather than overwriting is what
+// makes that trade safe, so the CA key gets its own collision test rather than
+// relying on the proxy keys' — it is the key whose name changed.
+func TestCodexEnable_RefusesAForeignSSLCertFile(t *testing.T) {
+	const corporate = "/etc/ssl/corporate-bundle.crt"
+	envPath, cfgPath := codexFixture(t, envSSLCert+"="+corporate+"\n")
+	var out, errb bytes.Buffer
+	code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (refusal); stdout=%q", code, out.String())
+	}
+	if !strings.Contains(errb.String(), envSSLCert) || !strings.Contains(errb.String(), corporate) {
+		t.Errorf("the refusal should name the key and the value it refused to touch: %q", errb.String())
+	}
+	if got := readCodexEnv(t, envPath)[envSSLCert]; got != corporate {
+		t.Errorf("%s = %q, want the untouched %q", envSSLCert, got, corporate)
+	}
+}
+
 // A commented-out assignment is not a definition, and the widened regex must not
 // have started treating it as one — that would make enable refuse on a file whose
 // only mention of a key is a note to self.
