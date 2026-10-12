@@ -254,5 +254,13 @@ Not tested:
   `input.inference.tool_calls[_].arguments` as a plain string, which is fine until a
   policy calls `json.unmarshal` on it — that is the author's to handle, and nothing in
   Cortex handles it for them.
+- **`CODEX_HOME` has to be set where `agentop` runs, not only where Codex runs.** agentop
+  reads it from its own process environment, the same way Codex does, so the two agree
+  whenever both are launched from the same shell — the normal case. They come apart if you
+  set it only for Codex, say in a wrapper script: agentop then writes `~/.codex/.env`,
+  Codex reads `$CODEX_HOME/.env`, and `status` reports `enabled` because it is reading the
+  same wrong file `enable` wrote. Nothing can detect that from outside — there is no signal
+  distinguishing "`CODEX_HOME` is not in use" from "it is in use somewhere agentop cannot
+  see". Pass `--env $CODEX_HOME/.env` explicitly if your setup is shaped that way.
 - **Rows recorded before this release** keep the raw User-Agent as their label and show
   under `Other` until they age out.
