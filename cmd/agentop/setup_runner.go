@@ -202,9 +202,10 @@ type step interface {
 }
 
 // alreadyStep is a step with bookkeeping to finish even when its plan found
-// nothing to change — a record to top up, say. applySteps calls already on the
-// done path, where apply never runs, and renders what it returns as faint rows
-// under the "·" line, exactly as it does the lines after a detail's first.
+// nothing to change — a record to top up, say. finishAlready calls already where
+// apply never runs and renders what it returns as faint rows under the "·" line,
+// exactly as applySteps does the lines after a detail's first; it names the two
+// paths that reach it.
 //
 // Deliberately NOT part of step, and deliberately not reachable from plan: plan
 // must not change anything on disk, and `agentop doctor` plans every step to

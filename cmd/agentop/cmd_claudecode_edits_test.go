@@ -262,9 +262,10 @@ func TestClaudeCodeDisable_LeavesAKeyChangedSinceEnable(t *testing.T) {
 	}
 	// And the record goes, left key or not: its existence is what tells the rest of
 	// agentop that Cortex routes Claude Code, so a record outliving the values it
-	// describes leaves `agentop doctor` offering to put the routing back. Nothing is
-	// lost with it — the left key's own value is in settings.json, untouched, and the
-	// Prior it recorded can only be a value of ours, which enable's refusal ensures.
+	// describes leaves `agentop doctor` offering to put the routing back. Keeping it
+	// would also cost this key its edit — Prior is frozen on the first enable, so a
+	// kept record still holds the pre-enable value and the next enable would write
+	// over the edit for good.
 	if _, err := os.Stat(state); !os.IsNotExist(err) {
 		body, _ := os.ReadFile(state)
 		t.Errorf("the record survived a disable (err %v): %s", err, body)
@@ -338,6 +339,59 @@ func TestClaudeCodeDisable_RecordWithoutWrittenStillRemoves(t *testing.T) {
 	}
 	if _, err := os.Stat(state); err == nil {
 		t.Error("the record survived a disable that left nothing behind")
+	}
+}
+
+// A record naming another settings file belongs to another enable, and a disable
+// here must not take it away. planClaudeCodeDisable already refuses to *read* it —
+// pl.st stays nil unless the record names this file — but the removal at the end
+// ran on statePath alone, so `disable --settings` on a project file deleted the
+// default file's record. That strands the default file's Written, and the next
+// disable there has no ownership to check an edit against: #1289 again, reached
+// by way of a disable on a file that has nothing to do with it.
+func TestClaudeCodeDisable_KeepsARecordNamingAnotherSettingsFile(t *testing.T) {
+	const corp = "http://corp.example:3128"
+	main, cfg := fixture(t, settingsWithSecret)
+	proj := filepath.Join(t.TempDir(), "settings.json")
+	state := filepath.Join(t.TempDir(), "state.json")
+	var out, errb bytes.Buffer
+	// The project file first, so the main file's enable is the one that replaces the
+	// record: it names whichever file enabled last.
+	if code := claudeCodeEnable2(proj, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable on the project file failed: %s", errb.String())
+	}
+	if code := claudeCodeEnable2(main, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable on the main file failed: %s", errb.String())
+	}
+	if st, err := readState(state); err != nil || st == nil || st.Settings != main {
+		t.Fatalf("fixture: the record names %+v (err %v), want %s", st, err, main)
+	}
+
+	// The project file still holds Cortex's values, so this disable goes through
+	// applyClaudeCodeDisable — the path that removed the record on statePath alone.
+	out.Reset()
+	errb.Reset()
+	if code := claudeCodeDisable2(proj, state, true, &out, &errb); code != 0 {
+		t.Fatalf("disable on the project file exit %d: %s", code, errb.String())
+	}
+	st, err := readState(state)
+	if err != nil || st == nil {
+		t.Fatalf("a disable on another settings file deleted the main file's record (err %v)", err)
+	}
+	if st.Settings != main {
+		t.Errorf("the record names %q, want %q", st.Settings, main)
+	}
+
+	// And what keeping it is for: the main file's Written is still there to check a
+	// hand edit against, so the edit survives its own disable.
+	handEdit(t, main, map[string]string{envProxy: corp})
+	out.Reset()
+	errb.Reset()
+	if code := claudeCodeDisable2(main, state, true, &out, &errb); code != 0 {
+		t.Fatalf("disable on the main file exit %d: %s", code, errb.String())
+	}
+	if got := readEnv(t, main)[envProxy]; got != corp {
+		t.Errorf("%s = %q, want the hand edit %q left alone", envProxy, got, corp)
 	}
 }
 

@@ -490,11 +490,12 @@ func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 // to change — so without this the fix would not reach the people who already have
 // the bug.
 //
-// Both no-change paths call it, and they are different commands: this command's
-// "Already enabled" return, and setup's routed step, which is what `install.sh
-// --claude-code` actually runs on every upgrade (claudeCodeStep.already). The
-// second is the one that matters for reach; the first alone would have fixed
-// almost nobody.
+// Three no-change paths call it, across two commands: this command's "Already
+// enabled" return, and both of setup's routed-step paths — claudeCodeStep.already,
+// reached when the step is reported done, and claudeCodeStep.apply's own no-change
+// return, for a run where another step had work and this one turned out not to.
+// Setup is what matters for reach: `install.sh --claude-code` runs it on every
+// upgrade, and the enable command alone would have fixed almost nobody.
 //
 // It never CREATES a record. The file already holds Cortex's values here, so a Prior
 // computed from them would be Cortex's own, and disable would "restore" those instead
@@ -681,18 +682,20 @@ func changedSinceEnable(st *managedState, key, cur string) bool {
 // first. Going on would create a settings.json where there was none, rewrite one
 // that holds none of the keys (and back it up), and delete the record.
 //
-// The record is deleted whenever this ran, left keys or not, because the record IS
-// how the rest of agentop tells that Cortex routed Claude Code: claudeCodeRouted
-// answers "routed" from its mere existence, so a record outliving the values it
-// describes leaves `agentop doctor` reporting a routing that is gone and offering a
-// fix that puts it back.
+// The record is deleted whenever this ran, left keys or not, for two reasons that
+// point the same way. The record IS how the rest of agentop tells that Cortex routed
+// Claude Code — claudeCodeRouted answers "routed" from its mere existence — so a
+// record outliving the values it describes leaves `agentop doctor` reporting a
+// routing that is gone and offering a fix that puts it back. And keeping it would
+// cost the left key the edit this whole change exists to protect: Prior is frozen on
+// the FIRST enable, so a record kept here would still hold the pre-enable value, and
+// the next enable would overwrite the edit for good. Deleted, the next enable records
+// the edit itself, and the value survives — see claudeCodeNeedsCortexDir for what
+// that then means for --purge.
 //
-// Keeping it for a left key's sake would buy nothing against that. enable refuses
-// any value that is neither the one it is about to write nor Cortex-shaped
-// (isCortexValue), so a managed key's recorded Prior is nil, "1", or a value of
-// ours — never a setting of the user's that a later restore could hand back. The
-// left key's own value is the one worth keeping, and it is still in settings.json,
-// untouched, which is the whole point of leaving it.
+// Only a record naming THIS settings file is ours to delete, which planClaudeCodeDisable
+// has already decided: pl.st is nil unless the record names this file, and a disable
+// here must not take another enable's record away. removeDisabledRecord says the rest.
 func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if len(pl.present) == 0 {
 		return nil, nil
@@ -733,7 +736,14 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	if err := writeSettings(pl.settingsPath, pl.doc); err != nil {
 		return nil, err
 	}
-	if statePath != "" {
+	// A nil st with no read error means the record is some other settings file's (or
+	// there is none), and deleting it would strand that file's Written — the next
+	// disable there would have no ownership to check an edit against, which is the
+	// bug this change fixes, reached by way of a disable on an unrelated file. stErr
+	// keeps today's behaviour for a record that is there and unreadable: left in
+	// place it would outlive every disable, and doctor would report Claude Code as
+	// routed for good.
+	if statePath != "" && (pl.st != nil || pl.stErr != nil) {
 		_ = os.Remove(statePath)
 	}
 	return restored, nil

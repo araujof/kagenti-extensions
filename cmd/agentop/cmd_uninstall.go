@@ -32,9 +32,9 @@ removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
 stays unless --purge. What to remove is read from disk, not from a record of
 the install. A removal that fails is reported with its fix and the rest still
 run, but ~/.cortex then stays; the end lists what was left behind. ~/.cortex also
-stays when a setting left in place still points into it — a CA path changed since
-Cortex set it, say — because deleting it would leave that tool trusting a file
-that is gone.
+stays when a setting still points into it afterwards — one left in place, or one
+restored to a value of your own under there — because deleting it would leave that
+tool trusting a file that is gone.
 
   --yes, -y   do not ask; needed when there is no terminal
   --purge     delete ~/.cortex too: config, CA, logs, usage and session history
@@ -496,26 +496,45 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 	}
 }
 
-// claudeCodeNeedsCortexDir is why --purge must keep ~/.cortex, given the keys
-// disable leaves in place: the ones whose value names something inside it. Empty
-// when none does — a left HTTPS_PROXY is a port, not a path, and holds the
-// directory back on its own account not at all.
+// claudeCodeNeedsCortexDir is why --purge must keep ~/.cortex: the managed keys
+// that will still name something inside it once disable has run. Empty when none
+// will — a left HTTPS_PROXY is a port, not a path, and holds the directory back on
+// its own account not at all.
 //
 // Five of the seven managed keys point at a file under ~/.cortex, and --purge
-// deletes that directory. A left key is one the user edited, so it stays set; with
-// the file gone it points at nothing, and that is quiet exactly where it is worst.
-// NODE_EXTRA_CA_CERTS with a missing file is ignored silently — every request
-// tunnels through unparsed and nothing looks wrong — while the four variables that
-// REPLACE the trust store make every TLS call fail, from tools that never meant to
-// talk to Cortex at all. So the directory stays, and the row names what is holding
-// it.
+// deletes that directory. Pointing at a file that is gone is quiet exactly where it
+// is worst: NODE_EXTRA_CA_CERTS with a missing file is ignored silently — every
+// request tunnels through unparsed and nothing looks wrong — while the four
+// variables that REPLACE the trust store make every TLS call fail, from tools that
+// never meant to talk to Cortex at all. So the directory stays, and the row names
+// what is holding it.
+//
+// Two kinds of key end up there, and the second is the one that is easy to miss. A
+// key disable LEAVES is one the user edited, so it keeps the edited value. A key
+// disable RESTORES keeps whatever enable recorded as its prior — and that can be
+// the user's own path under ~/.cortex, because isCortexValue accepts any such path
+// as one of ours, so an enable over an edit like ~/.cortex/ca/mine.crt adopts the
+// key and records the edit as the prior to hand back.
 //
 // Decided from the plan, which is read before any removal runs, so the consent row
 // for --purge is never offered and then declined.
 func claudeCodeNeedsCortexDir(env *setupEnv, settings string, pl claudeCodeDisablePlan) string {
-	var keys []string
+	// What each managed key will be set to once disable has run. Absent means
+	// disable removes it, which points nowhere and holds nothing back.
+	after := map[string]string{}
 	for _, k := range pl.left {
-		if pathUnder(env.cortexDir, pl.env[k]) {
+		after[k] = pl.env[k]
+	}
+	if pl.st != nil {
+		for _, k := range pl.present {
+			if p := pl.st.Prior[k]; p != nil {
+				after[k] = *p
+			}
+		}
+	}
+	var keys []string
+	for _, k := range managedKeys { // in managedKeys order, as the rest of the output is
+		if pathUnder(env.cortexDir, after[k]) {
 			keys = append(keys, k)
 		}
 	}
@@ -525,10 +544,10 @@ func claudeCodeNeedsCortexDir(env *setupEnv, settings string, pl claudeCodeDisab
 	return someKeys(keys) + " in " + env.tilde(settings) + " still points into it"
 }
 
-// pathUnder reports whether p names dir or something inside it. Lexical, on
-// cleaned paths: the values it is given are the ones enable wrote, which are
-// absolute by construction, so a relative one is somebody's edit to a form we
-// cannot resolve from here and is not claimed to be under anything.
+// pathUnder reports whether p names dir or something inside it. Lexical, on cleaned
+// paths, and absolute-only: enable writes absolute paths, so a relative value is
+// somebody's edit in a form we cannot resolve from here and is not claimed to be
+// under anything.
 func pathUnder(dir, p string) bool {
 	if dir == "" || p == "" || !filepath.IsAbs(p) || !filepath.IsAbs(dir) {
 		return false
@@ -1021,13 +1040,14 @@ func planRemoveBinaries(env *setupEnv) (removal, bool) {
 // planPurge deletes ~/.cortex, under --purge only, and last: the removals before
 // it were planned from what it held.
 //
-// needed is why it must not: something a removal before it leaves behind still
-// points into the directory, a managed key disable left in place whose value is a
-// file under it. Then the row keeps the directory and says which — it is not "left
-// behind", since nothing failed and deleting it is the thing that would do harm,
-// so the exit status is the left key's to set. A failed removal keeps the directory
-// the same way, through unlessFailed, but that is a different signal: an error, not
-// a plan, so it cannot be known this early. See claudeCodeNeedsCortexDir.
+// needed is why it must not: a setting a removal before it ends up leaving set —
+// left in place, or restored to a value of the user's — names a file under the
+// directory. Then the row keeps the directory and says which. It is not "left
+// behind", since nothing failed and deleting it is the thing that would do harm, so
+// the row sets no exit status of its own; a left key sets 1 on its own account, and
+// a restored one leaves 0. A failed removal keeps the directory the same way,
+// through unlessFailed, but that is a different signal: an error, not a plan, so it
+// cannot be known this early. See claudeCodeNeedsCortexDir.
 func planPurge(env *setupEnv, needed []string) (removal, bool) {
 	if _, err := os.Lstat(env.cortexDir); err != nil {
 		return removal{}, false
@@ -1036,7 +1056,7 @@ func planPurge(env *setupEnv, needed []string) (removal, bool) {
 	if len(needed) > 0 {
 		return removal{label: "purged", keep: &kept{
 			what: dir,
-			why: strings.Join(needed, ", and ") + " — delete it once those keys are gone: rm -rf " +
+			why: strings.Join(needed, ", and ") + " — delete it once nothing points into it: rm -rf " +
 				env.shellPath(env.cortexDir),
 		}}, true
 	}

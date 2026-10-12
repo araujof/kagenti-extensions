@@ -657,6 +657,15 @@ func TestClaudeCodeDisable_WarnsOnCorruptState(t *testing.T) {
 	if !strings.Contains(errb.String(), "not recoverable") {
 		t.Errorf("warning does not say what is lost:\nstderr=%q", errb.String())
 	}
+	// And it goes, unreadable or not. The removal is guarded on the record being
+	// THIS file's — which an unreadable one cannot be shown to be — so the error has
+	// to count as well, or a corrupt record outlives every disable and doctor reports
+	// Claude Code as routed for good, with no way to say otherwise short of deleting
+	// the file by hand.
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(state)
+		t.Errorf("the corrupt record survived a disable (err %v): %s", err, body)
+	}
 }
 
 // TestReadState_AbsentIsNotAnError: the silent fallback is correct for a machine

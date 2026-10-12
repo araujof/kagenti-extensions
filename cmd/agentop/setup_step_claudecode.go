@@ -73,8 +73,11 @@ func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 // `agentop configure claude-code enable` path that also calls it is not what an
 // upgrade runs.
 //
-// Called from applySteps only. Not from plan, which must change nothing on disk
-// and which `agentop doctor` calls for every step.
+// Reached through finishAlready, from both of setup's no-change paths: applySteps'
+// done arm, and runSetup's own all-done branch, which returns before applySteps is
+// ever reached and is the whole of a same-version re-run — the path most installs
+// actually take. Not from plan, which must change nothing on disk and which
+// `agentop doctor` calls for every step.
 func (s claudeCodeStep) already(env *setupEnv) string {
 	if env.configFresh {
 		// No config to read the wanted values from, and nothing routed yet either:

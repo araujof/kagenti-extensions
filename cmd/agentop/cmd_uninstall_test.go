@@ -787,7 +787,7 @@ func TestUninstallPurgeKeepsCortexDirForALeftKeyPointingIntoIt(t *testing.T) {
 	code, out := sc.uninstall(t, "--yes", "--purge")
 	// Exit 1 is the left key's, not the keep's: nothing failed here.
 	wantLines(t, code, 1, out, markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
-		" in ~/.claude/settings.json still points into it — delete it once those keys are gone: rm -rf ~/.cortex\n")
+		" in ~/.claude/settings.json still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
 	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
 		t.Errorf("--purge deleted ~/.cortex while a left key pointed into it: %v", err)
 	}
@@ -810,6 +810,45 @@ func TestUninstallPurgeDeletesCortexDirForALeftKeyOutsideIt(t *testing.T) {
 	wantLines(t, code, 1, out, markLine("✓", "purged")+"~/.cortex\n")
 	if _, err := os.Lstat(filepath.Join(sc.home, ".cortex")); !os.IsNotExist(err) {
 		t.Errorf("--purge kept ~/.cortex for a left key that points nowhere near it (lstat: %v)", err)
+	}
+}
+
+// The same hazard reached through a key disable RESTORES rather than leaves. A
+// user's edit that still looks like one of ours — a path of their own under
+// ~/.cortex — is taken over by the next enable, which records it as the prior to
+// restore, so uninstall hands it back and --purge then deletes what it names. This
+// PR is what makes it reachable: disable now deletes the record even when it leaves
+// a key, so the re-enable has nothing saying the value is not ours.
+func TestUninstallPurgeKeepsCortexDirForARestoredKeyPointingIntoIt(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	state := filepath.Join(sc.home, stateRel)
+	mine := filepath.Join(sc.home, ".cortex", "ca", "mine.crt")
+	sc.setUp(t, "--claude-code")
+	handEdit(t, settings, map[string]string{envSSLCert: mine})
+	var out, errb bytes.Buffer
+	if code := claudeCodeDisable2(settings, state, true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	// The installer's next run. isCortexValue accepts mine.crt — it is a path under
+	// .cortex — so enable takes the key over and records the edit as its prior.
+	sc.setUp(t, "--claude-code")
+	st, err := readState(state)
+	if err != nil || st == nil || st.Prior[envSSLCert] == nil || *st.Prior[envSSLCert] != mine {
+		t.Fatalf("fixture: the recorded prior for %s is not the edit (err %v): %+v", envSSLCert, err, st)
+	}
+
+	code, out2 := sc.uninstall(t, "--yes", "--purge")
+	wantLines(t, code, 0, out2, markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
+		" in ~/.claude/settings.json still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
+	if got := readEnv(t, settings)[envSSLCert]; got != mine {
+		t.Fatalf("fixture: %s = %q after uninstall, want the restored %q", envSSLCert, got, mine)
+	}
+	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
+		t.Errorf("--purge deleted ~/.cortex while a restored key pointed into it: %v", err)
+	}
+	if row := consentRow(out2, "delete"); strings.Contains(row, ".cortex") {
+		t.Errorf("--purge asked to delete ~/.cortex and then kept it: %q", row)
 	}
 }
 
