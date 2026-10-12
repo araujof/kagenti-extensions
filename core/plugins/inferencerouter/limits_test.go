@@ -1,6 +1,7 @@
 package inferencerouter
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,19 @@ func TestLimits_WithoutAStoreKeptInProcessMemory(t *testing.T) {
 	r.saveLimits(pctx, "glm", glmMain, limits{Output: 64000})
 	if got := r.loadLimits(pctx, "glm", glmMain); got.Output != 64000 {
 		t.Errorf("loadLimits = %+v, want Output 64000", got)
+	}
+}
+
+// An empty error.message does not hide a limit stated in a later field.
+func TestLimitRefusal_ReadsPastAnEmptyErrorMessage(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"message":""},"message":"prompt is too long: 260028 tokens > 200000 maximum"}`,
+		`{"error":{"message":""},"message":"","detail":"x"}`,
+	} {
+		kind, n, ok := limitRefusal(400, []byte(body))
+		want := strings.Contains(body, "maximum\"")
+		if ok != want || (want && (kind != limitWindow || n != 200000)) {
+			t.Errorf("limitRefusal(%s) = %v %d %v, want a window of 200000: %v", body, kind, n, ok, want)
+		}
 	}
 }

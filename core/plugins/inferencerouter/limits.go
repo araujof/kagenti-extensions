@@ -77,7 +77,7 @@ func limitRefusal(status int, body []byte) (limitKind, int, bool) {
 // message, or the error itself when it is a string — and "" for a body with none.
 func errorMessage(body []byte) string {
 	for _, path := range []string{"error.message", "message", "error"} {
-		if v := gjson.GetBytes(body, path); v.Type == gjson.String {
+		if v := gjson.GetBytes(body, path); v.Type == gjson.String && v.String() != "" {
 			return v.String()
 		}
 	}
