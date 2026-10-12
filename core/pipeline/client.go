@@ -320,6 +320,23 @@ var knownClients = map[string]string{
 	// deliberately — it is one agent's component rather than a second agent, so its traffic
 	// belongs in Codex's row and its session, the way OpenCode's service and TUI share one.
 	"codex-mcp-client": "codex",
+	// THE INTERACTIVE TUI, which is what `agentop configure codex enable` sends people to
+	// ("run `codex` as usual"), so omitting these two covered the documented path and
+	// missed the default one. Codex's User-Agent is "{originator}/{version} (…)", and the
+	// originator is whatever client_name the app-server was initialized with: the TUI
+	// passes "codex-tui", while anything sent BEFORE that initialize completes uses the
+	// built-in default "codex_cli_rs". Both are Codex, so both fold here. Read off
+	// Codex's source at rust-v0.160.1 (tui/src/lib.rs, app-server's
+	// initialize_processor.rs, login/src/auth/default_client.rs) and both tokens
+	// confirmed present in the shipped 0.160.1 binary.
+	"codex-tui":    "codex",
+	"codex_cli_rs": "codex",
+	// NOT CLAIMED, though the same binary carries them as originator names:
+	// "codex_vscode", "codex_desktop", "codex-app-server", "codex_mcp_server",
+	// "codex-cli". The first two plausibly belong to separate products the way IBM Bob
+	// the IDE does to Bob Shell, and none of the five has been seen on live traffic or
+	// traced to a client_name the way the four above have. An unrecognised agent still
+	// shows under its raw User-Agent and can be added later; a wrong fold is silent.
 	// NOT CLAIMED: "OTel-OTLP-Exporter-Rust/0.31.0", which Codex's telemetry sends to
 	// ab.chatgpt.com/otlp/v1/metrics. The token names the generic Rust OTLP exporter, not
 	// Codex, so claiming it would file every Rust program using that crate under Codex's

@@ -4,7 +4,8 @@
 its User-Agent and parses its inference. `agentop configure codex` routes it through Cortex
 and takes that out again.
 
-One fact shapes it: Codex loads a dotenv file, `~/.codex/.env`, itself at process start —
+One fact shapes it: Codex loads a dotenv file — `$CODEX_HOME/.env` when `CODEX_HOME` is set,
+otherwise `~/.codex/.env` — itself at process start,
 confirmed against the real Codex CLI (writing a dead proxy address there and running bare
 `codex exec`, with no `agentop` wrapper at all, broke both its websocket and its HTTPS
 fallback transport). There is no settings JSON and no background service, so the routing
@@ -24,21 +25,33 @@ match the running proxy:
 | Variable | Value |
 |---|---|
 | `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | Cortex's forward proxy URL |
-| `CODEX_CA_CERTIFICATE` | `bundle.crt`, the bridge CA plus the platform roots |
+| `SSL_CERT_FILE` | `bundle.crt`, the bridge CA plus the platform roots |
 
-`CODEX_CA_CERTIFICATE` is Codex's own dedicated CA override — confirmed by inspecting the
-real `codex` binary, whose HTTP client checks it before falling back to the more generic
-`SSL_CERT_FILE`, and before system roots when neither is set. Using the dedicated name
-means `enable` never has to share a key with some other tool's unrelated `SSL_CERT_FILE`
-value in the same file.
+**The CA goes in `SSL_CERT_FILE`, not Codex's own `CODEX_CA_CERTIFICATE`** — which its HTTP
+client would otherwise prefer, and which an earlier version of this page recommended. Codex's
+dotenv loader discards every key whose name starts with `CODEX_`, on purpose, so that a `.env`
+cannot reconfigure Codex itself. A CA written under that name is one Codex never reads.
+`SSL_CERT_FILE` survives the filter and is the next name Codex checks. If some other tool
+already has its own `SSL_CERT_FILE` in this file, `enable` refuses rather than overwrite it.
+
+That mistake is worth knowing about because **its symptom is success.** With no CA it can
+read, Codex rejects the bridge's forged certificate, Cortex falls back to tunnelling the
+bytes opaquely, and the request still completes — Codex answers normally and nothing
+reports an error. What is lost is the observation: Cortex sees an opaque tunnel instead of
+the request. So "did Codex reply?" cannot tell a working CA from a broken one. The check
+that can is whether the bridge **terminated**: `~/.cortex/proxy.log` carries
+`tls-bridge passthrough … reason=client-hung-up` lines for every connection it could not
+terminate, and none when the CA is working.
 
 `enable` scans the **whole file** for an existing definition of each of the five keys, not
-only a block it wrote itself — a plain `KEY=VALUE` line anywhere counts, a commented
-`#KEY=VALUE` or an `export KEY=VALUE` line does not, matching Codex's own dotenv loading.
-A key defined on more than one line is refused outright rather than guessed at: dotenv-loader
-precedence for a duplicate is undocumented, and a write that is silently ignored by the
-loader is worse than a refusal. `enable` also refuses to overwrite a value someone else
-set, such as a corporate proxy, naming it and asking you to remove it by hand first. The
+only a block it wrote itself. Codex parses this file with
+[dotenvy](https://github.com/allan2/dotenvy), so `KEY=VALUE`, `export KEY=VALUE`, an
+indented line and spaces around the `=` all count as definitions and all are seen; a
+commented `#KEY=VALUE` does not. A key defined on more than one line is refused outright
+rather than guessed at — dotenvy resolves a duplicate **last-wins**, so appending would
+quietly beat an earlier definition, including a corporate proxy someone set deliberately.
+For the same reason `enable` refuses to overwrite any value that is not Cortex's own,
+naming it and asking you to remove it by hand first. The
 only values it replaces are Cortex's own, such as a proxy at an older Cortex address. It
 refuses outright when the TLS bridge is disabled or has no `ca_dir`, because Codex would
 then have no CA to trust — there is no partial "proxy only" state. The first run copies the
@@ -46,21 +59,24 @@ original file to `.env.bak` and never overwrites that copy; everything else in t
 including blank lines and comments, is left exactly as it was. A short comment marks the
 newly-added lines the first time any are appended.
 
-**The record.** The first `enable` records what the five variables held in
-`~/.cortex/codex-state.json`. A value `enable` replaced because it was already Cortex's
-(shape-matched, the same heuristic claude-code's and OpenCode's integrations use) is
-recorded as absent, not as something to restore — so `disable` removes it rather than
-putting back a stale Cortex address.
+**The record, and why it is always empty today.** The first `enable` records what the five
+variables held in `~/.cortex/codex-state.json`. In practice that record contains nothing to
+restore, and the reason is worth stating plainly rather than leaving as a surprise:
+`enable` **refuses** whenever one of the five holds a value that is not Cortex's own, and
+a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
+putting back a stale Cortex address). Those two rules are exact opposites, so every value
+that reaches the record is stored as "was not set". The file, and `disable`'s restore
+branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's —
+[#1289](https://github.com/rossoctl/cortex/issues/1289) is one pass over all three, and a
+Codex-only design would have to be unpicked to get there.
 
-**What `disable` does.** It restores each of the five variables to what the record says it
-held before `enable` — unset if it was absent, or back to a recorded value otherwise —
-then deletes the record. Unlike `status`, it does not re-check whether the live value has
-changed since `enable` ran: if you hand-edited one of the five variables afterwards,
-`disable` overwrites that edit on the way back to the recorded value. This is the same
-simple, one-shot restore claude-code's `disable` makes today, not the stricter
-"did this change since enable" comparison tracked by
-[#1289](https://github.com/rossoctl/cortex/issues/1289) for a future pass across all three
-integrations at once.
+**What `disable` does.** It removes the five variables, removes the
+`# Added by agentop configure codex enable` marker if it is still exactly as written, and
+deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
+as it found it. It would restore a recorded prior value if one existed, which per the
+paragraph above does not happen today; if you hand-edit one of the five variables after
+`enable`, `disable` simply removes it. The stricter "did this change since enable"
+comparison is tracked by #1289.
 
 **What `status` says.** It prints the five variables as the file currently holds them, a
 warning if any is defined more than once, then `enabled` if every one matches what `enable`
@@ -73,14 +89,14 @@ different Cortex config.
 
 ### Undoing it by hand
 
-Without `agentop`: open `~/.codex/.env` and remove the lines for the five variables above,
+Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
 if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
 `~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
 Cortex's. Then delete the record.
 
 ```sh
 # Remove only lines matching these five keys, and only if they point at Cortex:
-#   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  CODEX_CA_CERTIFICATE
+#   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
 $EDITOR ~/.codex/.env
 rm -f ~/.cortex/codex-state.json
 ```
@@ -88,19 +104,34 @@ rm -f ~/.cortex/codex-state.json
 ## CA trust
 
 Cortex's TLS bridge decrypts Codex's HTTPS using certificates it forges from its own CA, so
-Codex has to trust that CA. Confirmed by inspecting the real `codex` binary: its HTTP
-client (`codex_http_client::custom_ca`) checks `CODEX_CA_CERTIFICATE` first, then
-`SSL_CERT_FILE`, then falls back to the system's own root store with neither set — a
-"replace the trust store" variable, the same category as the bundle variables
-claude-code's and OpenCode's integrations set, not `NODE_EXTRA_CA_CERTS`'s additive one. So
-it gets `bundle.crt` (the bridge CA plus the platform roots), not the bare CA alone — naming
-the bare CA would leave Codex trusting Cortex and nothing else, breaking every host the
-bridge does not terminate.
+Codex has to trust that CA. Codex's HTTP client (`codex_http_client::custom_ca`) checks
+`CODEX_CA_CERTIFICATE` first, then `SSL_CERT_FILE`, then falls back to the platform's own
+root store with neither set — but it only ever sees the **process environment**, and
+Codex's dotenv loader strips every `CODEX_`-prefixed key before that. Hence
+`SSL_CERT_FILE`; see [Enable and revert](#enable-and-revert) above. Unlike the bundle
+variables claude-code's and OpenCode's integrations set, Codex's custom CA is **additive** —
+it is loaded on top of the platform roots rather than replacing them. `bundle.crt` (the
+bridge CA plus the platform roots) is still the right value, it just is not load-bearing
+for reaching hosts the bridge does not terminate.
 
-Verified live: with `~/.codex/.env` holding only the five variables above (no `agentop exec`
-wrapper, no shell export), a bare `codex exec` reached the real backend over Cortex's proxy
-and returned a normal response, with no certificate error from either Codex's websocket
-attempt or its HTTPS fallback.
+**Verified live** with the inherited CA variables stripped from the environment
+(`env -u SSL_CERT_FILE -u CURL_CA_BUNDLE -u REQUESTS_CA_BUNDLE -u GIT_SSL_CAINFO`), so that
+the `.env` file was the only possible source of trust, and judged on whether the bridge
+**terminated** rather than on whether Codex replied:
+
+| `.env` holds | Bridge outcome |
+|---|---|
+| `SSL_CERT_FILE` | **terminates** — no `tls-bridge passthrough` lines |
+| `CODEX_CA_CERTIFICATE` | passthrough; Codex rejected the forged cert |
+| no CA variable at all | passthrough — *identical to the row above* |
+
+That last pair is the whole reason this page labours the point: the `CODEX_`-prefixed name
+is indistinguishable from writing nothing, and both still answer the prompt.
+
+⚠️ **If you have already trusted the bridge CA in your OS keychain, or exported
+`SSL_CERT_FILE` in your shell, Codex will work regardless of what this file says** — and a
+test of this feature done in that environment proves nothing about the file. That is exactly
+how the `CODEX_CA_CERTIFICATE` mistake survived its first review.
 
 ## What Cortex shows for it
 
@@ -112,6 +143,8 @@ attempt or its HTTPS fallback.
 |---|---|
 | `codex_exec/<version> (<os>; <arch>) unknown` — sometimes with a trailing `(codex_exec; <version>)` comment | its inference (`/backend-api/codex/responses`) and most other backend calls |
 | `codex-mcp-client/<version>` | its MCP client (`/backend-api/ps/mcp`) |
+| `codex-tui/<version> (<os>; <arch>) unknown` | the interactive TUI — i.e. plain `codex` |
+| `codex_cli_rs/<version> (<os>; <arch>) unknown` | anything sent before its app-server finishes initializing |
 
 The version is the field after the first slash in both. The MCP client folds to the same
 name deliberately: it is one agent's component, not a second agent. **Codex's telemetry
@@ -182,7 +215,8 @@ with Cortex built from the change that added this page. This was exercised:
   removing the record;
 - a bare `codex exec` — no `agentop exec` wrapper, no shell export — routing through
   Cortex and returning a normal response, confirming both the proxy routing and CA trust
-  come from the dotenv file alone;
+  come from the dotenv file alone — re-run with the ambient CA variables stripped, and
+  judged on the bridge terminating rather than on Codex replying (see CA trust);
 - **each of the four proxy-variable spellings alone**, with the other three absent: all
   four independently routed Codex's traffic, which is why `enable` writes all four;
 - agent recognition for all three User-Agents above, including the telemetry exporter

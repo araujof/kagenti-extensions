@@ -83,8 +83,8 @@ func TestCodexEnable_PreservesEverythingElse(t *testing.T) {
 		env["http_proxy"] != "http://127.0.0.1:47600" || env["https_proxy"] != "http://127.0.0.1:47600" {
 		t.Errorf("proxy spellings = %+v", env)
 	}
-	if !strings.HasSuffix(env[envCodexCA], filepath.Join("ca", "bundle.crt")) {
-		t.Errorf("%s = %q, want it under the config's ca_dir, naming the bundle not ca.crt", envCodexCA, env[envCodexCA])
+	if !strings.HasSuffix(env[envSSLCert], filepath.Join("ca", "bundle.crt")) {
+		t.Errorf("%s = %q, want it under the config's ca_dir, naming the bundle not ca.crt", envSSLCert, env[envSSLCert])
 	}
 	if _, err := os.Stat(envPath + ".bak"); err != nil {
 		t.Errorf("no backup written: %v", err)
@@ -166,9 +166,55 @@ func TestCodexEnable_RefusesForeignValue(t *testing.T) {
 	}
 }
 
-// A key defined on two lines is ambiguous: dotenv-loader precedence for a
-// duplicate is undocumented, so enable must refuse rather than guess which line
-// Codex's own loading would actually use.
+// THE GUARD HAS TO SEE EVERY SHAPE DOTENVY CALLS A DEFINITION, not just the plain
+// one. dotenvy — which Codex uses — accepts `export KEY=V`, leading whitespace, and
+// spaces around `=`. A regex that missed those let enable exit 0 and APPEND a second
+// definition; Codex's precedence is last-wins, so the appended Cortex line beat a
+// corporate proxy someone set on purpose. Each row is a value enable must refuse to
+// overwrite, and must leave byte-for-byte intact.
+func TestCodexEnable_RefusesForeignValueInEveryDotenvySpelling(t *testing.T) {
+	for _, line := range []string{
+		"export HTTPS_PROXY=http://corp.example.com:3128\n",
+		"  HTTPS_PROXY=http://corp.example.com:3128\n",
+		"HTTPS_PROXY = http://corp.example.com:3128\n",
+		"\texport  HTTPS_PROXY  =  http://corp.example.com:3128\n",
+	} {
+		t.Run(strings.TrimSpace(line), func(t *testing.T) {
+			envPath, cfgPath := codexFixture(t, line)
+			var out, errb bytes.Buffer
+			code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1 (refusal); stdout=%q", code, out.String())
+			}
+			b, err := os.ReadFile(envPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != line {
+				t.Errorf("file changed.\n got: %q\nwant: %q", string(b), line)
+			}
+		})
+	}
+}
+
+// A commented-out assignment is not a definition, and the widened regex must not
+// have started treating it as one — that would make enable refuse on a file whose
+// only mention of a key is a note to self.
+func TestCodexEnable_IgnoresCommentedAssignments(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "# HTTPS_PROXY=http://corp.example.com:3128\n#export HTTP_PROXY=http://x\n")
+	var out, errb bytes.Buffer
+	code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errb.String())
+	}
+	if got := readCodexEnv(t, envPath)["HTTPS_PROXY"]; !strings.Contains(got, "47600") {
+		t.Errorf("HTTPS_PROXY = %q, want Cortex's proxy — a comment should not have blocked it", got)
+	}
+}
+
+// A key defined on two lines is ambiguous: Codex's loader resolves a duplicate
+// last-wins, so appending would quietly beat the earlier definition. enable refuses
+// rather than pick a side.
 func TestCodexEnable_RefusesAmbiguousDuplicateKey(t *testing.T) {
 	envPath, cfgPath := codexFixture(t, "HTTP_PROXY=http://one.example.com\nHTTP_PROXY=http://two.example.com\n")
 	var out, errb bytes.Buffer
@@ -245,7 +291,7 @@ func TestCodexDisable_RestoresRecordedPriorValue(t *testing.T) {
 		"HTTPS_PROXY": nil,
 		"http_proxy":  nil,
 		"https_proxy": nil,
-		envCodexCA:    nil,
+		envSSLCert:    nil,
 	}}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -266,7 +312,7 @@ func TestCodexDisable_RestoresRecordedPriorValue(t *testing.T) {
 	if env["HTTP_PROXY"] != prior {
 		t.Errorf("HTTP_PROXY = %q, want the recorded prior value %q", env["HTTP_PROXY"], prior)
 	}
-	for _, k := range []string{"HTTPS_PROXY", "http_proxy", "https_proxy", envCodexCA} {
+	for _, k := range []string{"HTTPS_PROXY", "http_proxy", "https_proxy", envSSLCert} {
 		if _, ok := env[k]; ok {
 			t.Errorf("%s still set after disable: %q", k, env[k])
 		}
@@ -455,6 +501,103 @@ func TestCodex_Usage(t *testing.T) {
 
 // `configure codex` must be an alternate spelling, not a reimplementation —
 // same property TestConfigure_ClaudeCodeReachesTheSameLogic pins for claude-code.
+// enable/disable must be a ROUND TRIP, including the marker comment. It used to
+// leak one line per cycle, so three cycles on a file holding one unrelated key left
+// three markers behind — contradicting disable's promise to remove only what it
+// added and leave everything else exactly as it was.
+func TestCodexEnableDisable_RoundTripsWithoutLeakingTheMarker(t *testing.T) {
+	const original = "OPENAI_API_KEY=sk-not-a-real-key\n"
+	envPath, cfgPath := codexFixture(t, original)
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	for i := range 3 {
+		var out, errb bytes.Buffer
+		if code := codexEnable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
+			t.Fatalf("cycle %d: enable exit = %d, stderr=%q", i, code, errb.String())
+		}
+		out.Reset()
+		errb.Reset()
+		if code := codexDisable(envPath, statePath, true, &out, &errb); code != 0 {
+			t.Fatalf("cycle %d: disable exit = %d, stderr=%q", i, code, errb.String())
+		}
+	}
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), codexMarker); n != 0 {
+		t.Errorf("%d marker comment(s) left after 3 enable/disable cycles, want 0:\n%s", n, string(b))
+	}
+	if string(b) != original {
+		t.Errorf("file did not round-trip.\n got: %q\nwant: %q", string(b), original)
+	}
+}
+
+// A marker a user edited is theirs, not agentop's, so removeComment's exact match
+// must leave it alone rather than reclaim anything that merely looks similar.
+func TestCodexDisable_LeavesAnEditedMarkerAlone(t *testing.T) {
+	edited := "# " + codexMarker + " (do not delete)\n"
+	envPath, cfgPath := codexFixture(t, edited)
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
+		t.Fatalf("enable exit = %d, stderr=%q", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := codexDisable(envPath, statePath, true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit = %d, stderr=%q", code, errb.String())
+	}
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "(do not delete)") {
+		t.Errorf("the user's edited comment was removed:\n%s", string(b))
+	}
+}
+
+// enable writes SSL_CERT_FILE and NOT CODEX_CA_CERTIFICATE. Codex's dotenv loader
+// drops every CODEX_-prefixed key on purpose, so a CA written under that name is one
+// Codex never sees — and the resulting failure is silent, because Codex falls back
+// to tunnelling the request opaquely and still answers.
+func TestCodexEnable_WritesSSLCertFileNotCodexPrefixedCA(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, stderr=%q", code, errb.String())
+	}
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "CODEX_") {
+		t.Errorf("wrote a CODEX_-prefixed key, which Codex's dotenv loader discards:\n%s", string(b))
+	}
+	if got := readCodexEnv(t, envPath)[envSSLCert]; got == "" {
+		t.Errorf("%s is unset, so Codex has no CA it can actually read", envSSLCert)
+	}
+}
+
+// CODEX_HOME moves the file Codex reads, so it must move the file agentop writes.
+// Ignoring it meant enable wrote a file Codex never loads while status read that
+// same unused file and reported `enabled` — two halves agreeing with each other and
+// disagreeing with Codex.
+func TestDefaultCodexEnvPath_HonoursCodexHome(t *testing.T) {
+	t.Setenv(codexHomeEnv, "/tmp/elsewhere")
+	if got, want := defaultCodexEnvPath("/home/someone"), filepath.Join("/tmp/elsewhere", ".env"); got != want {
+		t.Errorf("with %s set: got %q, want %q", codexHomeEnv, got, want)
+	}
+	// Blank is not set: fall back rather than write to "/.env".
+	t.Setenv(codexHomeEnv, "   ")
+	if got, want := defaultCodexEnvPath("/home/someone"), filepath.Join("/home/someone", codexEnvRel); got != want {
+		t.Errorf("with %s blank: got %q, want %q", codexHomeEnv, got, want)
+	}
+	t.Setenv(codexHomeEnv, "")
+	if got, want := defaultCodexEnvPath("/home/someone"), filepath.Join("/home/someone", codexEnvRel); got != want {
+		t.Errorf("with %s unset: got %q, want %q", codexHomeEnv, got, want)
+	}
+}
+
 func TestConfigure_CodexReachesTheSameLogic(t *testing.T) {
 	envPath, _ := codexFixture(t, "")
 

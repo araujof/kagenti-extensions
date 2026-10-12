@@ -224,6 +224,15 @@ func TestParseUserAgent_Codex(t *testing.T) {
 		{"codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
 		// Codex's MCP client: a different token, the same agent, so the same row.
 		{"codex-mcp-client/0.160.1", "codex", "0.160.1"},
+		// The interactive TUI, and the default originator for anything Codex sends
+		// before its app-server initialize completes. Both are what `configure codex
+		// enable` actually sends people to, so both must fold to the same row as exec.
+		{"codex-tui/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
+		{"codex_cli_rs/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
+		// Originator names the same binary carries but that nothing has tied to live
+		// Codex traffic. Deliberately unclaimed; see knownClients.
+		{"codex_vscode/0.160.1", "", ""},
+		{"codex_desktop/0.160.1", "", ""},
 		// Its telemetry exporter names the generic Rust OTLP crate, not Codex. Claiming it
 		// would file every Rust program using that crate under Codex's name.
 		{"OTel-OTLP-Exporter-Rust/0.31.0", "", ""},
