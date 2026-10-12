@@ -749,20 +749,23 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	return restored, nil
 }
 
-// printClaudeCodeLeft names the keys disable will not touch, with what they now
-// hold, because the value IS the explanation: it is visibly not the one Cortex
-// wrote, and only the user can say whether to keep it. %q as the enable path's
-// refusal does, for the same reason — the value may be empty or carry spaces.
-//
-// Interactive output only. uninstall reports the same keys without their values;
-// see unrouteByHand for why a proxy URL is not printed there.
+// printClaudeCodeLeft names the keys disable will not touch, and names the file
+// they are in so the values can be read there. It prints no value itself, which
+// is unrouteByHand's and claudeCodeLeftNote's rule and for their reason: HTTPS_PROXY
+// is one of these keys, a proxy URL can carry a password, and what a terminal shows
+// gets pasted into issues and scraped into logs. This used to print the value, on
+// the argument that it IS the explanation — the value is visibly not the one Cortex
+// wrote, so showing it says why the key is being left. But the key's name and
+// "changed since Cortex set them" carry that on their own, and the user is one
+// `cat` from the file this line already names, so the argument bought a credential
+// on stdout for nothing.
 func printClaudeCodeLeft(pl claudeCodeDisablePlan, stdout io.Writer) {
 	if len(pl.left) == 0 {
 		return
 	}
 	fmt.Fprintf(stdout, "Leaving these alone — changed since Cortex set them:\n")
 	for _, k := range pl.left {
-		fmt.Fprintf(stdout, "  %s is now %q\n", k, pl.env[k])
+		fmt.Fprintf(stdout, "  %s\n", k)
 	}
 	fmt.Fprintf(stdout, "Removing them would lose that edit; edit %s by hand if you want them gone.\n\n",
 		pl.settingsPath)

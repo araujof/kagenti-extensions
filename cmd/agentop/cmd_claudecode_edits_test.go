@@ -255,10 +255,19 @@ func TestClaudeCodeDisable_LeavesAKeyChangedSinceEnable(t *testing.T) {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN = %q", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 	// Said out loud: a value silently kept is as confusing as one silently lost.
-	for _, want := range []string{envProxy, edited, "changed since Cortex set them"} {
+	for _, want := range []string{envProxy, "changed since Cortex set them", settings} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output does not mention %q:\n%s", want, out.String())
 		}
+	}
+	// But the key's NAME, never its value. HTTPS_PROXY is a managed key and a proxy
+	// URL can carry a password, so printing what the key now holds puts a credential
+	// on stdout — and this output gets pasted into issues and scraped into logs.
+	// unrouteByHand and claudeCodeLeftNote already refuse for that reason; this is the
+	// third printer of the same list and it has to refuse too. The file is named
+	// instead, which is where the value can be read.
+	if strings.Contains(out.String(), edited) {
+		t.Errorf("output prints the edited value %q, which may be a credential:\n%s", edited, out.String())
 	}
 	// And the record goes, left key or not: its existence is what tells the rest of
 	// agentop that Cortex routes Claude Code, so a record outliving the values it
