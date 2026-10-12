@@ -658,88 +658,76 @@ With several LiteLLM servers, each with its own URL and key, `agentop server`
 chooses which one an agent's **new** sessions use, through the
 [`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
 session stays on the server it started on, including one already running when its
-agent is first routed, until the proxy restarts: a restarted proxy treats every
-session it sees as a new one. Routing is opt-in per agent: until an agent is given
-a server, its traffic goes where the agent sends it.
+agent is first routed. Routing is opt-in per agent: until an agent is given
+a server, its traffic goes where the agent sends it. Once it is given one, its
+inference goes to that server wherever the agent addressed it — Anthropic,
+OpenCode Zen, Bob's gateway, or another server — so the agent needs no setting of
+its own beyond going through Cortex.
 
 ```sh
-agentop server add ete https://ete-litellm.example.com   # asks for the key; it does not echo
-agentop server add glm https://glm-litellm.example.com \
-    --opus glm-5.3 --sonnet glm-5.3 --haiku glm-5.3       # its own model for each of Claude Code's families
-agentop server use glm --agent claude-code                # new claude-code sessions → glm
-agentop server                                            # the servers, and two checks
-agentop server reset --agent claude-code                  # stop routing claude-code
+agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
+agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
+agentop server use glm --agent opencode                   # new opencode sessions → glm
+agentop server                                            # the servers, their models, their agents
+agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it
 ```
 
 In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
 
-With Claude Code's `ANTHROPIC_BASE_URL` at `ete`, the listing after `use` reads:
+The listing after `use` reads:
 
 ```
-  ete   ete-litellm.example.com   uses Claude Code's names
-  glm   glm-litellm.example.com   all → glm-5.3              claude-code
-
-  ✓ Claude Code points at ete (~/.claude/settings.json)
-  ✓ Claude Code asks for Claude's own model names (~/.claude/settings.json)
+  ete   ete-litellm.example.com   main opus → aws/claude-opus-5-5 · helper haiku → aws/claude-haiku-4-5
+  glm   glm-litellm.example.com   main glm → rits/zai-org/glm-5-3 · helper nemotron → rits/nvidia/nemotron-3   opencode
 ```
 
-- **`add <name> <url>`** reads the key at a prompt that does not echo, or from
-  stdin with `--key-stdin`, which is refused when stdin is a terminal, where the key
-  would echo as typed. It is never an argument, so it never reaches shell
-  history. A name that exists is replaced only after a yes (`--yes` skips the
-  question), which is how a key is rotated; with no terminal to ask on, nothing is
-  written. A server on a host another server already has, on any port, is
-  refused. The first `add` creates the plugin's entry, last in the outbound
-  pipeline. A key or a model containing `$` is refused: the config loader would
-  read it as an environment variable.
-  For a server that does not serve Claude Code's model names, `--opus`,
-  `--sonnet` and `--haiku` name its model for each of Claude Code's families —
-  all three, or none; a partial set is refused before the key is asked for.
-  Replacing a server replaces its models too: re-adding it without the flags, to
-  rotate its key say, leaves it serving Claude Code's names, and the question
-  before replacing it says which mapping it will have.
+**Models.** A routed request goes with the model the agent asked for, so an agent
+keeps choosing its own models wherever the server serves them. Only when the
+server refuses the name is the
+request sent again, once and before the agent sees the refusal, with one of the
+server's own models: the one `--main` names for a request with tools, the agent's
+main work, and the one `--helper` names for a request without, such as a title.
+Each is a word, not a full name: the newest model on the server's list whose name
+contains it, so a newer model the server adds is used without an edit. The
+refusal is believed for an hour, and a session keeps the model it was given.
+
+- **`add <name> <url> --main <word> --helper <word>`** reads the key at a prompt
+  that does not echo, or from stdin with `--key-stdin`, which is refused when
+  stdin is a terminal, where the key would echo as typed. It is never an argument,
+  so it never reaches shell history. It then reads the server's model list with
+  that key and refuses a word that names none of its models, listing them, so a
+  wrong URL or key is caught here; it prints what each word names now. A name that
+  exists is replaced only after a yes (`--yes` skips the question), which is how a
+  key is rotated; with no terminal to ask on, nothing is written. A server on a
+  host another server already has, on any port, is refused. The first `add`
+  creates the plugin's entry, last in the outbound pipeline. A key or a word
+  containing `$` is refused: the config loader would read it as an environment
+  variable.
 - **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
   including an agent that has not run yet. **`reset --agent <agent>`** stops
-  routing it. Either way a session already running stays where it is if it has sent
-  a request to one of the servers since the proxy started, which is how the router
-  knows where it is — unless the proxy has since dropped it from memory, which keeps
-  the most recently used sessions (100 by default), before the router pinned it.
+  routing it. Either way a session already running stays where it is: its pin holds
+  it, kept in `~/.cortex/plugin-state.json` so a proxy restart forgets none.
 - **`remove <name>`** refuses while an agent is routed to the server, and names
   the command that takes the agent off it; it also refuses the last server. A
   session that started on a removed server gets a 503 asking for a new session
-  until the server is added back, or until the proxy restarts, which forgets
-  which server each session started on. That holds while its requests are
-  addressed to a server that is left: one addressed to the removed server's own
-  host is not routed at all, and goes there with the agent's own key. So when
+  until the server is added back. So when
   sessions the proxy is running last sent their inference to the server, `remove`
-  warns how many, in those terms, before it goes ahead. It leaves
-  out the default and `pending:` buckets, which the router never pins, and a session
-  resumed after a restart that has sent no inference since, which no pin survived
-  to hold.
+  warns how many before it goes ahead. It leaves
+  out the default and `pending:` buckets, which the router never pins.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
-  `http`), its model mapping and the agents routed to it, then checks
-  `~/.claude/settings.json`: that `ANTHROPIC_BASE_URL` names one of the servers,
-  without which nothing is routed, and that neither the `model` setting nor a
-  model variable names a model other than Claude's (see
-  [Switching inference servers](../../docs/agents/claude-code.md#switching-inference-servers)).
-  It reads that one file, so it cannot see a project's settings, a file passed
-  with `claude --settings`, or a variable set in the shell. When the router's entry
-  has `on_error: observe`, which records what it would route and routes nothing, or
-  `on_error: off`, which stops it running, the listing says so first, and `use` and
-  `add` say so too.
+  `http`), what its main and helper words name on its list now, read with its own
+  key, and the agents routed to it. A server whose list cannot be read shows its
+  words and why. When the router's entry has `on_error: observe`, which records
+  what it would route and routes nothing, or `on_error: off`, which stops it
+  running, the listing says so first, and `use` and `add` say so too.
 
-Two things the router needs that `agentop server` does not check. It routes only
-requests it can read: a plain `http` request sent through the proxy, or an `https`
-one the TLS bridge decrypts, which needs the bridge on and the port the agent
-connects to in `tls_bridge.ports`, 443 and 8443 unless set. An agent whose base URL
-is `https` on another port, such as `:4000`, reaches the proxy as an opaque
-`CONNECT` tunnel and is never routed, although the check above, which matches by
-host alone, shows ✓ for it; a server on such a port can still be where routed
-requests go. And a server is `scheme://host[:port]` only: a routed request keeps
-its own path, so an agent whose base URL has a path needs that same path on every
-server.
+The router routes only requests it can read: a plain `http` request sent through
+the proxy, or an `https` one the TLS bridge decrypts, which needs the bridge on
+and the port the agent connects to in `tls_bridge.ports`, 443 and 8443 unless set.
+An agent whose provider is `https` on another port, such as `:4000`, reaches the
+proxy as an opaque `CONNECT` tunnel and is never routed.
 
 Every change is written to `~/.cortex/config.yaml`, keeping its comments except
 those on the lines the change replaces or removes, every line of a removed block
@@ -751,8 +739,7 @@ the same way, says the proxy stopped answering, and exits 1. A file someone edit
 while the proxy was reloading is not put back but left as found, with an error
 saying so. If the proxy reports neither a reload nor a refusal within 30 seconds,
 the command exits 1 and leaves the file as written. With no proxy running the file is still written, and the change applies at
-the next start, to every session from then: a proxy that starts knows where no
-session is. Nothing is written unless the result loads as a Cortex config and
+the next start. Nothing is written unless the result loads as a Cortex config and
 passes the router's own rules; what only the running proxy can check, such as
 whether its build includes the router, is what a refused reload reports. A change
 that changes nothing writes nothing. `--config PATH` points every form at another
@@ -918,7 +905,7 @@ agentop is for, and the other three are surfaces you visit and leave.
    default                      1h ago                 8           —           —           —        —
 
   ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-  [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [p] pause  [P] pipeline  [?] keys  [q] quit
+  [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] pipeline  [?] keys  [q] quit
   ```
 
   The two money columns are dropped entirely on a terminal too narrow to show a
@@ -1030,7 +1017,7 @@ agentop is for, and the other three are surfaces you visit and leave.
   cache-read    35% ███████▉          $3.90   claude-haiku-4-5      <$0.01     120 req
   cache-write    8% █▉                $0.98   (other)              <$0.01+       9 req
   input          3% ▊                 $0.39
-   [a] [model] · endpoint · agent   [w] 1h   esc closes
+   [a] [model] · endpoint · agent   [w] 1h   [$] closes
   ```
 
   The tier figures are **modelled, not measured**: the split comes from the rate
@@ -1089,7 +1076,7 @@ agentop is for, and the other three are surfaces you visit and leave.
   100% of rows. Avoided spend now lives per session in the sessions table and per
   series in the `$` breakdown; volume readings live in the Usage pane.
 - **Events**: per-session event table. `c` opens a column picker — a popup with
-  a checkbox and a one-line description per column, since twelve abbreviated
+  a checkbox and a one-line description per column, since thirteen abbreviated
   headers are not self-describing.
 
   The picker is also where sorting lives: `s` orders the table by the column
@@ -1107,47 +1094,59 @@ agentop is for, and the other three are surfaces you visit and leave.
   toward. Sorting never changes the `#` exchange pairing or the per-row token and
   cost figures; it reorders the finished rows only.
 
-  The twelve default columns together need ~168 terminal columns, so the table
+  The thirteen default columns together need ~185 terminal columns, so the table
   drops what does not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
   give way first, while `#` and HOST survive longest. That is what makes HOST
   usable at 80 columns despite being last in display order — it is the column
   most people open this pane for.
 
-  Twelve of the thirteen are on by default: `#` (exchange number, shared by a
-  request and its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS,
-  DURATION, TOKENS, COST, HOST. The thirteenth, BYTES, is opt-in through the
-  picker (`c`), because only an opaque tunnel's close row has a figure for it.
-  On a narrow terminal the low-ranked ones are hidden rather than turned off,
-  so widening the window brings them back without touching the picker.
+  All thirteen are on by default: `#` (exchange number, shared by a request and
+  its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS, DURATION,
+  BYTES, TOKENS, COST, HOST. On a narrow terminal the low-ranked ones are hidden
+  rather than turned off, so widening the window brings them back without
+  touching the picker.
+
+  BYTES was the one opt-in column until recently, on the grounds that only an
+  opaque tunnel's close row had a figure for it. Ordinary rows now carry one too
+  — a request row the body size it forwarded, a response row the body size that
+  came back — so the reason for hiding it is gone and the picker is where you go
+  to turn it *off*. A blank cell means the proxy counted nothing, which is not
+  the same as a body of zero bytes: a body no plugin asked to buffer is relayed
+  unmeasured and reads exactly as a body-less GET does.
 
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
 
-  All twelve columns, on a terminal wide enough for them. Each `#` appears
+  All thirteen columns, on a terminal wide enough for them. Each `#` appears
   twice — once for the request, once for its response — which is how a row
   with no STATUS is read as "still in flight" rather than "failed":
 
   ```
   agentop · ctx-abc-1234…
 
-   #     TIME          DIR   PHASE    ACTION    PLUGIN              METHOD              STATUS   DURATION    TOKENS             COST                 HOST
-   1     14:23:07.41   in    req      allow     jwt-validation                                                                                       weather-agent
-   1     14:23:07.52   in    resp     —         —                                       200      118ms                                               weather-agent
-   2     14:23:07.71   out   req      observe   inference-parser    claude-sonnet-5                                            681,300(−9.9k)   $0.2546(−$0.0037)   api.anthropic.com
-   2     14:23:08.91   out   resp     —         —                   claude-sonnet-5     200      1.20s       412                                     api.anthropic.com
-   3     14:23:09.01   out   req      modify    token-exchange      tools/call                                                                       github-tool-mcp
-   3     14:23:09.10   out   resp     —         —                   tools/call          503      96ms                                                github-tool-mcp
+   #     TIME          DIR   PHASE    ACTION    PLUGIN              METHOD              STATUS   DURATION    BYTES              TOKENS             COST                 HOST
+   1     14:23:07.41   in    req      allow     jwt-validation                                               ↑1.4kB                                                     weather-agent
+   1     14:23:07.52   in    resp     —         —                                       200      118ms       ↓842B                                                      weather-agent
+   2     14:23:07.71   out   req      observe   inference-parser    claude-sonnet-5                          ↑118.6kB                             681,300(−9.9k)   $0.2546(−$0.0037)   api.anthropic.com
+   2     14:23:08.91   out   resp     —         —                   claude-sonnet-5     200      1.20s       ↓12.4kB            412                                     api.anthropic.com
+   3     14:23:09.01   out   req      modify    token-exchange      tools/call                               ↑318B                                                      github-tool-mcp
+   3     14:23:09.10   out   resp     —         —                   tools/call          503      96ms                                                                   github-tool-mcp
 
-  ● connected   2.1 events/sec   [sort: DURATION▼]   [filter: anthropic]
-  [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] filter  [esc] back  ·  → 4 more columns ([c] to choose)  [?] keys  [q] quit
+  ● connected   2.1 events/sec   [/anthropic 2 matches]   [sort: DURATION▼]
+  [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] search  [n/N] next/prev  [esc] back  ·  [?] keys  [q] quit
   ```
+
+  Exchange 3's response has no BYTES figure because there was nothing to count:
+  token-exchange could not reach the IdP, so the 503 is the proxy's own and no
+  upstream body ever arrived.
 
   `—` in ACTION and PLUGIN means no plugin acted on that message; a `tunnel`
   there is an opaque CONNECT, where METHOD is blank because opaque bytes carry
   no request line. The tunnel's STATUS arrives on its `resp` row when it closes,
   with DURATION for how long it stayed open and, in BYTES, what it carried each
-  way. That STATUS is the
+  way — the one row that reports both directions at once, since opaque bytes
+  have no body-and-headers split to separate. That STATUS is the
   CONNECT's own (200, or 502 when the destination could not be reached), never
   the destination's, which travels inside the client's TLS. The TOKENS and COST figures on a request
   row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
@@ -1339,8 +1338,8 @@ Layered on top of all of them:
   (`q` closes the overlay rather than quitting agentop). This is the
   discoverable home for keys the single-line footer has no room for,
   `P` among them. Two exceptions: while a pipeline edit is in flight
-  that overlay is already modal and owns `y`/`N`, and while the filter
-  input is focused `?` is a character you're typing (session IDs and
+  that overlay is already modal and owns `y`/`N`, and while the search
+  prompt is open `?` is a character you're typing (session IDs and
   hosts can contain one). In both cases `?` is inert until the keyboard
   is released.
 
@@ -1363,7 +1362,7 @@ Layered on top of all of them:
 
 | Key | Context | Action |
 |---|---|---|
-| `?` | any (not while filtering or mid-edit) | open the key-help overlay (`?`/`Esc`/`q` closes) |
+| `?` | any (not while searching or mid-edit) | open the key-help overlay (`?`/`Esc`/`q` closes) |
 | `↑ ↓` / `k j`, `b`/`f`, `u`/`d`, `g`/`G` | key help | scroll the overlay |
 | `↑ ↓` / `k j` | picker, list | navigate rows |
 | `Enter` | namespaces | open the namespace |
@@ -1374,16 +1373,17 @@ Layered on top of all of them:
 | `Enter` / `→` / `l` | sessions, events | drill into selection |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
-| `/` | sessions, events | filter (substring match; Enter commits and saves, Esc cancels the edit and saves nothing; clear the box and press Enter to remove a saved filter) |
+| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved |
+| `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
-| `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
+| `s` | events | toggle hiding exchanges no plugin acted on (default: shown; a request and its response are hidden or shown together; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `~/.cortex/agentop-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
-| `$` | every pane except the two pickers, usage and agents | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the agents pane, which is itself the per-agent breakdown |
+| `$` | every pane except the two pickers, usage and agents | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. `$` again closes it; `Esc` does not, so it always backs out of the pane in one press. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the agents pane, which is itself the per-agent breakdown |
 | `a` | while the breakdown is open | cycle the axis: model / endpoint / agent. Not `g`, which is the global "jump to top" |
 | `w` | while the breakdown is open | cycle the span: the band's four — last 1h / today / 7 days / month. Without a cost ledger only the hour is distinct; see [Spans and the cost ledger](#spans-and-the-cost-ledger) |
 | `m` | usage | cycle metric: tokens / requests / errors / latency / cost |
@@ -1479,8 +1479,8 @@ belong to no one agent. A router under `on_error: observe` records what it would
 route and routes nothing, so it gets no column.
 
 `S` on an agent's row opens a picker over the pane, its cursor on what the agent has
-now: *its own choice (not routed)* first, then each server with its host and model
-mapping. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
+now: *its own choice (not routed)* first, then each server with its host and its
+main and helper words. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
 `Ctrl+C` closes it; choosing what the config file already holds writes nothing — the
 file decides, not where the cursor opened, since the route can change while the
 picker is up. The change is
@@ -1495,12 +1495,9 @@ New claude-code sessions → glm. 3 running sessions stay where they are.
 The count is of the agent's sessions this proxy holds in memory whose inference last
 went somewhere other than the new choice (for a switch back to its own choice, to any
 of the servers), and is left out when there are none. A switch moves none of them:
-the router keeps a running session on the server it started on until the proxy
-restarts, unless the proxy dropped the session from memory before the router pinned
-it (see [`agentop server`](#choosing-an-inference-server-agentop-server)). So a
-session resumed after a restart that has sent no inference since is not counted: no
-pin survived the restart, and its next request goes to the new choice. The sessions
-table's `SERVER` column shows where each one is.
+the router keeps a running session on the server it started on, across a proxy
+restart too (see [`agentop server`](#choosing-an-inference-server-agentop-server)).
+The sessions table's `SERVER` column shows where each one is.
 
 When the switch does not go through, a panel over the pane says so, whole, and where
 it left the config file; `Esc`, `q`, `Ctrl+C` or `↵` closes it. A reload the proxy
@@ -1532,20 +1529,15 @@ it has seen, so an agent that has not run yet is routed with `agentop server use
 
 ## Settings
 
-agentop remembers the events-table column selection, the sort order, and the active
-filter in `~/.cortex/agentop-config.yaml`. Columns and the sort are saved when the
-column picker closes with `Esc`/`Enter`/`c` (`q` quits without saving); the filter is
-saved when you commit it with `Enter`. There is no explicit save step.
+agentop remembers the events-table column selection, the sort order, and the usage
+pane's view in `~/.cortex/agentop-config.yaml`. Columns and the sort are saved when the
+column picker closes with `Esc`/`Enter`/`c` (`q` quits without saving). There is no
+explicit save step.
 
-A restored filter is shown in the footer as `[filter: …]` while it is in effect but
-not being edited — otherwise a shortened list would have no explanation on screen.
-Pressing `/` puts the cursor in the restored value so you extend it rather than
-replace it, and `Esc` abandons the edit and puts the previous filter back without
-writing anything. `Enter` is the only key that saves a filter, so clearing one means
-emptying the box and pressing `Enter`. In picker mode the restored filter applies to
-the first session view you open and is then dropped when you go back to the pod list:
-a filter surviving a pod switch reads as data loss, so the active one is cleared while
-the saved one stays on disk for the next start.
+A `/` search is not saved: it lasts until you clear it or leave the connection — except on
+the namespaces and pods pickers and the key help, whose searches last until agentop exits. Older
+agentops filtered with `/` and saved the filter as `filter:`; this one ignores that key
+and drops it the next time it saves.
 
 `--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
 config — that is `~/.cortex/config.yaml`, and `--config` on `agentop service` and
@@ -1563,7 +1555,6 @@ events:
   # Omit sortColumn (or name a column this build does not have) for arrival order.
   sortColumn: DURATION
   sortDesc: true
-filter: github-tool
 ```
 
 ### Schema
@@ -1574,12 +1565,11 @@ filter: github-tool
 | `events.columns[].visible` | bool | required | show that column — an entry without it reads as `false` |
 | `events.sortColumn` | string | unset | sort by this column; unset means arrival order. `#` is not sortable, being arrival order already |
 | `events.sortDesc` | bool | `false` | sort descending; ignored unless `sortColumn` names a sortable column |
-| `filter` | string | empty | the active filter |
 | `usage.metric` | string | `tokens` | usage-pane metric: `tokens`, `requests`, `errors`, `latency` or `cost` |
 | `usage.window` | string | `10m0s` | usage-pane window: `10m0s`, `1h0m0s` or `6h0m0s` |
 | `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may also use `model`, `endpoint`, `session` or `agent` |
 
-List a column only to change it — the twelve are all visible until you hide one, and
+List a column only to change it — the thirteen are all visible until you hide one, and
 an unrecognised name or sort column is ignored. Inside an entry, always write
 `visible:` explicitly: it is optional to the parser but reads as `false`, so
 `- name: COST` on its own hides COST rather than showing it.
@@ -1605,7 +1595,7 @@ Column ids, in display order — the same headers the picker shows:
 | `METHOD` | protocol operation: model name, MCP or A2A method |
 | `STATUS` | HTTP status of the response |
 | `DURATION` | how long the exchange took |
-| `BYTES` | bytes an opaque tunnel carried: ↑ sent, ↓ received — off by default |
+| `BYTES` | body bytes: ↑ request sent, ↓ response received (tunnels show both); blank when the proxy counted nothing |
 | `TOKENS` | tokens used, and what `tool-prune` saved |
 | `COST` | estimated cost, and what `tool-prune` saved |
 | `HOST` | host the message was sent to |
@@ -1632,7 +1622,7 @@ and it persists with your other view settings. An arrow key that happens to reac
 row 0 does not change it — scrolling up to read is navigation, not a preference.
 
 Only the *opening* chooses an end. Every later rebuild — the two-second poll, a
-filter, a column toggle — leaves the cursor where you put it, and the timeline
+search, a column toggle — leaves the cursor where you put it, and the timeline
 follows new events only while you are on the newest row. Under a column sort the
 preference does not apply at all: there "an end" is the largest or smallest value
 rather than the oldest or newest event, so the cursor stays pinned to the event you
@@ -1642,14 +1632,13 @@ were reading instead.
 
 The events table renders no message body, so it does not ask for one. Each fetch
 sends `?view=summary`, which drops the conversation payloads and keeps everything
-the table shows **or its filter searches** — measured at ~163x smaller, and the
+the table shows — measured at ~163x smaller, and the
 difference between a session that opens in milliseconds and one that takes seconds.
 
-The filter is the part worth spelling out, because it is easy to assume otherwise:
-`/some text` still matches completion and A2A message text, and `plugin:<name>`
-still works, because those fields are searched and so are kept. Dropping them would
-have been ~299x instead of ~163x — both about a megabyte for a 1000-event session,
-so the filter is worth far more than the difference.
+The summary keeps completion and A2A message text, which the table does not show,
+because the events search used to match them. It no longer does: `/` matches what a
+pane displays, and a message's text is searched in its detail, which fetches the
+whole event. Dropping those fields as well would be ~299x instead of ~163x.
 
 The consequence is worth knowing: the first `↵` on a row fetches that one event in
 full from `/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary

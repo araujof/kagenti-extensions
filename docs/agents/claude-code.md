@@ -69,8 +69,10 @@ The other four variables are for the tools Claude Code runs. They inherit
 *replaces* its tool's trust store rather than adding to it, which is why they get
 `bundle.crt` and not `ca.crt`: `ca.crt` alone would leave git, curl or Python trusting
 one private CA and nothing else. On macOS, Go tools (`go`, `gh`) ignore `SSL_CERT_FILE`
-and use the keychain; `enable` prints the `security add-trusted-cert` command for that,
-and [Go tools on macOS](../laptop-service.md#go-tools-on-macos-need-the-keychain-not-a-variable)
+and use the keychain, so unless macOS trusts Cortex's CA, Cortex passes them through
+unread; `enable` prints the `security add-trusted-cert` command that has Cortex read
+them, and
+[Go tools on macOS](../laptop-service.md#go-tools-on-macos-are-passed-through-unread)
 explains it.
 
 **The symptom when trust fails.** `agentop observe` shows Claude Code's requests as
@@ -129,48 +131,29 @@ configuration and without restarting anything. A running conversation stays on
 the server it started on, with the exceptions below.
 See [Choosing an inference server](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
 
-That one configuration is:
+Claude Code needs no setting of its own for this beyond going through Cortex.
+Its inference is captured wherever `ANTHROPIC_BASE_URL` points — Anthropic
+itself, or a gateway — and sent to its server. An `https` base URL is captured
+only when the TLS bridge decrypts it, which needs its port in `tls_bridge.ports`,
+443 and 8443 unless set: on another port, such as `:4000`, the request stays an
+opaque `CONNECT` tunnel and is not routed. An `http` base URL reaches the router
+only if Claude Code sends it through the proxy, and `agentop configure claude-code
+enable` sets `HTTPS_PROXY` only. The host Claude Code names must be up even for
+sessions routed elsewhere: the proxy dials the `CONNECT` target before it sees the
+request inside.
 
-- **`ANTHROPIC_BASE_URL` at one of the configured servers.** Cortex routes only
-  requests addressed to a configured server, so Claude Code pointed anywhere else
-  is not routed. An `https` base URL is routed only when the TLS bridge decrypts
-  it, which needs its port in `tls_bridge.ports`, 443 and 8443 unless set. On
-  another port, such as `:4000`, the request stays an opaque `CONNECT` tunnel and
-  is not routed, although `agentop server`'s check, which matches by host alone,
-  shows ✓.
-  An `http` base URL reaches the router only if Claude Code sends it through the
-  proxy, and `agentop configure claude-code enable` sets `HTTPS_PROXY` only. The
-  server named must be up even for sessions routed elsewhere: the proxy dials the
-  `CONNECT` target before it sees the request inside. And a routed request keeps
-  its path, so a base URL with a path needs that same path on every server.
-- **No model settings**, or only Claude's own names in them: the top-level
-  `model` setting and the variables `ANTHROPIC_MODEL`,
-  `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
-  `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`,
-  `ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`. Claude's own names
-  are its aliases — `default`, `best`, `opus`, `opusplan`, `sonnet`, `haiku` and
-  `fable`, with or without a suffix such as `[1m]` — and any model id with `claude`
-  in it. Claude Code then asks for Claude's model names whichever server it talks
-  to — the conversation, auto mode's classifier and the background calls each
-  under its own family's name. A configuration that names one server model for
-  every family leaves nothing to tell them apart, and Claude Code shapes its
-  requests for the model it believes it is using.
-
-`agentop server` checks both. A server that serves other names — GLM behind
-LiteLLM, say — is given its own model for each family:
-`agentop server add glm <url> --opus glm-5.3 --sonnet glm-5.3 --haiku glm-5.3`.
-Claude Code still asks for Claude's names, and each request is sent for the
-server's model of its family, so the conversation, auto mode's classifier and the
-background calls can each have one of their own. A Claude model of no family the
-server maps — `claude-fable-5-1` picked with `/model`, say — is refused with a 400
-naming it, rather than sent to a model nobody chose.
+Claude Code's own model names go first, the conversation's, auto mode's
+classifier's and the background calls' each as it chose them, so `/model` and
+Claude Code's model settings keep working wherever the server serves those names.
+A name the server refuses is sent again, before Claude Code sees the refusal, with
+the server's own model: its `main` for a request with tools, the conversation, and
+its `helper` for one without, such as the title. A GLM server behind LiteLLM, say,
+is added with `agentop server add glm <url> --main glm --helper nemotron`.
 
 The key is the server's: on a routed request the router puts the configured
 server's key in the header Claude Code sent its own in, `X-Api-Key` for
 `ANTHROPIC_API_KEY` and `Authorization` for `ANTHROPIC_AUTH_TOKEN`, so either can
-stay as it is. Those two headers are all it replaces: a credential in any other
-header, such as one set through `ANTHROPIC_CUSTOM_HEADERS`, reaches the server
-unchanged.
+stay as it is.
 
 Claude Code keeps naming the model it asked for, so agentop is where the server
 shows: the sessions table's `SERVER` column names each session's server, the
@@ -178,22 +161,27 @@ events table shows where each request went and, under METHOD, the model it was
 sent for, and the detail pane's `redirected:` and `model:` lines name the host
 and the model Claude Code asked for when they were others.
 
-A session is pinned on the first request the router sees from it, so switch
-**before** `/clear` or a new `claude`, not after. A conversation already running
-when you first route Claude Code keeps the server its requests were going to, even
-if it sent nothing while you ran `agentop server`: Cortex reads which server its
-last request reached from the session's history, and from then on sends it there
-with that server's key. That history is in the proxy's memory, which keeps the most
-recently used sessions (100 by default), so a conversation quiet long enough to be
-dropped before you route Claude Code is taken for a new session. A proxy restart
-forgets the pins and that history, so a running conversation's next request after a
-restart is taken for a new session's and goes to Claude Code's current server; see
-[Known issues](#known-issues). A conversation
-carried to a new session id is pinned as new, to its agent's current server, which
-happens in three ways: Claude Code's continued-in hand-off copies a live
-conversation to a new id; `claude daemon` starts background jobs with
-`--session-id <new> --fork-session --resume <parent>`; and `/clear` with background
-subagents running moves their traffic to the new id.
+A session is pinned on its conversation's opening turn, so switch **before**
+`/clear` or a new `claude`, not after. Claude Code's request says which turn it
+is: an opening turn carries no assistant reply yet. A conversation Cortex did not
+see begin — one already running when you first route Claude Code — is never moved:
+if the session's history shows which server its conversation's last request
+reached, Cortex keeps it there with that server's key, and otherwise it goes where
+Claude Code sends it, unrouted. Claude Code's one-shot requests (the title, auto
+mode's classifier) and its subagents' requests decide nothing; they follow the
+session's pin once there is one. Before then a one-shot goes to the server you
+chose, since a new session's title request can arrive before its opening turn, and
+a subagent's request addressed to one of the servers stays on it. Pins are kept in `~/.cortex/plugin-state.json`,
+so a proxy restart moves no conversation.
+
+A conversation carried to a new session id is one Cortex did not see begin, so it
+goes where Claude Code sends it, and one routed to another server moves back; see
+[Known issues](#known-issues). That happens in three ways: Claude Code's
+continued-in hand-off copies a live conversation to a new id; `claude daemon`
+starts background jobs with `--session-id <new> --fork-session --resume <parent>`;
+and `/clear` with background subagents running moves their traffic to the new id,
+where it goes where Claude Code sends it until the new conversation's opening turn
+pins the session.
 
 Nothing fails over. When a session's server is down its requests fail, with a 502
 from the proxy when the server cannot be reached; route the agent to another
@@ -201,12 +189,7 @@ server, and start a new session there.
 
 **`/model` may list a server's own names.** If Claude Code asks the gateway for its
 model list, that request is routed like the rest, so the picker can show, say,
-`glm-5.3`. Routing is unaffected, since Claude Code keeps sending its own names,
-but choosing such a name there breaks the rule above. A name from that list goes
-to the server as it is — one of its three models, or any other that is not a
-Claude name and has no family word — and the server answers for it. If Claude
-Code saves that choice as `model` in `~/.claude/settings.json`, `agentop server`
-reports it.
+`glm-5.3`. A name chosen there goes to the server as it is, like any other.
 
 ## Verified depth
 
@@ -228,10 +211,14 @@ Sonnet 5 and Claude Haiku 4.5. This was exercised:
 
 Not exercised: Linux; `install.sh --claude-code`; Claude Code talking to
 `api.anthropic.com` directly rather than through a gateway; Amazon Bedrock and Google
-Vertex AI; routing through `inference-router` with a live Claude Code, which so far is
-covered by unit and listener tests, by scratch-`HOME` runs of `agentop server`
-against a fake stats server, and by `S` driven in agentop against a second Cortex
-whose servers do not resolve.
+Vertex AI.
+
+Routing through `inference-router` was tested live on 2026-10-09 with Claude Code
+2.1.295 (`claude --bare -p`, an API key and no `ANTHROPIC_BASE_URL`), through a scratch
+Cortex: its requests to `api.anthropic.com` were captured and sent to the server. On a
+GLM server `claude-opus-5-5` was refused once and sent again with the server's main
+model, then sent with it from the start; on a server that serves Claude's names it went
+as Claude Code asked. A file was written and read back on each.
 
 ## Known issues
 
@@ -244,14 +231,13 @@ whose servers do not resolve.
 - **`disable` discards hand-edits.** If you change one of the seven keys by hand after
   `enable`, `disable` still puts back the value from before `enable`, without a warning
   ([#1289](https://github.com/rossoctl/cortex/issues/1289)).
-- **A proxy restart can move a running conversation to another server.** Cortex
-  keeps a conversation on its server by a pin and by the session's history, and
-  both live in the proxy's memory; the session archive on disk is not read for it.
-  After a restart, a conversation's next request looks like a new session's and
-  goes to the server Claude Code is routed to now, so one started on a different
-  server moves, mid-conversation. To keep it where it was, route Claude Code back
-  to that server with `agentop server use <name> --agent claude-code` before
-  continuing it, and switch again once it has sent a request, which pins it there.
+- **A conversation moved to a new session id leaves its server.** Cortex keeps a
+  conversation on its server by its session id's pin, and Claude Code's
+  continued-in hand-off and `claude daemon`'s forked background jobs carry a
+  conversation to a new id, which no pin follows. Cortex then sees a conversation
+  it did not see begin and sends it where Claude Code sends it, so one routed to
+  another server moves back to the server `ANTHROPIC_BASE_URL` names,
+  mid-conversation.
 - **A continued conversation can show twice.** Claude Code sometimes moves a live
   conversation to a new session id. agentop then shows two rows with the same title, and
   the older row keeps the copied title. Cortex does not yet read Claude Code's record of

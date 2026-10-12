@@ -78,7 +78,7 @@ func TestServerPicker_OpensOnTheCurrentValue(t *testing.T) {
 	}
 	view := m.View()
 	for _, want := range []string{"New claude-code sessions use", ownChoiceEntry, "ete.example.com", "glm.example.com:8443",
-		"uses Claude Code's names", "[↵] choose", "[esc] cancel"} {
+		"main opus · helper haiku", "[↵] choose", "[esc] cancel"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the picker does not show %q:\n%s", want, view)
 		}
@@ -224,9 +224,9 @@ func TestServerPicker_TheFlashCountsTheRunningSessionsThatStay(t *testing.T) {
 }
 
 // A session resumed after a restart that has sent no inference since shows its history's host,
-// but no pin holds it there: its next request is decided as a new one's and goes to the new
-// choice. So it is not among those that stay — for a switch to a server, or back to own choice.
-func TestServerPicker_TheCountLeavesOutASessionNoPinHolds(t *testing.T) {
+// and its pin survived the restart in the plugin store, so it stays where it is like any other —
+// for a switch to a server, or back to own choice.
+func TestServerPicker_TheCountIncludesASessionResumedAfterARestart(t *testing.T) {
 	for _, server := range []string{"glm", ""} {
 		m := serverModel(t, newFakeProxy(t, false))
 		m.sessions = []session.SessionSummary{
@@ -234,8 +234,8 @@ func TestServerPicker_TheCountLeavesOutASessionNoPinHolds(t *testing.T) {
 			{ID: "resumed", Agent: "claude-code", InferenceHost: "ete.example.com", InferenceHostFromHistory: true},
 		}
 		switchTo(t, m, "claude-code/2.1.270", server)
-		if !strings.Contains(m.flash, " 1 running session stays where it is.") {
-			t.Errorf("switch to %q: flash %q, want the one session a pin holds", server, m.flash)
+		if !strings.Contains(m.flash, " 2 running sessions stay where they are.") {
+			t.Errorf("switch to %q: flash %q, want both sessions their pins hold", server, m.flash)
 		}
 	}
 }
@@ -696,8 +696,8 @@ func TestServerPicker_EnterOnTheEntryItOpenedOnWritesWhatChangedUnderneath(t *te
 // each is sanitised where it is drawn, as the SERVER cells are. The same for a mapping's model
 // names and for the errors a switch reports.
 func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
-	const raw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete"},` +
-		`"g\u001b]0;pwned\u0007lm":{"url":"https://glm.example.com:8443","key":"sk-glm","opus":"m\u001b[2Jx","sonnet":"s","haiku":"h"}},` +
+	const raw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete","main":"opus","helper":"haiku"},` +
+		`"g\u001b]0;pwned\u0007lm":{"url":"https://glm.example.com:8443","key":"sk-glm","main":"m\u001b[2Jx","helper":"h"}},` +
 		`"agents":{"claude-code":"ete"}}`
 	m := serverModel(t, newFakeProxy(t, false))
 	m.pipeline = routerPipeline(raw)

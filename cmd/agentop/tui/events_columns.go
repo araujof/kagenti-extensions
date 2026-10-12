@@ -92,6 +92,9 @@ type eventColumn struct {
 	// render below, so a cell function cannot align itself in a way its header does
 	// not know about. That is what went wrong — see rightAlign.
 	cell func(cellContext) string
+	// full is the cell with unlimited room, for a column whose cell cuts itself to the
+	// column (PLUGIN, METHOD, HOST); nil where the cell is already whole. Search reads it.
+	full func(cellContext) string
 	// rightAlign presses this column's values, and its heading, against the column's
 	// right edge. For the numeric columns: figures are compared down a column, which
 	// needs their last digits in one place.
@@ -246,6 +249,7 @@ var eventColumns = []eventColumn{
 			p := c.plugin
 			return truncStr(p, c.width)
 		},
+		full:    func(c cellContext) string { return c.plugin },
 		sortKey: func(c cellContext) sortValue { return strKey(c.plugin) }},
 	// methodColWidth rather than 22: the widest realistic value is a model name
 	// ("claude-opus-5"), and the columns freed pay for splitting TOKENS and COST
@@ -253,6 +257,7 @@ var eventColumns = []eventColumn{
 	{id: colMethod, width: methodColWidth, defaultOn: true, keep: keepNormal,
 		desc: "protocol operation: model name, MCP or A2A method",
 		cell: func(c cellContext) string { return eventMethod(*c.row.event) },
+		full: func(c cellContext) string { return eventMethodValue(*c.row.event) },
 		// eventMethodValue, not eventMethod: the latter is the former truncated to
 		// methodColWidth, and two long model names sharing a prefix must not tie.
 		sortKey: func(c cellContext) sortValue { return strKey(eventMethodValue(*c.row.event)) }},
@@ -276,11 +281,20 @@ var eventColumns = []eventColumn{
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
 		sortKey: durationSortKey},
-	// Off by default: only an opaque tunnel's close row has a figure, so a column on for
-	// everyone would spend columns of every terminal on a mostly blank one. The total is
-	// the sort key, so a descending sort finds the tunnel that carried the most.
-	{id: colBytes, width: 17, defaultOn: false, keep: keepLow, rightAlign: true,
-		desc:    "bytes an opaque tunnel carried: ↑ sent, ↓ received",
+	// On by default since #1309. It was off because only an opaque tunnel's close row had
+	// a figure, so the column cost every terminal 17 columns of mostly blank — and an
+	// operator asking how big the request that overran a model's context window was found
+	// it blank on every row and resorted to measuring the yanked event's JSON, which is
+	// not the body. Ordinary request and response rows now carry a figure, so the reason
+	// for opt-in is gone.
+	//
+	// 17 is the tunnel close row's pair at its widest ("↑999.9GB ↓999.9GB"); an ordinary
+	// row reports one side and is strictly narrower. keepLow stays — it is still the
+	// first column a narrow terminal drops. The total is the sort key, which is also
+	// right for a one-sided row, so a descending sort finds the biggest payload either
+	// way.
+	{id: colBytes, width: 17, defaultOn: true, keep: keepLow, rightAlign: true,
+		desc:    "body bytes: ↑ request sent, ↓ response received (tunnels show both)",
 		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},
 	// 18: sized for a SEVEN-digit prompt with a counted saving, "1,048,576(−12,300)".
@@ -317,6 +331,7 @@ var eventColumns = []eventColumn{
 	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
 		desc: "host the message was sent to",
 		cell: func(c cellContext) string { return truncStr(c.row.event.Host, c.width) },
+		full: func(c cellContext) string { return c.row.event.Host },
 		// hostOnly, so "api.example.com:443" and "api.example.com" sort together
 		// rather than the port deciding. Full host, not the truncated cell, for the
 		// same reason PLUGIN uses the full name.
@@ -495,10 +510,9 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 // cannot widen it — the same reason every declared width leaves room for one (see
 // sortGlyphAsc).
 //
-// ctxs should be every row of the session, not only those the filter keeps. Measured over
-// the visible rows, a filter typed one letter at a time would resize the columns on every
-// keystroke, and hiding the one row with a saving would narrow TOKENS until the filter was
-// cleared.
+// ctxs should be every row of the session, not only those hideInactive keeps. Measured over
+// the visible rows, hiding the one row with a saving would narrow TOKENS until the rows were
+// shown again.
 func measureColumns(cols []eventColumn, ctxs []cellContext) (widths map[eventColumnID]int,
 	cells map[eventColumnID][]string) {
 	widths = make(map[eventColumnID]int)
@@ -542,6 +556,41 @@ func sizedColumns(cols []eventColumn, widths map[eventColumnID]int) []eventColum
 func layoutColumns(sel map[eventColumnID]bool, widths map[eventColumnID]int,
 	termWidth int) (fitted []eventColumn, dropped int) {
 	return fitColumns(sizedColumns(selectedColumns(sel), widths), termWidth)
+}
+
+// whole is c's cell with unlimited room.
+func (c eventColumn) whole(cc cellContext) string {
+	if c.full != nil {
+		return c.full(cc)
+	}
+	return c.cell(cc)
+}
+
+// droppedColumns is the selected columns the terminal had no room for: in selected and not
+// in shown.
+func droppedColumns(selected, shown []eventColumn) []eventColumn {
+	var out []eventColumn
+	for _, c := range selected {
+		if !slices.ContainsFunc(shown, func(s eventColumn) bool { return s.id == c.id }) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// eventSearchRow is one row's full text: each shown column that cuts its cell, in full, and
+// each dropped column's whole cell.
+func eventSearchRow(shown, dropped []eventColumn, cc cellContext) table.SearchRow {
+	sr := table.SearchRow{Cells: make([]string, len(shown))}
+	for i, c := range shown {
+		if c.full != nil {
+			sr.Cells[i] = c.full(cc)
+		}
+	}
+	for _, c := range dropped {
+		sr.Dropped = append(sr.Dropped, c.whole(cc))
+	}
+	return sr
 }
 
 // cellPadding is what bubbles adds to every cell's declared width.

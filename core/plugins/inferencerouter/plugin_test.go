@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -28,8 +29,8 @@ const (
 func routerConfig(agents string) string {
 	return `{
 		"servers": {
-			"ete": {"url": "https://ete.example.com", "key": "ete-key"},
-			"glm": {"url": "https://glm.example.com:8443", "key": "glm-key"}
+			"ete": {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "https://glm.example.com:8443", "key": "glm-key", "main": "opus", "helper": "haiku"}
 		},
 		"agents": {` + agents + `}
 	}`
@@ -59,7 +60,7 @@ func newStore(t *testing.T) *memstore.Store {
 
 // request is a context the forward proxy would build for a decrypted request to
 // host from an agent with User-Agent ua, in session (none when ""), carrying the
-// client's own key as a bearer token.
+// client's own key as a bearer token, that inference-parser read as inference.
 func request(store pipeline.SharedStore, host, ua, session string) *pipeline.Context {
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
@@ -75,6 +76,7 @@ func request(store pipeline.SharedStore, host, ua, session string) *pipeline.Con
 	if session != "" {
 		pctx.Session = &pipeline.SessionView{ID: session}
 	}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{}
 	pctx.ResolveClient()
 	pctx.MarkRedirectable()
 	return pctx
@@ -147,10 +149,14 @@ func pinOf(t *testing.T, store *memstore.Store, session string) (string, bool) {
 	return pn.server, true
 }
 
+// A request to a host that is no server, and that no parser read as inference, is
+// not the router's: it goes where the agent sent it. (An inference request there is
+// captured; see models_test.go.)
 func TestRouter_IgnoresAHostThatIsNoServer(t *testing.T) {
 	store := newStore(t)
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+	pctx.Extensions.Inference = nil
 	run(t, p, pctx)
 
 	assertUntouched(t, pctx, "api.anthropic.com")
@@ -222,7 +228,7 @@ func TestRouter_RoutesAListedAgentsSessionToItsServer(t *testing.T) {
 func TestRouter_RoutesEveryPathOnAServersHost(t *testing.T) {
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	pctx := request(newStore(t), eteHost, claudeUA, "s1")
-	pctx.Method, pctx.Path = http.MethodGet, "/v1/models"
+	pctx.Method, pctx.Path, pctx.Extensions.Inference = http.MethodGet, "/v1/models", nil
 	run(t, p, pctx)
 
 	assertRouted(t, pctx, glmHost, "glm-key")
@@ -515,8 +521,8 @@ func TestConfigure_WarnsOnPlainHTTPToAnotherMachine(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	err := New().Configure(json.RawMessage(`{"servers": {
-		"lan": {"url": "http://10.0.0.5:4000", "key": "k"},
-		"local": {"url": "http://localhost:4000", "key": "k"}}}`))
+		"lan": {"url": "http://10.0.0.5:4000", "key": "k", "main": "opus", "helper": "haiku"},
+		"local": {"url": "http://localhost:4000", "key": "k", "main": "opus", "helper": "haiku"}}}`))
 	if err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -565,6 +571,15 @@ func sent(host, ua string) pipeline.SessionEvent {
 	}
 }
 
+// recorded is the request row the forward proxy records for pctx once the pipeline
+// has run: where it went, and the parse it carried.
+func recorded(pctx *pipeline.Context) pipeline.SessionEvent {
+	return pipeline.SessionEvent{
+		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: pctx.Host,
+		Inference: pctx.Extensions.Inference, Client: pipeline.ParseUserAgent(pctx.Headers.Get("User-Agent")),
+	}
+}
+
 // withHistory gives pctx's session the events the store recorded before it.
 func withHistory(pctx *pipeline.Context, events ...pipeline.SessionEvent) *pipeline.Context {
 	pctx.Session.Events = events
@@ -596,28 +611,41 @@ func TestRouter_ARunningSessionTheRouterHasNotSeenStaysWhereItWent(t *testing.T)
 	assertRecord(t, next, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "pin": pinExisting})
 }
 
-// Only a request to a server's host says which server a session is on: the router
-// never routes a request to any other host, so one there says nothing about where
-// the session lives. OpenCode switches providers inside a session, so its first
-// requests can go to Zen or another provider before it addresses a server; that
-// session is new to the router and goes to its agent's server, with the server's
-// key. Treating it as not routed kept the client's own key on the server for the
-// session's whole life, a 401 on every request.
-func TestRouter_AnEarlierRequestToAHostNoServerHasIsNoEvidence(t *testing.T) {
-	for _, tc := range []struct{ name, ua, host string }{
-		{"opencode after another provider", opencodeUA, "opencode.ai"},
-		{"claude-code after api.anthropic.com", claudeUA, "api.anthropic.com"},
+// An earlier request to a host that is no server says where a session ran when it
+// is one the router captures. Recorded where the agent sent it, it was made while
+// the router was not routing the agent, so the session ran unrouted and stays so:
+// switching an agent onto a server must not move a conversation already running on
+// its provider. A request the router captured is recorded under its server's host,
+// so the session is on that server. A row naming no method or path, from before
+// rows carried them, is no evidence either way.
+func TestRouter_AnEarlierRequestToAnotherHost(t *testing.T) {
+	zen := func(requestedHost, host string) pipeline.SessionEvent {
+		e := sent(host, opencodeUA)
+		e.HTTPMethod, e.HTTPPath, e.RequestedHost = http.MethodPost, "/zen/v1/chat/completions", requestedHost
+		return e
+	}
+	for _, tc := range []struct {
+		name     string
+		earlier  pipeline.SessionEvent
+		wantHost string
+		wantPin  string
+	}{
+		{"ran unrouted on its provider", zen("", "opencode.ai"), "opencode.ai", ""},
+		{"captured to a server", zen("opencode.ai", "ete.example.com"), eteHost, "ete"},
+		{"a row with no method or path", sent("opencode.ai", opencodeUA), glmHost, "glm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			p := build(t, routerConfig(`"claude-code": "glm", "opencode": "glm"`))
-			pctx := withHistory(request(store, eteHost, tc.ua, "running"), sent(tc.host, tc.ua))
+			p := build(t, routerConfig(`"opencode": "glm"`))
+			pctx := withHistory(request(store, "opencode.ai", opencodeUA, "running"), tc.earlier)
+			pctx.Path = "/zen/v1/chat/completions"
 			run(t, p, pctx)
 
-			assertRouted(t, pctx, glmHost, "glm-key")
-			assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNew})
-			if pin, _ := pinOf(t, store, "running"); pin != "glm" {
-				t.Errorf("pin = %q, want glm", pin)
+			if pctx.Host != tc.wantHost {
+				t.Errorf("Host = %q, want %q", pctx.Host, tc.wantHost)
+			}
+			if pin, ok := pinOf(t, store, "running"); !ok || pin != tc.wantPin {
+				t.Errorf("pin = %q, %v; want %q", pin, ok, tc.wantPin)
 			}
 		})
 	}
@@ -747,4 +775,177 @@ func TestRouter_APinHoldsOnlyForTheAgentItWasMadeFor(t *testing.T) {
 	run(t, both, owner)
 	assertRouted(t, owner, glmHost, "glm-key")
 	assertRecord(t, owner, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinExisting})
+}
+
+// claudeCode gives pctx inference-parser's reading of a Claude Code request: role is
+// the caller its system prompt declares, tools how many tools it carries, and turns
+// how many assistant turns came earlier in its conversation.
+func claudeCode(pctx *pipeline.Context, role pipeline.AgentRole, tools, turns int) *pipeline.Context {
+	ext := &pipeline.InferenceExtension{Model: "claude-opus-5-5", AgentRole: role, Messages: []pipeline.InferenceMessage{
+		{Role: "system", Content: "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"},
+		{Role: "user", Content: "hello"},
+	}}
+	for range turns {
+		ext.Messages = append(ext.Messages,
+			pipeline.InferenceMessage{Role: "assistant", Content: "Hi."},
+			pipeline.InferenceMessage{Role: "user", Content: "go on"})
+	}
+	for i := range tools {
+		ext.Tools = append(ext.Tools, pipeline.InferenceTool{Name: fmt.Sprintf("Tool%d", i)})
+	}
+	pctx.Extensions.Inference = ext
+	return pctx
+}
+
+// The live case behind this rule: a Claude Code conversation running on ete before
+// the router knew it — started before routing was set up, or forgotten by a restart —
+// was taken for a new session, sent to glm and held there, 298 assistant turns in.
+// Its request carries those turns, so the router knows it did not see the
+// conversation begin, and leaves it where Claude Code sent it.
+func TestRouter_AClaudeCodeConversationItDidNotSeeBeginIsNotRouted(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"claude-code": "glm"`))
+	pctx := claudeCode(request(store, eteHost, claudeUA, "running"), pipeline.AgentRoleMain, 26, 3)
+	run(t, p, pctx)
+
+	assertUntouched(t, pctx, eteHost)
+	assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", map[string]string{"pin": pinNew, "turn": turnContinuation})
+	if pin, pinned := pinOf(t, store, "running"); !pinned || pin != "" {
+		t.Errorf("pin = %q (pinned %v), want the session pinned as not routed", pin, pinned)
+	}
+
+	// Pinned now: the session stays unrouted whatever its later requests look like.
+	next := claudeCode(request(store, eteHost, claudeUA, "running"), pipeline.AgentRoleMain, 26, 4)
+	run(t, p, next)
+	assertUntouched(t, next, eteHost)
+	assertRecord(t, next, pipeline.ActionSkip, "not_routed", map[string]string{"pin": pinExisting})
+}
+
+// A conversation's opening turn is the beginning the router assigns a server at.
+func TestRouter_AClaudeCodeOpeningTurnGoesToItsAgentsServer(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"claude-code": "glm"`))
+	pctx := claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 26, 0)
+	run(t, p, pctx)
+
+	assertRouted(t, pctx, glmHost, "glm-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNew})
+	if pin, _ := pinOf(t, store, "s1"); pin != "glm" {
+		t.Errorf("pin = %q, want glm", pin)
+	}
+}
+
+// Claude Code's one-shots — the title request, auto mode's classifier, the
+// permission monitor — carry no tools and come at any point in a conversation, so
+// none says whether the session began now, and none decides: the session stays
+// unpinned for its conversation's next request. Each goes to its agent's server all
+// the same. A conversation already running, which a one-shot cannot vouch for, has
+// history, and history is read first; with none the session is new. The live case:
+// left where Claude Code sent it, a new session's title request — always its first
+// request — reached the provider the agent was routed away from.
+func TestRouter_AClaudeCodeOneShotGoesToItsAgentsServer(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"claude-code": "glm"`))
+	pctx := claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 0, 0)
+	run(t, p, pctx)
+
+	assertRouted(t, pctx, glmHost, "glm-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNone})
+	if _, pinned := pinOf(t, store, "s1"); pinned {
+		t.Error("a one-shot pinned the session")
+	}
+}
+
+// A subagent's requests are its own conversation's, not the session's, and one can
+// be running already: a /clear moves Claude Code's background subagents onto the new
+// session id mid-task. None says whether the session began now, so none decides: it
+// goes where Claude Code sent it, and the session stays unpinned for its
+// conversation's next request.
+func TestRouter_AClaudeCodeSubagentRequestDecidesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		role         pipeline.AgentRole
+		tools, turns int
+	}{
+		{"a subagent's first turn", pipeline.AgentRoleSubagent, 11, 0},
+		{"a subagent mid-task", pipeline.AgentRoleSubagent, 11, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			p := build(t, routerConfig(`"claude-code": "glm"`))
+			pctx := claudeCode(request(store, eteHost, claudeUA, "s1"), tc.role, tc.tools, tc.turns)
+			run(t, p, pctx)
+
+			assertUntouched(t, pctx, eteHost)
+			assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", map[string]string{"pin": pinNone, "turn": turnAside})
+			if _, pinned := pinOf(t, store, "s1"); pinned {
+				t.Error("a side request pinned the session")
+			}
+		})
+	}
+}
+
+// After a one-shot, the conversation's own next request decides: an opening turn
+// starts the session on its agent's server, a continuation leaves it unrouted. The
+// one-shot went to the agent's server either way, and its row there is no history.
+// The opening turn is the live sequence: a new session's title request, then its
+// first prompt.
+func TestRouter_AfterASideRequestTheConversationDecides(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		turns int
+		host  string // where the conversation's request goes
+		pin   string
+	}{
+		{"an opening turn", 0, glmHost, "glm"},
+		{"a continuation", 2, eteHost, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			p := build(t, routerConfig(`"claude-code": "glm"`))
+			side := claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 0, 0)
+			run(t, p, side)
+			assertRouted(t, side, glmHost, "glm-key")
+			// The forward proxy records the side request's row, which the next request sees.
+			pctx := withHistory(claudeCode(request(store, eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 26, tc.turns),
+				recorded(side))
+			run(t, p, pctx)
+
+			if pctx.Host != tc.host {
+				t.Errorf("Host = %q, want %q", pctx.Host, tc.host)
+			}
+			if pin, pinned := pinOf(t, store, "s1"); !pinned || pin != tc.pin {
+				t.Errorf("pin = %q (pinned %v), want %q", pin, pinned, tc.pin)
+			}
+		})
+	}
+}
+
+// The request's turn is read only where the request states Claude Code's role. Any
+// other agent's earlier turns may have gone to another provider — OpenCode starts on
+// Zen and addresses a server later — so its first request to a server's host is
+// where its use of the servers begins, and it goes to its agent's server as before.
+func TestRouter_ARequestThatStatesNoRoleIsDecidedAsBefore(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"opencode": "glm"`))
+	pctx := claudeCode(request(store, eteHost, opencodeUA, "s1"), "", 12, 5)
+	run(t, p, pctx)
+
+	assertRouted(t, pctx, glmHost, "glm-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNew})
+}
+
+// Where the session's recorded history says which server it is on, that is evidence
+// and outranks the request: the continuation follows its history to glm.
+func TestRouter_RecordedHistoryOutranksTheRequestsTurn(t *testing.T) {
+	store := newStore(t)
+	p := build(t, routerConfig(`"claude-code": "glm"`))
+	pctx := withHistory(claudeCode(request(store, eteHost, claudeUA, "running"), pipeline.AgentRoleMain, 26, 3),
+		sent(glmHost, claudeUA))
+	run(t, p, pctx)
+
+	assertRouted(t, pctx, glmHost, "glm-key")
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Errorf("pin = %q, want glm", pin)
+	}
 }

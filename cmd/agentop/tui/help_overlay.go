@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // keyBinding is one row in the help overlay: the key(s) and what they do.
@@ -65,6 +66,8 @@ var anywhereKeys = keyGroup{
 	title: anywhereTitle,
 	bindings: []keyBinding{
 		{"?", "this help"},
+		{"/", "search what this pane shows (enter keeps, esc cancels)"},
+		{"n / N", "next / previous match"},
 		{"p", "pause / resume the stream"},
 		{"q · ctrl+c", "quit"},
 	},
@@ -109,13 +112,16 @@ var helpNavKeys = keyGroup{
 // spendDrawerKeys are live only while the spend drawer is open. Their own
 // section, because listing `a` and `w` beside the keys that work everywhere
 // taught two bindings that do nothing most of the time.
+//
+// No `$` row: `$` both opens and closes the drawer, and it is already listed as a jump
+// target. A second row would advertise one key for two things, which
+// TestGlobalKeys_AdvertiseNoKeyTwice refuses, so the purpose line says it closes.
 var spendDrawerKeys = keyGroup{
 	title:   spendDrawerTitle,
-	purpose: "opened with $ over the spend band; a and w are live only while it is up",
+	purpose: "opened and closed with $ over the spend band; a and w are live only while it is up",
 	bindings: []keyBinding{
 		{"a", "cycle the axis"},
 		{"w", "cycle the span (the band's four)"},
-		{"$ · esc", "close"},
 	},
 	// The scope, stated where there is always room for it — and THIS IS STILL THE ONLY PLACE
 	// IT IS SPELLED OUT. The sessions footer used to carry it as a notice, and the pane title
@@ -299,7 +305,6 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
-			{"/", "filter"},
 			{"X", "clear all history, in memory and on disk (asks first; the cost ledger is kept)"},
 			{"esc", "back to the agents picker, else pods picker"},
 		},
@@ -310,7 +315,6 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "event detail"},
-			{"/", "filter"},
 			{"s", "toggle passthru/skip rows"},
 			{"c", "column picker (checkboxes + descriptions)"},
 			{"c then s", "sort by a column: desc → asc → chronological"},
@@ -780,7 +784,7 @@ const helpPadX = 2
 //
 // Returns the panel only — placement over the underlying view is the
 // caller's job (see overlayCenter).
-func renderHelpOverlay(vp viewport.Model, width, height int) string {
+func renderHelpOverlay(vp viewport.Model, width, height int, prompt, status string) string {
 	// Scroll affordance: only shown when the body doesn't fit, so a
 	// terminal tall enough for the whole reference stays uncluttered.
 	// Degrades to the bare close hint when the viewport is too narrow for
@@ -794,8 +798,20 @@ func renderHelpOverlay(vp viewport.Model, width, height int) string {
 			hint = annotated
 		}
 	}
+	// The overlay is drawn over the footer, so its search is drawn here: the prompt in place
+	// of the hint while it is open, else the search's status ahead of the hint.
+	switch {
+	case prompt != "":
+		hint = prompt
+	case status != "":
+		hint = status + "  ·  " + hint
+	}
 	if lipgloss.Width(hint) > vp.Width {
-		hint = truncToWidth(hint, vp.Width)
+		if prompt != "" {
+			hint = ansi.Truncate(hint, vp.Width, "")
+		} else {
+			hint = truncToWidth(hint, vp.Width)
+		}
 	}
 
 	inner := vp.View() + "\n" + styleHint.Render(hint)

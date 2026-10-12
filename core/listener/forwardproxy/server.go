@@ -24,6 +24,7 @@ import (
 
 	"errors"
 	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
 	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/listener/internal/sseframe"
@@ -157,9 +158,9 @@ type Server struct {
 	bridgeAttempts  atomic.Uint64
 	bridgedRequests atomic.Uint64
 
-	// caNotBefore is parsed on first use and never changes for the process.
+	// caNotBeforeAt is parsed on first use and never changes for the process.
 	caNotBeforeOnce sync.Once
-	caNotBeforeStr  string
+	caNotBeforeAt   time.Time
 	// caFingerprint is likewise derived once; the CA is fixed for the process.
 	caFingerprintOnce sync.Once
 	caFingerprintStr  string
@@ -434,6 +435,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		if scheme, host, ok := pctx.RedirectTarget(); ok {
 			pctx.Scheme, pctx.Host = scheme, host
 			r.URL.Scheme, r.URL.Host, r.Host = scheme, host, host
+			// The path, when the plugin gave one, from the copy SetRedirectPath
+			// validated, for the reason RedirectTarget is read rather than Host. The
+			// query string is the client's and stays.
+			if path, ok := pctx.RedirectPath(); ok {
+				pctx.Path = path
+				r.URL.Path, r.URL.RawPath = path, ""
+			}
 		}
 
 		if action.Type == pipeline.Reject {
@@ -477,76 +485,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// x-api-key). Content-Length / Content-Encoding are managed by the
 	// body-rewrite block below and the transport, so leave them untouched.
 	// Mirrors reverseproxy's forwarded-request header sync.
-	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
-	}
-	for k := range r.Header {
-		if skip(k) {
-			continue
-		}
-		if _, ok := pctx.Headers[k]; !ok {
-			r.Header.Del(k) // plugin removed it
-		}
-	}
-	for k, vv := range pctx.Headers {
-		if skip(k) {
-			continue
-		}
-		if len(vv) == 0 {
-			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
-			continue
-		}
-		r.Header[k] = append([]string(nil), vv...) // set / overwrite
-	}
+	syncHeaders(r, pctx.Headers)
 
 	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
-		r.Body = io.NopCloser(bytes.NewReader(pctx.Body))
-		r.ContentLength = int64(len(pctx.Body))
-		r.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.Body)))
-		r.Header.Del("Content-Encoding")
+		setBody(r, pctx.Body)
 	}
 
-	// Remove hop-by-hop headers
-	r.Header.Del("Connection")
-	r.Header.Del("Keep-Alive")
-	r.Header.Del("Proxy-Authenticate")
-	r.Header.Del("Proxy-Authorization")
-	r.Header.Del("Proxy-Connection")
-	r.Header.Del("TE")
-	r.Header.Del("Trailer")
-	r.Header.Del("Transfer-Encoding")
-	r.Header.Del("Upgrade")
-
-	// Strip the client's Accept-Encoding so Go's transport negotiates content
-	// coding on its own behalf.
-	//
-	// net/http auto-decompresses a gzip response ONLY when the transport added
-	// Accept-Encoding itself. Forwarding the caller's header suppresses that:
-	// resp.Body then yields raw compressed bytes. Every body-reading plugin
-	// sees binary — the SSE re-framer finds no "data:" lines and reports a
-	// clean EOF on its first ReadFrame, so a gzipped text/event-stream relayed
-	// zero frames downstream and finalized aggregating plugins on empty state.
-	// The symptom is silent in both directions: the client sees a stream that
-	// opens and dies, and token telemetry reads as absent rather than wrong.
-	//
-	// This proxy re-frames and inspects bodies, so it cannot be encoding-blind.
-	// Taking ownership of the negotiation means the transport hands us
-	// plaintext and strips Content-Encoding from resp.Header, keeping the
-	// bytes we relay consistent with the headers we forward.
-	//
-	// Gated on a plugin actually inspecting the response body, mirroring the
-	// reverse proxy (see listener/reverseproxy: same reasoning, same
-	// condition). When nothing reads the body this listener is a pure
-	// pass-through, so leaving the client's header intact avoids forcing an
-	// upstream→client decompression that buys nothing — which matters for a
-	// remote backend or a large non-streamed body, and is harmless either way
-	// on a loopback sidecar hop.
-	if !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders()) {
-		r.Header.Del("Accept-Encoding")
-	}
+	ownEncoding := !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders())
+	stripForUpstream(r, ownEncoding)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
@@ -556,6 +505,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		client = s.TLSBridge.Upstream
 	}
 	resp, err := client.Do(r)
+	if err == nil && !skipped {
+		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
+	}
 	if err != nil {
 		// A 502 with the cause, or a 499 when the client hung up first — which,
 		// with no timeout on this client, is how a hung upstream usually ends.
@@ -586,6 +538,23 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Response phase: populate pctx and run plugins in reverse order.
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
+
+	// BytesDown for the response row (#1309), counted HERE and nowhere else. Every
+	// arm below reads this one body — buffered whole, re-framed as SSE, relayed
+	// chunk by chunk, or copied straight through at the bottom of this function —
+	// so one wrapper covers all of them, and the arms that go on to replace
+	// resp.Body with a bytes.Reader over what they already read cannot
+	// double-count. Counted at the wire and not per arm because the SSE arm's
+	// frames have their `data: ` framing stripped by then, which is 32 bytes short
+	// of what extproc reports for the same response: see bodycount.
+	//
+	// What the wrapper does NOT reach is the final io.Copy at the bottom of this
+	// function — the arm a response takes when nothing buffered it and it was not
+	// streamed. The row is recorded above that copy, so those bytes are counted
+	// after the figure has been read and the row reports zero, which agentop
+	// renders blank rather than wrong. reverseproxy's unbuffered relay has the same
+	// shape for the same reason.
+	resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
 	// Stream the upstream body straight through to the caller. Falls
@@ -745,6 +714,66 @@ func (fw flushWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// bridgeVerdict applies the TLS bridge's rules to a CONNECT, in the order the design
+// gives them (docs/superpowers/specs/2026-10-09-tls-bridge-per-program-design.md): the
+// host's own eligibility, then what is known about the client's program, and the host
+// memory only for a client whose program cannot be named. It returns the reason the
+// bytes stay opaque, or bridge true and no reason. With bridge true and a named
+// program it sets tl.program, so bridgeServe records the outcome against the program.
+func (s *Server) bridgeVerdict(r *http.Request, tl *tunnelLog, host string, first []byte) (reason pipeline.TunnelReason, bridge bool) {
+	prog, named := s.bridgeProgram(r)
+	if !named {
+		// Unchanged from before programs could be named, order included.
+		if s.TLSBridge.Skip.Contains(host) {
+			// Distinct from client-rejected-ca: this client may trust the CA
+			// perfectly well and is being tunnelled because another one did not.
+			return pipeline.TunnelSkipCached, false
+		}
+		v, why := s.TLSBridge.Decision.Classify(host, portOf(r.Host), first)
+		return passthroughReason(why), v == tlsbridge.Terminate
+	}
+	v, why := s.TLSBridge.Decision.Classify(host, portOf(r.Host), first)
+	if v != tlsbridge.Terminate {
+		return passthroughReason(why), false
+	}
+	// Either key: the program's, which every process running it shares, and this
+	// process's own, where bridgeMemory keeps a refusal from a process older than the CA.
+	// The connection is noted under the key that matched, so the unread report counts it
+	// on the entry that passed it through.
+	for _, key := range [...]string{prog.Key(), prog.ProcessKey()} {
+		if s.TLSBridge.Programs.Contains(key) {
+			s.TLSBridge.Unread.Note(key, string(pipeline.TunnelProgramRefused), host)
+			return pipeline.TunnelProgramRefused, false
+		}
+	}
+	if t := s.TLSBridge.Trust; t != nil && t.OSTrustOnly(prog.Exe) {
+		s.TLSBridge.Unread.Note(prog.Key(), string(pipeline.TunnelOSTrustOnly), host)
+		return pipeline.TunnelOSTrustOnly, false
+	}
+	tl.program = &prog
+	return "", true
+}
+
+// bridgeMemory is where a failed handshake on tl is recorded: the program's entry when
+// the bridge rules named the client's program, and the host's otherwise — which is
+// what the transparent listener, a client whose program could not be named, and an
+// Engine without Programs all get.
+//
+// A process that started before the bridge CA gets an entry of its own instead
+// (Program.ProcessKey). It cannot have loaded that CA, so its refusal says nothing
+// about the program, and under the program's key a stale agent would stop every new
+// instance of it, which shares that key until it names a session. An unknown start or
+// NotBefore is no evidence the process is stale, and it records against the program.
+func (s *Server) bridgeMemory(tl *tunnelLog, host string) (*tlsbridge.SkipSet, string) {
+	if tl == nil || tl.program == nil || s.TLSBridge.Programs == nil {
+		return s.TLSBridge.Skip, host
+	}
+	if nb := s.caNotBeforeTime(); tl.program.Start != 0 && !nb.IsZero() && time.Unix(0, tl.program.Start).Before(nb) {
+		return s.TLSBridge.Programs, tl.program.ProcessKey()
+	}
+	return s.TLSBridge.Programs, tl.program.Key()
+}
+
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
 // connection through the pipeline. Returns true when it handled the connection
 // (bridged, or the client's connection died post-forge and there is nothing left
@@ -790,20 +819,31 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	if err != nil {
 		reason := handshakeFailureReason(err)
 		// Seed a skip either way — the forged handshake killed this connection, so the
-		// client's retry needs a tunnel whatever went wrong. But only ESCALATE for a
-		// real rejection: that is the one failure class that is evidence of a
-		// persistent trust problem. A client that merely cancels requests, or one
-		// tripping a cipher mismatch, would otherwise walk this host up to the ceiling
-		// and take every other client's observability with it — the same defect this
-		// change exists to fix, one level down.
+		// client's retry needs a tunnel whatever went wrong. The skip is the program's
+		// when the bridge rules named the client's program, and the host's otherwise
+		// (bridgeMemory), so a named program's failure costs no other program anything.
+		// But only ESCALATE for a real rejection: that is the one failure class that is
+		// evidence of a persistent trust problem. A client that merely cancels requests,
+		// or one tripping a cipher mismatch, would otherwise walk its entry up to the
+		// ceiling — on the host memory taking every other client's observability with
+		// it, the same defect this change exists to fix, one level down; on the program
+		// memory stopping a program that was never refusing.
 		//
 		// The decision is here rather than inside SkipSet because the reason vocabulary
 		// belongs to the session-event layer, and tlsbridge has no other business
 		// knowing about it.
+		memory, key := s.bridgeMemory(tl, host)
 		if reason == pipeline.TunnelClientRejectedCA {
-			s.TLSBridge.Skip.Fail(host)
+			memory.Fail(key)
 		} else {
-			s.TLSBridge.Skip.FailTransient(host)
+			memory.FailTransient(key)
+		}
+		if memory == s.TLSBridge.Programs {
+			// The failed connection was not read either, and it names the host the
+			// program refused, which the report would otherwise lack until its next try.
+			// Under the key just failed, so the note joins that entry. A host's entry is
+			// the report's hosts list, which needs no note.
+			s.TLSBridge.Unread.Note(key, string(pipeline.TunnelProgramRefused), host)
 		}
 		// UNCONDITIONAL, and it names the client. Success elsewhere must not silence
 		// this: it used to sit behind bridgedRequests == 0, which treats CA trust as a
@@ -821,6 +861,14 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 			"reason", reason,
 			"client", clientAddr(client),
 			"error", err,
+		}
+		if tl != nil && tl.program != nil {
+			args = append(args, "program", tl.program.Exe)
+			// python3 under an agent and python3 alone are remembered apart, and would
+			// otherwise log the same line.
+			if tl.program.Agent != "" {
+				args = append(args, "agent", tl.program.Agent)
+			}
 		}
 		// The restart advice goes ONLY on a real rejection. An EOF or a cipher
 		// mismatch would send someone restarting agents over something that was never
@@ -859,6 +907,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// any skip left by a different client that does not — which is what stops one stale
 	// agent suppressing this host for everyone until a window elapses.
 	s.TLSBridge.Skip.Succeed(host)
+	// A named program's own entries are cleared too, its process's along with its
+	// program's. The host's is cleared either way: a completed handshake proves this
+	// host's leaf works, and a client whose program cannot be named gets the benefit.
+	if tl != nil && tl.program != nil && s.TLSBridge.Programs != nil {
+		s.TLSBridge.Programs.Succeed(tl.program.Key())
+		s.TLSBridge.Programs.Succeed(tl.program.ProcessKey())
+	}
 	// Bridged: defer the open, with no reason, which is what tells agentop to fold this
 	// row into the decrypted inner request whose own action is the interesting one.
 	markBridged(tl)
@@ -939,6 +994,132 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, 
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
 // recordOutboundResponseEvent, which files under pctx.OutboundSessionID, so the
 // caller pins that to sid first.
+// syncHeaders makes r's headers the pipeline's: pctx.Headers started as a clone of
+// r.Header, so a plugin's set, replace and delete on it are the upstream-facing
+// header set. Content-Length and Content-Encoding are left to setBody and the
+// transport.
+func syncHeaders(r *http.Request, h http.Header) {
+	skip := func(k string) bool {
+		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
+	}
+	for k := range r.Header {
+		if skip(k) {
+			continue
+		}
+		if _, ok := h[k]; !ok {
+			r.Header.Del(k) // plugin removed it
+		}
+	}
+	for k, vv := range h {
+		if skip(k) {
+			continue
+		}
+		if len(vv) == 0 {
+			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
+			continue
+		}
+		r.Header[k] = append([]string(nil), vv...) // set / overwrite
+	}
+}
+
+// stripForUpstream removes from r what is the proxy's and not the upstream's: the
+// hop-by-hop headers, and, when ownEncoding, the client's Accept-Encoding. It runs on
+// every request the proxy sends upstream for a client, a resend included.
+func stripForUpstream(r *http.Request, ownEncoding bool) {
+	// Remove hop-by-hop headers
+	r.Header.Del("Connection")
+	r.Header.Del("Keep-Alive")
+	r.Header.Del("Proxy-Authenticate")
+	r.Header.Del("Proxy-Authorization")
+	r.Header.Del("Proxy-Connection")
+	r.Header.Del("TE")
+	r.Header.Del("Trailer")
+	r.Header.Del("Transfer-Encoding")
+	r.Header.Del("Upgrade")
+
+	// Strip the client's Accept-Encoding so Go's transport negotiates content
+	// coding on its own behalf.
+	//
+	// net/http auto-decompresses a gzip response ONLY when the transport added
+	// Accept-Encoding itself. Forwarding the caller's header suppresses that:
+	// resp.Body then yields raw compressed bytes. Every body-reading plugin
+	// sees binary — the SSE re-framer finds no "data:" lines and reports a
+	// clean EOF on its first ReadFrame, so a gzipped text/event-stream relayed
+	// zero frames downstream and finalized aggregating plugins on empty state.
+	// The symptom is silent in both directions: the client sees a stream that
+	// opens and dies, and token telemetry reads as absent rather than wrong.
+	//
+	// This proxy re-frames and inspects bodies, so it cannot be encoding-blind.
+	// Taking ownership of the negotiation means the transport hands us
+	// plaintext and strips Content-Encoding from resp.Header, keeping the
+	// bytes we relay consistent with the headers we forward.
+	//
+	// Gated on a plugin actually inspecting the response body, mirroring the
+	// reverse proxy (see listener/reverseproxy: same reasoning, same
+	// condition). When nothing reads the body this listener is a pure
+	// pass-through, so leaving the client's header intact avoids forcing an
+	// upstream→client decompression that buys nothing — which matters for a
+	// remote backend or a large non-streamed body, and is harmless either way
+	// on a loopback sidecar hop.
+	if ownEncoding {
+		r.Header.Del("Accept-Encoding")
+	}
+}
+
+// setBody gives r the body a plugin wrote, and clears Content-Encoding, since the
+// bytes are the plugin's and carry none.
+func setBody(r *http.Request, body []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	r.Header.Del("Content-Encoding")
+}
+
+// resendIfAsked gives the outbound pipeline's Resenders the one look at a refused
+// answer that pipeline.Resender promises, and sends the request again when one asks.
+// It returns the answer to relay: resp itself, or the second send's.
+//
+// Only a request whose body the pipeline buffered can be sent again, and only a
+// Resender's request could need it, so nothing is read from an answer unless a
+// Resender is in the chain. A refused answer that is sent again is recorded on its own
+// response row, and the second send on a request row of its own under a new request
+// id, so the timeline shows both attempts and each pairs with its own answer. A
+// refused answer that is not sent again goes to the client byte for byte, the bytes
+// read for the Resender included.
+func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool) (*http.Response, error) {
+	if resp.StatusCode/100 == 2 || !s.OutboundPipeline.HasResenders() || !s.OutboundPipeline.NeedsRequestBody() {
+		return resp, nil
+	}
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
+	// The parse as the refused attempt was sent: a Resender may rewrite the model,
+	// and the refused attempt's row must name the one the upstream refused.
+	sent := pipeline.SnapshotInference(pctx.Extensions.Inference)
+	if !s.OutboundPipeline.Resend(r.Context(), pctx, resp.StatusCode, head) {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	if s.Sessions != nil {
+		// The refused answer's row: its status and error, from the bytes read. Put back
+		// at once, because the status of the answer the client gets is the one
+		// OutcomeFromContext must read.
+		resent := pctx.Extensions.Inference
+		pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
+		pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
+		pctx.RenewRequestID()
+		s.recordOutboundRequestEvent(tl, pctx, pctx.OutboundSessionID)
+	}
+	again := r.Clone(r.Context())
+	syncHeaders(again, pctx.Headers)
+	setBody(again, pctx.Body)
+	stripForUpstream(again, ownEncoding)
+	return client.Do(again)
+}
+
 func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Context, sid string) {
 	// Snapshot-copy the protocol extension so the request event
 	// doesn't see response-phase mutations on the same MCP/Inference
@@ -949,6 +1130,7 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 		Direction:     pipeline.Outbound,
 		Phase:         pipeline.SessionRequest,
 		RequestID:     pctx.RequestID(),
+		BytesUp:       int64(len(pctx.Body)),
 		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
 		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
@@ -1176,6 +1358,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Direction:     pipeline.Outbound,
 		Phase:         pipeline.SessionResponse,
 		RequestID:     pctx.RequestID(),
+		BytesDown:     pctx.ResponseBytes,
 		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
 		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
@@ -1341,7 +1524,6 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	flusher.Flush()
 
 	reader := sseframe.NewReader(idleReader(resp.Body, streamReadIdleTimeout), maxBodySize)
-	bytesWritten := 0
 	for {
 		frame, err := reader.ReadFrame()
 		if err == io.EOF {
@@ -1352,7 +1534,11 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			// already received some frames; the cleanest signal is to
 			// close the connection and log. We can't promote this to
 			// 502 — headers are sent.
-			slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", err, "bytesWritten", bytesWritten)
+			// bytesRead, not the bytesWritten this used to keep in a local: the
+			// local was declared after the recording defer and never reached the
+			// session event, so the figure is now taken off the counting wrapper
+			// around resp.Body — which is bytes received, not frames relayed.
+			slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", err, "bytesRead", pctx.ResponseBytes)
 			break
 		}
 
@@ -1382,7 +1568,6 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			break
 		}
 		flusher.Flush()
-		bytesWritten += len(frame)
 	}
 }
 
@@ -1755,36 +1940,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		first, _ := pc.Peek(5)
 		authority := r.Host // CONNECT target is already host:port
 		key := hostOnly(r.Host)
-		if s.TLSBridge.Skip.Contains(key) {
-			// Distinct from client-rejected-ca: this client may trust the CA
-			// perfectly well and is being tunnelled because another one did not.
-			reason = pipeline.TunnelSkipCached
-		} else {
-			v, why := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first)
-			reason = passthroughReason(why)
-			if v == tlsbridge.Terminate {
-				s.noteBridgeAttempt()
-				_ = upstream.Close() // bridgeServe dials its own verified upstream
-				if s.bridgeServe(clientConn, authority, key, tl) {
-					return
-				}
-				// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
-				// like any other opaque one.
-				up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
-				if derr != nil {
-					// The client already has its 200, so that stays the status, and the
-					// error says why the tunnel died. Closing the client is what makes
-					// that close row true: the hijacked conn is this handler's to close,
-					// and it used to be left open for the client to time out on.
-					_ = clientConn.Close()
-					tl.close(http.StatusOK, dialError(derr), 0, 0)
-					return
-				}
-				sent, received := tunnel(clientConn, up2)
-				_ = up2.Close()
-				tl.close(http.StatusOK, nil, sent, received)
+		var bridge bool
+		reason, bridge = s.bridgeVerdict(r, tl, key, first)
+		if bridge {
+			s.noteBridgeAttempt()
+			_ = upstream.Close() // bridgeServe dials its own verified upstream
+			if s.bridgeServe(clientConn, authority, key, tl) {
 				return
 			}
+			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
+			// like any other opaque one.
+			up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+			if derr != nil {
+				// The client already has its 200, so that stays the status, and the
+				// error says why the tunnel died. Closing the client is what makes
+				// that close row true: the hijacked conn is this handler's to close,
+				// and it used to be left open for the client to time out on.
+				_ = clientConn.Close()
+				tl.close(http.StatusOK, dialError(derr), 0, 0)
+				return
+			}
+			sent, received := tunnel(clientConn, up2)
+			_ = up2.Close()
+			tl.close(http.StatusOK, nil, sent, received)
+			return
 		}
 	}
 
@@ -2088,13 +2267,13 @@ func clientPort(c net.Conn) string {
 	return "<port>"
 }
 
-// caNotBefore is the bridge CA's NotBefore, which is the line dividing clients
+// caNotBeforeTime is the bridge CA's NotBefore, which is the line dividing clients
 // that can trust it from clients that cannot: CA files are read once at process
-// start, so anything older than this is holding a different CA (or none).
-// Parsed once — the value is fixed for the process.
-func (s *Server) caNotBefore() string {
+// start, so anything older than this is holding a different CA (or none). Zero when
+// there is no CA or it cannot be parsed. Parsed once — the value is fixed for the
+// process.
+func (s *Server) caNotBeforeTime() time.Time {
 	s.caNotBeforeOnce.Do(func() {
-		s.caNotBeforeStr = "unknown"
 		if s.TLSBridge == nil || len(s.TLSBridge.CAPEM) == 0 {
 			return
 		}
@@ -2106,9 +2285,20 @@ func (s *Server) caNotBefore() string {
 		if err != nil {
 			return
 		}
-		s.caNotBeforeStr = crt.NotBefore.Local().Format(time.RFC3339)
+		s.caNotBeforeAt = crt.NotBefore
 	})
-	return s.caNotBeforeStr
+	return s.caNotBeforeAt
+}
+
+// caNotBefore is caNotBeforeTime as the rejection line prints it, "unknown" when it is
+// zero. Rendered from the one parse, so the cutoff the log advises restarting clients
+// against is the one bridgeMemory tells stale processes apart by.
+func (s *Server) caNotBefore() string {
+	nb := s.caNotBeforeTime()
+	if nb.IsZero() {
+		return "unknown"
+	}
+	return nb.Local().Format(time.RFC3339)
 }
 
 // caFingerprint is the bridge CA's SHA-256, in the encoding
@@ -2194,6 +2384,10 @@ type tunnelLog struct {
 	// conn is the CONNECT's client process slot, handed to the requests a bridged tunnel
 	// decrypts; nil off the CONNECT path.
 	conn *connProc
+	// program is the client's program when the bridge rules named it, nil when they did
+	// not. bridgeServe records a handshake's failure against it when set and against the
+	// host when not, which is what the transparent listener and a nameless client get.
+	program *tlsbridge.Program
 
 	mu     sync.Mutex
 	opened bool

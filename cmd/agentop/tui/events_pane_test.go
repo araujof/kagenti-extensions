@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -496,6 +495,43 @@ func TestRebuildEventsTable_HideInactive(t *testing.T) {
 	}
 }
 
+// The `s` toggle hides exchanges, not halves of one: a request it shows keeps its
+// response, and a response it shows keeps its request. The live case is a routed
+// request refused for its model: no plugin acts on the 403, and hiding it left the
+// request looking as if it never got an answer.
+func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
+	routed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
+		{Plugin: "inference-router", Action: pipeline.ActionModify, Reason: "routed"},
+	}}
+	observed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
+		{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+	}}
+	events := []pipeline.SessionEvent{
+		// A request a plugin acted on, and its response no plugin did: shown.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "a", Invocations: routed},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "a", StatusCode: 403},
+		// A request no plugin acted on, and a response one did: shown.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "b"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "b", StatusCode: 200, Invocations: observed},
+		// Neither half acted on: hidden, both rows.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "s3", RequestID: "c"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "s3", RequestID: "c", StatusCode: 200},
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}, hideInactive: true}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+
+	if len(m.visibleRows) != 4 || m.hiddenInactive != 2 {
+		t.Fatalf("rows=%d hidden=%d, want 4/2", len(m.visibleRows), m.hiddenInactive)
+	}
+	for i, want := range []*pipeline.SessionEvent{&events[0], &events[1], &events[2], &events[3]} {
+		if got := m.visibleRows[i].event; got != want {
+			t.Errorf("row %d = %s %s %d, want %s %s %d", i,
+				got.RequestID, got.Phase, got.StatusCode, want.RequestID, want.Phase, want.StatusCode)
+		}
+	}
+}
+
 // TestComputeEventPairIDs pairs each response row with its preceding request
 // row by direction + host + method, sharing one # across the exchange and
 // minting fresh integers for unpaired rows.
@@ -545,84 +581,6 @@ func TestComputeEventPairIDs_MethodDiscrimination(t *testing.T) {
 	}
 	if ids[&events[0]] == ids[&events[1]] {
 		t.Errorf("notifications/initialized must not share id with tools/list, both got %d", ids[&events[0]])
-	}
-}
-
-// TestMatchEventRow_DenyShortcut verifies that typing "deny" surfaces both the
-// SessionDenied phase AND any invocation whose Action is ActionDeny.
-func TestMatchEventRow_DenyShortcut(t *testing.T) {
-	denied := eventRow{event: &pipeline.SessionEvent{Phase: pipeline.SessionDenied}}
-	if !matchEventRow(denied, "deny") {
-		t.Error("SessionDenied event should match the `deny` shortcut")
-	}
-
-	inboundDeny := eventRow{event: &pipeline.SessionEvent{
-		Phase:       pipeline.SessionRequest,
-		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionDeny}}},
-	}}
-	if !matchEventRow(inboundDeny, "deny") {
-		t.Error("event with a deny invocation should match the `deny` shortcut")
-	}
-
-	clean := eventRow{event: &pipeline.SessionEvent{
-		Phase:       pipeline.SessionRequest,
-		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionAllow}}},
-	}}
-	if matchEventRow(clean, "deny") {
-		t.Error("allow-only event should NOT match the `deny` shortcut")
-	}
-}
-
-// TestMatchEventRow_PluginSubstring verifies substring matching across an
-// event's invocation fields (plugin name, reason, path).
-func TestMatchEventRow_PluginSubstring(t *testing.T) {
-	row := eventRow{event: &pipeline.SessionEvent{
-		Phase: pipeline.SessionRequest,
-		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{
-			{Plugin: "jwt-validation", Action: pipeline.ActionSkip, Reason: "path_bypass", Path: "/healthz"},
-		}},
-	}}
-	if !matchEventRow(row, "jwt-validation") {
-		t.Error("filter jwt-validation should match")
-	}
-	if !matchEventRow(row, "path_bypass") {
-		t.Error("filter by reason should match")
-	}
-	if !matchEventRow(row, "/healthz") {
-		t.Error("filter by path should match")
-	}
-	if matchEventRow(row, "token-exchange") {
-		t.Error("filter token-exchange should NOT match a jwt-validation-only event")
-	}
-}
-
-// TestMatchEventRow_TunnelFields confirms a folded tunnel's fields are
-// searchable on the collapsed row — filtering by the bridged origin's
-// host:port still surfaces the row even though the row's own host is
-// port-stripped.
-func TestMatchEventRow_TunnelFields(t *testing.T) {
-	row := eventRow{
-		event:  &pipeline.SessionEvent{Host: "api.anthropic.com"},
-		tunnel: &pipeline.SessionEvent{Host: "api.anthropic.com:443"},
-	}
-	if !matchEventRow(row, "anthropic.com:443") {
-		t.Error("filter on the tunnel host:port should match the collapsed row")
-	}
-}
-
-// TestMatchEventRow_PluginPrefix tests the `plugin:<name>` escape-hatch filter
-// against the event's Plugins map.
-func TestMatchEventRow_PluginPrefix(t *testing.T) {
-	row := eventRow{event: &pipeline.SessionEvent{
-		Plugins: map[string]json.RawMessage{
-			"rate-limiter": json.RawMessage(`{"allowed":true}`),
-		},
-	}}
-	if !matchEventRow(row, "plugin:rate-limiter") {
-		t.Error("expected match on plugin:rate-limiter")
-	}
-	if matchEventRow(row, "plugin:nonexistent") {
-		t.Error("expected no match for a plugin not in the map")
 	}
 }
 

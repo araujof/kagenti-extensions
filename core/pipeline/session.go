@@ -191,11 +191,39 @@ type SessionEvent struct {
 	// carried no request at all.
 	Tunnel bool
 
-	// BytesUp and BytesDown are how many bytes an opaque tunnel carried each way:
-	// up is client to destination, down is destination to client. Set only on a
-	// tunnel's close row, which is when the counts are known. Zero — and absent on
-	// the wire — everywhere else, including a bridged tunnel's close, whose bytes
-	// were TLS the bridge terminated rather than counted.
+	// BytesUp and BytesDown are how many bytes went each way: up is client to
+	// destination, down is destination to client. A row carries whichever side it
+	// is in a position to know, so the two never collide on one row:
+	//
+	//   request row        BytesUp   — the request body as FORWARDED, which is
+	//                                  len(pctx.Body) at record time and so
+	//                                  reflects any plugin that rewrote it
+	//   response row       BytesDown — the response body the listener observed
+	//                                  FROM THE DESTINATION, read from
+	//                                  pctx.ResponseBytes
+	//   tunnel close row   both      — the opaque bytes the tunnel carried
+	//
+	// The two sides differ on where the pipeline sits, and not by preference: the
+	// request figure is read at record time, after any rewrite, because that is
+	// when pctx.Body is what will be forwarded; the response figure is summed as
+	// the bytes arrive, because on a streamed response there is no later moment
+	// at which the whole body exists. A response mutator's rewrite is therefore
+	// not reflected — extproc records the row before it even emits the
+	// replacement — so BytesDown is what the destination sent.
+	//
+	// ZERO MEANS NOT COUNTED, NOT ZERO BYTES, and the field is absent from the
+	// wire when zero. Body buffering is gated on a pipeline capability in all
+	// three listeners, so a request no plugin wanted the body of is relayed
+	// without ever being measured — and a body-less GET is indistinguishable from
+	// it, which is why neither may render as a real 0 B. A bridged tunnel's close
+	// reports zero for the same reason: its bytes were TLS the bridge terminated
+	// rather than counted, and its decrypted inner requests carry their own
+	// figures. Consumers render zero as blank (agentop's bytesCell).
+	//
+	// Headers are deliberately not counted. The question these answer is how big
+	// a payload was — a prompt that overran a model's context window is the case
+	// they exist for — and a kilobyte of constant header noise on every row
+	// obscures it. They are therefore NOT a wire-cost figure.
 	BytesUp   int64
 	BytesDown int64
 
@@ -322,6 +350,30 @@ const (
 	// Distinct from client-rejected-ca either way: THIS client may well trust the CA
 	// and is being tunnelled because an earlier one had trouble.
 	TunnelSkipCached TunnelReason = "skip-cached"
+	// TunnelProgramRefused — an earlier handshake by the program that opened this
+	// connection failed, so no interception was attempted. Usually that failure was a CA
+	// rejection, but, as with skip-cached, any failed handshake seeds it: the connection
+	// died mid-handshake either way, and the program's retry needs a tunnel. The earlier
+	// failure's proxy.log line names the program (program=, and agent= when it runs
+	// under one) and gives its own reason.
+	//
+	// Recorded against the client's program (tlsbridge.Program), not the host, so
+	// another program talking to the same host is still bridged. The window starts at
+	// 30s and doubles only on rejections, and a rejection counts only once the window
+	// before it has ended; after three rejections in a row the program is not retried
+	// until Cortex restarts. A hang-up or a cipher mismatch never adds to the count or
+	// lengthens the window, but when it is the program's first failure it starts the
+	// count at one, so a hang-up followed by two spaced rejections stops the program. A
+	// process that started before the bridge CA is recorded on its own instead
+	// (Program.ProcessKey): it cannot have loaded that CA, so its refusal says nothing
+	// about the program, and restarting that process is enough.
+	TunnelProgramRefused TunnelReason = "program-refused"
+	// TunnelOSTrustOnly — the program trusts only the operating system's certificate
+	// store, and the store does not trust the bridge CA, so no leaf was shown: it could
+	// only have been refused. Today that is a Go program on macOS (tlsbridge.ClientTrust),
+	// which reads no CA file there. The connection works from its first try; adding the
+	// CA to the keychain is what has Cortex read it.
+	TunnelOSTrustOnly TunnelReason = "os-trust-only"
 	// TunnelBridgeDisabled — no TLS bridge is configured.
 	TunnelBridgeDisabled TunnelReason = "bridge-disabled"
 	// TunnelPassthroughPort, TunnelPassthroughNonTLS and TunnelPassthroughHost mirror
@@ -431,8 +483,10 @@ type sessionEventWire struct {
 	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
 	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
-	// omitempty for the same skew reason, and because only a tunnel's close row
-	// has a count to report.
+	// omitempty for the same skew reason, and because a row reports only the side
+	// it knows: a request row has no BytesDown and a response row no BytesUp. The
+	// absent key and a counted zero are therefore the same wire bytes, which is
+	// intended — both mean "no figure", per SessionEvent.BytesUp.
 	BytesUp   int64 `json:"bytesUp,omitempty"`
 	BytesDown int64 `json:"bytesDown,omitempty"`
 	// omitempty for the same skew reason as TunnelReason above: an old agentop

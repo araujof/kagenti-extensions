@@ -177,10 +177,13 @@ moment and are inert until then:
   tag pushes. It builds only first-party code with SHA-pinned actions, but that is a
   wider blast radius than before. If you want it narrower, split build (`contents: read`)
   from publish (`contents: write`) and pass `dist/` between them as an artifact.
-- **The job moves the `main-latest` tag** on each publish. That is the one destructive
-  operation in the workflow. It is guarded to the rolling tag, and `install_test.sh`
-  asserts no `${TAG}` comparison in the workflow names anything other than
-  `CHANNEL_TAG`, so a `v*` release cannot become movable by a rename going unnoticed.
+- **The job moves the `main-latest` tag and prunes its assets** on each publish,
+  deleting any asset that build did not produce, so a retired binary does not linger
+  beside the current ones with no checksum to verify it. Those are the two destructive
+  operations in the workflow. Both are guarded to the rolling tag, and `install_test.sh`
+  asserts that each sits inside that guard and that no `${TAG}` comparison in the
+  workflow names anything other than `CHANNEL_TAG`, so a `v*` release cannot become
+  movable or prunable by a rename going unnoticed.
 
 The middle step is load-bearing, though not for the reason it first appears. The default
 one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter: it
@@ -233,6 +236,33 @@ Things to know:
   The documented one-liner runs `main`'s copy and is not affected.
 - **Container images are not gated.** A candidate's tag pushes its images under that
   tag and also moves `latest`, as every `v*` tag and every merge to `main` already does.
+
+## Install stats
+
+[rossoctl.github.io/cortex/install-stats](https://rossoctl.github.io/cortex/install-stats/)
+estimates how many people install each release, from GitHub's release-asset download
+counts. Cortex collects nothing from a user's machine, so downloads are the only
+signal there is — and the page is explicit about what that does and does not support.
+
+Two things worth knowing before reading it:
+
+- **`release-smoke-linux.yaml` is in those numbers.** It installs the way a user
+  does, `curl | sh` from GitHub Releases, which is the point of it — so it cannot
+  be told apart from a real Linux user by behaviour. The page subtracts it by
+  *count* instead: **one** install per successful run lands in the figures the page
+  reads. The run installs three times — a fresh install of the newest stable tag,
+  an upgrade to the tag under test, and a no-op re-run — but on a push to `main` the
+  latter two land on `main-latest`, which the collector excludes because
+  `--clobber` resets its download counts on every push. Change that structure, and
+  the estimate drifts until `CI_INSTALLS_PER_RUN` in
+  `docs/install-stats/index.html` is updated to match.
+- **The figures include us.** At the current scale, maintainers running the
+  installer are a large share of the total. Do not read a daily number as new users.
+
+`.github/workflows/install-stats.yaml` snapshots the counts daily and commits them
+to `gh-pages`; a lifetime total is all GitHub reports, so a daily figure only
+exists as the difference between two snapshots, and the series cannot be
+backfilled.
 
 ## Issues
 

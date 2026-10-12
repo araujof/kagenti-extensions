@@ -16,7 +16,7 @@ import (
 
 // eventKey pins a row to a specific event across rebuilds, so the
 // cursor follows the same event when the underlying slice shifts:
-// FIFO eviction at session.max_events, filter typed, hideInactive
+// FIFO eviction at session.max_events, a re-sort, hideInactive
 // toggled. Zero value = unpinned. `at` is UnixNano so struct == is
 // safe against time.Time's monotonic clock and Location pointer.
 type eventKey struct {
@@ -88,8 +88,16 @@ func (er eventRow) invocations() []pipeline.Invocation {
 	return invs
 }
 
+// partnerActive reports whether row i's paired request or response is one a plugin
+// acted on, so hideInactive keeps row i with it.
+func partnerActive(ctxs []cellContext, partner map[int]int, i int) bool {
+	p, ok := partner[i]
+	return ok && !eventInactive(ctxs[p].invs)
+}
+
 // rebuildEventsTable populates the events table from the cache for the
-// currently selected session, applying filter + preserving cursor. Also
+// currently selected session, applying hideInactive, marking the search's
+// matches and preserving the cursor. Also
 // resizes the table height to account for the IDENTITY banner — when
 // the session has inbound identity, subtract the banner's rendered
 // height so it doesn't push rows off-screen; otherwise claim the full
@@ -123,15 +131,15 @@ func (m *model) rebuildEventsTable() {
 	// exchange is read off the timeline.
 	ids, partner := computeEventPairs(eventRows)
 
-	// One cellContext per row of the SESSION, before any filter. The fitsContent
-	// columns are measured over all of them (see measureColumns), and the row loop
-	// below shows the cells measured there, so a column cannot be sized from one
+	// One cellContext per row of the SESSION, before hideInactive drops any. The
+	// fitsContent columns are measured over all of them (see measureColumns), and the row
+	// loop below shows the cells measured there, so a column cannot be sized from one
 	// reading of a row and filled from another.
 	//
-	// That computes invocations, rowAction and the measured cells for rows a filter
+	// That computes invocations, rowAction and the measured cells for rows hideInactive
 	// then hides, which the loop used to skip. Each is evaluated once per row, which is
-	// what the unfiltered view pays on every rebuild anyway, so filtering never makes a
-	// rebuild dearer than not filtering.
+	// what showing every row pays on every rebuild anyway, so hiding rows never makes a
+	// rebuild dearer than showing them.
 	ctxs := make([]cellContext, len(eventRows))
 	for i, er := range eventRows {
 		// One invocations and one rowAction per row: hideInactive below reads invs,
@@ -175,15 +183,20 @@ func (m *model) rebuildEventsTable() {
 			}
 		}
 	}
+	q := m.searchQuery(paneEvents)
+	var full []table.SearchRow
+	var droppedCols []eventColumn
+	if q != "" {
+		droppedCols = droppedColumns(selectedColumns(m.eventColumns), cols)
+	}
 	for j, cc := range ctxs {
-		if m.filter != "" && !matchEventRow(cc.row, m.filter) {
-			continue
-		}
 		// hideInactive (the `s` toggle) is off by default — every message is
 		// shown, including passthrough/skip-only ones, per "I should see all
 		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow).
-		if m.hideInactive && eventInactive(cc.invs) {
+		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
+		// partner is shown is shown too, or a routed request refused for its model —
+		// no plugin acts on the 403 — would look as if it never got an answer.
+		if m.hideInactive && eventInactive(cc.invs) && !partnerActive(ctxs, partner, j) {
 			m.hiddenInactive++
 			continue
 		}
@@ -217,6 +230,9 @@ func (m *model) rebuildEventsTable() {
 		}
 		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, cc.row)
+		if q != "" {
+			full = append(full, eventSearchRow(cols, droppedCols, cc))
+		}
 		// Keyed from the SAME cellContext that just rendered the row, so the value
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
@@ -230,7 +246,7 @@ func (m *model) rebuildEventsTable() {
 	// time we get here — so reordering the finished rows leaves the exchange
 	// numbering and the paired figures exactly as they were.
 	if sortCol != nil {
-		sortEventRows(rows, m.visibleRows, keys, m.sortDesc)
+		sortEventRows(rows, m.visibleRows, full, keys, m.sortDesc)
 	}
 	// Columns are re-set only when they actually differ, and in an order that keeps
 	// every intermediate state renderable.
@@ -262,6 +278,7 @@ func (m *model) rebuildEventsTable() {
 		m.eventsTbl.SetColumns(newCols)
 		m.eventsTbl.SetRows(rows)
 	}
+	m.eventsTbl.SetSearch(q, full)
 
 	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise
 	// preserve position so reading isn't disturbed by new events.
@@ -307,7 +324,7 @@ func (m *model) rebuildEventsTable() {
 
 	// An OPENING, not a refresh: the session under the table changed. This is the
 	// one rebuild that gets to choose an end, because there is no position to
-	// preserve yet — every later one (the poll, a filter, a column toggle) must
+	// preserve yet — every later one (the poll, a search, a column toggle) must
 	// leave the operator where they are.
 	//
 	// LATCHED ONLY ONCE THERE ARE ROWS, which is the whole subtlety. Entering a
@@ -372,7 +389,7 @@ func (m *model) rebuildEventsTable() {
 // Sorts an index permutation rather than swapping three slices in the comparator,
 // so each row's key travels with it without the comparator having to reorder keys
 // as it reads them.
-func sortEventRows(rows []table.Row, visible []eventRow, keys []sortValue, desc bool) {
+func sortEventRows(rows []table.Row, visible []eventRow, full []table.SearchRow, keys []sortValue, desc bool) {
 	if len(rows) != len(keys) || len(rows) != len(visible) {
 		// Defensive: a length mismatch means the loop above stopped appending to one
 		// of the three in step. Sorting on a short key slice would panic; leaving the
@@ -399,6 +416,15 @@ func sortEventRows(rows []table.Row, visible []eventRow, keys []sortValue, desc 
 	}
 	copy(rows, outRows)
 	copy(visible, outVis)
+	// The search's full values move with their rows, or they would describe the rows that
+	// now sit where theirs were.
+	if len(full) == len(rows) {
+		outFull := make([]table.SearchRow, len(full))
+		for newPos, oldPos := range idx {
+			outFull[newPos] = full[oldPos]
+		}
+		copy(full, outFull)
+	}
 }
 
 // selectedEventOn returns the event at an arbitrary row of the rows just built, or
@@ -829,15 +855,34 @@ func generatedTokensCell(e *pipeline.SessionEvent) string {
 	return formatCount(n)
 }
 
-// bytesCell renders a tunnel close row's byte counts, up (client to destination) then
-// down. Blank on every other row: only an opaque tunnel's close has counts. They are
-// absent on the wire when zero, so a zero on one side is shown only once the other
-// side proves this row carries counts at all.
+// bytesCell renders a row's byte counts, up (client to destination) then down.
+//
+// A tunnel's close row is the one that reports BOTH, and it keeps the pair rendering
+// even where one side is zero: the counts are absent on the wire when zero, so a
+// genuine zero one way is shown only once the other side proves the row carries
+// counts at all. Every other row reports a single side — a request knows what it
+// forwarded, a response what came back — so printing the pair there would put a
+// fabricated "↓0B" next to every request size.
+//
+// Blank when nothing was counted, which is NOT the same as a body of zero bytes:
+// an unbuffered body is relayed unmeasured and reads here exactly as a body-less GET
+// does. See pipeline.SessionEvent.BytesUp — formatBytes renders 0 as "0B", never
+// blank, so the decision is this gate's alone.
 func bytesCell(e pipeline.SessionEvent) string {
 	if e.BytesUp == 0 && e.BytesDown == 0 {
 		return ""
 	}
-	return "↑" + formatBytes(e.BytesUp) + " ↓" + formatBytes(e.BytesDown)
+	if e.Tunnel {
+		return "↑" + formatBytes(e.BytesUp) + " ↓" + formatBytes(e.BytesDown)
+	}
+	var parts []string
+	if e.BytesUp > 0 {
+		parts = append(parts, "↑"+formatBytes(e.BytesUp))
+	}
+	if e.BytesDown > 0 {
+		parts = append(parts, "↓"+formatBytes(e.BytesDown))
+	}
+	return strings.Join(parts, " ")
 }
 
 // formatBytes renders a byte count in decimal units, 1kB being 1000 bytes. Like
@@ -1016,94 +1061,6 @@ func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int
 		ids[e] = next
 	}
 	return ids, partner
-}
-
-// matchEventRow does a case-insensitive substring match across every string
-// field the operator might reasonably search for — the event's host/method,
-// the fields of every plugin invocation on it, and its protocol extensions.
-// A folded tunnel's fields are searched too, so filtering by a bridged
-// origin's host still surfaces the collapsed row. Two prefix shortcuts:
-//
-//   - `deny` alone matches a SessionDenied event and any invocation whose
-//     Action == ActionDeny — the one-word "show me failures" filter.
-//   - `plugin:<name>` matches rows whose escape-hatch Plugins map has <name>
-//     as a key.
-func matchEventRow(r eventRow, q string) bool {
-	q = strings.ToLower(q)
-
-	if q == "deny" {
-		return eventMatchesDeny(r.event) || (r.tunnel != nil && eventMatchesDeny(r.tunnel))
-	}
-
-	if after, ok := strings.CutPrefix(q, "plugin:"); ok {
-		if _, present := r.event.Plugins[after]; present {
-			return true
-		}
-		if r.tunnel != nil {
-			_, present := r.tunnel.Plugins[after]
-			return present
-		}
-		return false
-	}
-
-	hay := eventHaystack(r.event)
-	if r.tunnel != nil {
-		hay = append(hay, eventHaystack(r.tunnel)...)
-	}
-	for _, s := range hay {
-		if strings.Contains(strings.ToLower(s), q) {
-			return true
-		}
-	}
-	return false
-}
-
-// eventMatchesDeny reports whether e is a deny — either the terminal
-// SessionDenied phase or any invocation with ActionDeny.
-func eventMatchesDeny(e *pipeline.SessionEvent) bool {
-	if e.Phase == pipeline.SessionDenied {
-		return true
-	}
-	for _, iv := range allInvocations(e) {
-		if iv.Action == pipeline.ActionDeny {
-			return true
-		}
-	}
-	return false
-}
-
-// eventHaystack collects every searchable string on an event: host, method,
-// each invocation's plugin/action/reason/path and detail key=values, the
-// caller identity, and protocol-specific content (A2A parts, MCP error, the
-// inference completion / finish reason).
-func eventHaystack(e *pipeline.SessionEvent) []string {
-	hay := []string{e.Host, eventMethodValue(*e)}
-	for _, iv := range allInvocations(e) {
-		hay = append(hay, iv.Plugin, string(iv.Action), iv.Reason, iv.Path)
-		// Plugin-specific diagnostic context — iterate keys + values so
-		// filter text matches on e.g. "target_audience" / the target
-		// audience value without the UI having to know which keys each
-		// plugin writes.
-		for k, v := range iv.Details {
-			hay = append(hay, k, v)
-		}
-	}
-	if e.Identity != nil {
-		hay = append(hay, e.Identity.Subject, e.Identity.ClientID)
-	}
-	if e.A2A != nil {
-		hay = append(hay, e.A2A.SessionID, e.A2A.MessageID, e.A2A.Role)
-		for _, p := range e.A2A.Parts {
-			hay = append(hay, p.Content)
-		}
-	}
-	if e.MCP != nil && e.MCP.Err != nil {
-		hay = append(hay, e.MCP.Err.Message)
-	}
-	if e.Inference != nil {
-		hay = append(hay, e.Inference.Completion, e.Inference.FinishReason)
-	}
-	return hay
 }
 
 // identityBannerStyle renders the small bordered box above the events

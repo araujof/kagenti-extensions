@@ -65,7 +65,7 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 }
 
 // A non-chronological sort is state the operator chose, so the status row names it —
-// the same reasoning as [filter: …]. It matters most on a narrow terminal, where the
+// the same reasoning as the search indicator. It matters most on a narrow terminal, where the
 // sorted column may be one fitColumns dropped and there is then no header on screen
 // carrying the glyph.
 func TestFooterShowsActiveSort(t *testing.T) {
@@ -109,37 +109,24 @@ func TestFooterShowsActiveSort(t *testing.T) {
 	}
 }
 
-// The [filter: …] indicator has the same defect the sort indicator above was fixed for:
-// m.filter is model-global and restored from settings, so it survived onto panes that
-// filter nothing. The Usage pane fetches an aggregate the filter never reaches.
-//
-// Two panes want it rather than one, which is the difference from sort: sessions_pane.go
-// and events_pane.go both read m.filter.
-func TestFooterShowsFilterOnlyWhereItApplies(t *testing.T) {
+// TestFooterShowsSearchOnEveryPane: every pane searches what it shows, so a committed search
+// is on every pane's status row. (It used to be on sessions and events only, because only
+// those two had a search.) TestSearch_SlashOpensOnEveryPane is what says every pane has one.
+func TestFooterShowsSearchOnEveryPane(t *testing.T) {
 	orig := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 
-	for _, tc := range []struct {
-		name string
-		pane paneID
-		want bool
-	}{
-		{name: "sessions filters its list", pane: paneSessions, want: true},
-		{name: "events filters its table", pane: paneEvents, want: true},
-		{name: "usage plots an unfiltered aggregate", pane: paneUsage, want: false},
-		{name: "pipeline has nothing to filter", pane: panePipeline, want: false},
-		{name: "catalog has nothing to filter", pane: paneCatalog, want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := &model{
-				pane: tc.pane, width: 200, eventColumns: defaultColumnSelection(),
-				filter: "github-tool",
-			}
-			got := stripANSI(statusRow(m.footerView()))
-			if has := strings.Contains(got, "[filter: github-tool]"); has != tc.want {
-				t.Errorf("status row = %q; indicator present=%v, want %v", got, has, tc.want)
-			}
-		})
+	for p := paneID(0); p <= lastPaneID; p++ {
+		m := &model{
+			pane: p, width: 200, eventColumns: defaultColumnSelection(),
+			search: map[paneID]string{p: "github-tool"},
+		}
+		if m.surface(p) == nil {
+			continue
+		}
+		if got := stripANSI(statusRow(m.footerView())); !strings.Contains(got, "[/github-tool") {
+			t.Errorf("pane %v: status row = %q, want the search", p, got)
+		}
 	}
 }

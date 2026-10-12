@@ -563,6 +563,8 @@ type model struct {
 	pane paneID
 	// usage is the Usage pane's view state (metric, window, scope, snapshot).
 	usage usageState
+	// usageDoc is the usage pane's drawn lines, searched — see usageBody.
+	usageDoc searchDoc
 
 	// spend backs the always-on spend strip. Separate from usage on purpose —
 	// see spendState, which records why sharing one poll chain would blank the
@@ -602,19 +604,16 @@ type model struct {
 	sortCol      eventColumnID
 	sortDesc     bool
 	selectedSess string
-	// filter is the ACTIVE filter, which is not the same as the saved one:
-	// backToPodsPane clears this on teardown so a filter cannot survive a pod
-	// switch and read as data loss. Settings.Filter is the persisted value that
-	// seeds it, and that clear deliberately does not write back.
-	filter    string
-	filtering bool
-	// filterBeforeEdit is the committed filter as it stood when `/` was pressed, so
-	// Esc can restore it. Esc is documented as cancelling and means cancel everywhere
-	// else in agentop, but it used to clear the filter outright — and once the filter
-	// began persisting, that turned a mis-keyed Esc into the permanent loss of a
-	// committed filter. Clearing is still one action: empty the box and press Enter.
-	filterBeforeEdit string
-	paused           bool
+	// search is each target's committed `/` query, keyed by pane or targetHelp, and searching
+	// is whether the prompt is open, on searchPane. Never saved, and cleared by
+	// backToPodsPane. See search.go.
+	search     map[paneID]string
+	searching  bool
+	searchPane paneID
+	// searchOrigin is where the target was when `/` was pressed: the place typing searches
+	// from, and the place Esc puts it back.
+	searchOrigin searchSpot
+	paused       bool
 	// hideInactive toggles whether passthrough / skip-only messages are
 	// hidden from the events table. False (default) shows every message —
 	// the operator asked to see all network traffic, processed or not.
@@ -677,20 +676,23 @@ type model struct {
 	//
 	// Kept in lockstep with the rows, built in the same loop, and the only writer is
 	// rebuildSessionsTable. A parallel slice rather than a map because the lookup key is the
-	// cursor's row INDEX, and rather than indexing m.sessions because the rows are filtered and
+	// cursor's row INDEX, and rather than indexing m.sessions because the rows are scoped and
 	// interleaved with cached-only entries, so position does not map back.
 	sessionRowIDs []string
 	eventsTbl     table.Model
 	pipelineTbl   table.Model
 	catalogTbl    table.Model
 	detailVp      viewport.Model
-	detailEvent   *pipeline.SessionEvent
+	// detailDoc is detailVp's text, searched — see searchdoc.go. Shared by message detail
+	// and plugin detail, as the viewport is.
+	detailDoc   searchDoc
+	detailEvent *pipeline.SessionEvent
 	// detailRow is the full events-pane row (event + any folded CONNECT
 	// tunnel) the detail view was opened on. Kept so layout() can re-render
 	// the detail pane on resize without re-deriving the tunnel fold.
 	detailRow    eventRow
 	detailPlugin *apiclient.PipelinePlugin
-	filterInput  textinput.Model
+	searchInput  textinput.Model
 
 	// visibleRows holds the eventRow for each rendered row in eventsTbl —
 	// one per network message. Populated by rebuildEventsTable so
@@ -721,6 +723,8 @@ type model struct {
 	// a shared one because the overlay can open over the detail panes,
 	// which would otherwise have their scroll position clobbered.
 	helpVp viewport.Model
+	// helpDoc is the help overlay's drawn lines, searched — see syncHelpViewport.
+	helpDoc searchDoc
 
 	// catalog is the registered-plugin catalog from /v1/plugins,
 	// fetched lazily when the user first opens the catalog pane via
@@ -836,7 +840,7 @@ type model struct {
 	// eventsBuiltFor is the session the events table was last built for. When it
 	// differs from selectedSess the next rebuild is an OPENING, which is the only
 	// moment the OpenAtOldest preference applies — every later rebuild (the
-	// two-second poll, a filter, a column toggle) must preserve where the operator
+	// two-second poll, a search, a column toggle) must preserve where the operator
 	// is, not re-anchor them to an end.
 	eventsBuiltFor string
 
@@ -896,16 +900,6 @@ func (m *model) clock() time.Time {
 func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 	ctx, cancel := context.WithCancel(ctx)
 
-	ti := textinput.New()
-	ti.Placeholder = "filter…"
-	ti.Prompt = "/ "
-	// Seed the input, not just m.filter: the filter box renders only while filtering,
-	// so a restored filter was applied invisibly — the list came back truncated with
-	// nothing on screen saying why. Worse, `/` then one character replaced the saved
-	// filter with that character, and `/` then Esc persisted an empty one, discarding
-	// it for good.
-	ti.SetValue(Settings.Filter)
-
 	// Resolved once: sortSelection walks eventColumns to validate the persisted name,
 	// and the two fields are two halves of one answer.
 	sortCol, sortDesc := Settings.sortSelection()
@@ -929,7 +923,6 @@ func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 		sortCol:      sortCol,
 		sortDesc:     sortDesc,
 		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
-		filter:       Settings.Filter,
 		sessionsData: sessionMeta,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
@@ -941,7 +934,7 @@ func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 		// of "namespaces" would send esc from the pipeline into the picker.
 		pipelineReturnPane: paneNone,
 		detailVp:           viewport.New(0, 0),
-		filterInput:        ti,
+		searchInput:        newSearchInput(),
 		lastTick:           time.Now(),
 		connState:          connStateInfo{phase: connConnecting},
 	}
@@ -1083,18 +1076,23 @@ func (m *model) backToPodsPane() {
 	m.detailPlugin = nil
 	m.selectedSess = ""
 	m.selectedEventKey = eventKey{}
-	m.filter = ""
-	m.filtering = false
-	// The filter's line comes off the height budget while it is open, so dropping the flag
+	// A search names rows of the connection being left, so it goes with it — except on the two
+	// pickers, which list the cluster rather than the connection, and on the help overlay,
+	// whose search lasts until agentop exits.
+	for t := range m.search {
+		if t != paneNamespaces && t != panePods && t != targetHelp {
+			delete(m.search, t)
+		}
+	}
+	m.searching = false
+	m.searchInput.SetValue("")
+	// The prompt's line comes off the height budget while it is open, so dropping the flag
 	// has to give it back — see layout().
 	m.layout()
-	// The input too, not just the value. Since the input is seeded from saved
-	// settings it is a second source of truth, and leaving it behind meant that after
-	// backing out and entering the next pod, `/` presented the OLD filter text
-	// already in the box — one keystroke then committed "github-toolx" and Enter
-	// persisted it, over a list the footer correctly showed as unfiltered.
-	m.filterInput.SetValue("")
-	m.filterBeforeEdit = ""
+	// Every table keeps its own copy of its query, and only some panes rebuild here, so each
+	// target is redrawn against what is left: a query deleted from the map under a table left
+	// its highlights on screen and n moving between them.
+	m.redrawSearches()
 	m.visibleRows = nil
 	m.connState = connStateInfo{phase: connConnecting}
 
@@ -1129,7 +1127,10 @@ func (m *model) syncHelpViewport(resetScroll bool) {
 	w, h := helpViewportSize(m.width, m.height, helpBodyWidth(body))
 	m.helpVp.Width = w
 	m.helpVp.Height = h
-	m.helpVp.SetContent(body)
+	// The overlay lays itself out — each group wraps its descriptions under a hanging indent —
+	// so its drawn lines are what search reads; there is no unwrapped form to match.
+	m.helpDoc.setLines(strings.Split(body, "\n"), 0)
+	m.helpVp.SetContent(m.helpDoc.render(m.searchQuery(targetHelp)))
 	if resetScroll {
 		m.helpVp.GotoTop()
 		return
@@ -2240,13 +2241,21 @@ func (m *model) flushSessionsTable() {
 	m.rebuildSessionsTable()
 }
 
+// helpPrompt is the search prompt when it is open on the help overlay, else "".
+func (m *model) helpPrompt() string {
+	if m.searching && m.searchPane == targetHelp {
+		return m.searchInput.View()
+	}
+	return ""
+}
+
 // View composes the full screen. The [?] key-help overlay is layered on
 // top of whatever the pane rendered, so it works over the picker and the
 // session views alike.
 func (m *model) View() string {
 	base := m.paneView()
 	if m.helpVisible {
-		return overlayCenter(base, renderHelpOverlay(m.helpVp, m.width, m.height), m.width, m.height)
+		return overlayCenter(base, renderHelpOverlay(m.helpVp, m.width, m.height, m.helpPrompt(), m.searchStatus(targetHelp)), m.width, m.height)
 	}
 	if m.clearConfirm != nil {
 		return overlayCenter(base, renderClearConfirm(m.clearConfirm, m.width), m.width, m.height)
@@ -2296,6 +2305,12 @@ func (m *model) paneView() string {
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
+		if m.searching && m.searchPane != targetHelp {
+			body = m.searchInput.View() + "\n" + body
+		}
+		if st := m.searchStatus(m.pane); st != "" {
+			footer = st + "  " + footer
+		}
 		// Fitted like the session-view footer: an error prefix can push even a
 		// short picker hint past the terminal width, and a wrapped footer costs a
 		// row of the table above it.
@@ -2316,6 +2331,12 @@ func (m *model) paneView() string {
 		footer := m.helpView()
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
+		}
+		if m.searching && m.searchPane != targetHelp {
+			body = m.searchInput.View() + "\n" + body
+		}
+		if st := m.searchStatus(m.pane); st != "" {
+			footer = st + "  " + footer
 		}
 		// Fitted like the session-view footer: an error prefix can push even a
 		// short picker hint past the terminal width, and a wrapped footer costs a
@@ -2401,7 +2422,7 @@ func (m *model) paneView() string {
 		if m.agentScope != "" {
 			title += " · agent=" + sanitizeLabel(m.agentScope)
 		}
-		body = m.renderUsage(m.width, m.bodyHeight)
+		body = m.usageBody()
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
 		// this pane has no window cycle of its own to make that discoverable.
@@ -2447,8 +2468,8 @@ func (m *model) paneView() string {
 		title += " · agent=" + sanitizeLabel(m.agentScope)
 	}
 	header := styleTitle.Render(title)
-	if m.filtering {
-		body = m.filterInput.View() + "\n" + body
+	if m.searching && m.searchPane != targetHelp {
+		body = m.searchInput.View() + "\n" + body
 	}
 	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
 	// without needing a second call site. It sits directly under the title because that
@@ -2849,7 +2870,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 // follow xterm (the xterm-256color terminfo says khome=\EOH, kend=\EOF) then send
 // Home and End as ESC O H and ESC O F, and bubbletea v1.3.10 cannot read either —
 // it splits each into alt+O and a bare letter, so the tables' home/end bindings
-// stop working and Home in the filter box types an H. Terminal.app keeps Home and
+// stop working and Home in the search prompt types an H. Terminal.app keeps Home and
 // End for scrolling its own window by default, so it pays nothing for the mode.
 // GNOME Terminal, Konsole, Alacritty and kitty are believed to turn an alt-screen
 // scroll into arrows without it (not verified here), so elsewhere the mode would
