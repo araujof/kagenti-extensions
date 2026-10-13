@@ -33,6 +33,11 @@ than producing something subtly wrong: act runtimes must sum to `total`, a shell
 act whose content cannot be typed inside its runtime is an error, and so is one
 that overflows the grid.
 
+A shell step with `ansi: true` is drawn exactly as the program writes it to a
+terminal: its lines carry SGR escapes, spelled `\e` in YAML, and are decoded as the
+agentop screens are. The install act is one, because setup's colours are what make it
+read as setup. `bar: N` makes line N a progress bar that fills during its own delay.
+
 To see a frame at a chosen moment, inject a global negative delay — every animation
 shares one absolute timeline, so this seeks all of them at once:
 

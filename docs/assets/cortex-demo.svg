@@ -14,56 +14,68 @@ g.st0{animation:st0 58s linear infinite}
 .cur0_0{animation:cx0_0 58s steps(91,end) infinite,cv0_0 58s linear infinite,blink 1s steps(1,end) infinite}
 @keyframes rv0_1{0%,7.3059%{visibility:hidden}7.3069%,100%{visibility:visible}}
 .rv0_1{animation:rv0_1 58s linear infinite}
-@keyframes rv0_2{0%,11.4438%{visibility:hidden}11.4448%,100%{visibility:visible}}
-.rv0_2{animation:rv0_2 58s linear infinite}
-@keyframes rv0_3{0%,11.4956%{visibility:hidden}11.4966%,100%{visibility:visible}}
+@keyframes tp0_2{0%,7.3069%{width:16.8px}10.7552%{width:352.8px}10.7562%,100%{width:621.6px}}
+#cl0_2 rect{animation:tp0_2 58s steps(40,end) infinite}
+@keyframes rv0_3{0%,11.1852%{visibility:hidden}11.1862%,100%{visibility:visible}}
 .rv0_3{animation:rv0_3 58s linear infinite}
-@keyframes rv0_4{0%,11.5473%{visibility:hidden}11.5483%,100%{visibility:visible}}
+@keyframes rv0_4{0%,11.2369%{visibility:hidden}11.2379%,100%{visibility:visible}}
 .rv0_4{animation:rv0_4 58s linear infinite}
-@keyframes rv0_5{0%,11.9783%{visibility:hidden}11.9793%,100%{visibility:visible}}
+@keyframes rv0_5{0%,11.3059%{visibility:hidden}11.3069%,100%{visibility:visible}}
 .rv0_5{animation:rv0_5 58s linear infinite}
-@keyframes rv0_6{0%,12.0473%{visibility:hidden}12.0483%,100%{visibility:visible}}
+@keyframes rv0_6{0%,11.3749%{visibility:hidden}11.3759%,100%{visibility:visible}}
 .rv0_6{animation:rv0_6 58s linear infinite}
-@keyframes rv0_7{0%,12.1162%{visibility:hidden}12.1172%,100%{visibility:visible}}
+@keyframes rv0_7{0%,11.4438%{visibility:hidden}11.4448%,100%{visibility:visible}}
 .rv0_7{animation:rv0_7 58s linear infinite}
-@keyframes rv0_8{0%,12.1852%{visibility:hidden}12.1862%,100%{visibility:visible}}
+@keyframes rv0_8{0%,11.5128%{visibility:hidden}11.5138%,100%{visibility:visible}}
 .rv0_8{animation:rv0_8 58s linear infinite}
-@keyframes rv0_9{0%,12.2542%{visibility:hidden}12.2552%,100%{visibility:visible}}
+@keyframes rv0_9{0%,11.5645%{visibility:hidden}11.5655%,100%{visibility:visible}}
 .rv0_9{animation:rv0_9 58s linear infinite}
-@keyframes rv0_10{0%,12.3059%{visibility:hidden}12.3069%,100%{visibility:visible}}
+@keyframes rv0_10{0%,11.6162%{visibility:hidden}11.6172%,100%{visibility:visible}}
 .rv0_10{animation:rv0_10 58s linear infinite}
-@keyframes rv0_11{0%,12.3576%{visibility:hidden}12.3586%,100%{visibility:visible}}
+@keyframes rv0_11{0%,11.6680%{visibility:hidden}11.6690%,100%{visibility:visible}}
 .rv0_11{animation:rv0_11 58s linear infinite}
-@keyframes rv0_12{0%,12.4093%{visibility:hidden}12.4103%,100%{visibility:visible}}
+@keyframes rv0_12{0%,13.7369%{visibility:hidden}13.7379%,100%{visibility:visible}}
 .rv0_12{animation:rv0_12 58s linear infinite}
-@keyframes rv0_13{0%,14.4783%{visibility:hidden}14.4793%,100%{visibility:visible}}
+@keyframes rv0_13{0%,13.7887%{visibility:hidden}13.7897%,100%{visibility:visible}}
 .rv0_13{animation:rv0_13 58s linear infinite}
-@keyframes rv0_14{0%,14.5300%{visibility:hidden}14.5310%,100%{visibility:visible}}
+@keyframes rv0_14{0%,14.3059%{visibility:hidden}14.3069%,100%{visibility:visible}}
 .rv0_14{animation:rv0_14 58s linear infinite}
-@keyframes rv0_15{0%,15.0473%{visibility:hidden}15.0483%,100%{visibility:visible}}
+@keyframes rv0_15{0%,14.4783%{visibility:hidden}14.4793%,100%{visibility:visible}}
 .rv0_15{animation:rv0_15 58s linear infinite}
-@keyframes rv0_16{0%,15.3059%{visibility:hidden}15.3069%,100%{visibility:visible}}
+@keyframes rv0_16{0%,14.8231%{visibility:hidden}14.8241%,100%{visibility:visible}}
 .rv0_16{animation:rv0_16 58s linear infinite}
-@keyframes rv0_17{0%,15.7369%{visibility:hidden}15.7379%,100%{visibility:visible}}
+@keyframes rv0_17{0%,17.0645%{visibility:hidden}17.0655%,100%{visibility:visible}}
 .rv0_17{animation:rv0_17 58s linear infinite}
-@keyframes rv0_18{0%,17.9783%{visibility:hidden}17.9793%,100%{visibility:visible}}
+@keyframes rv0_18{0%,17.1162%{visibility:hidden}17.1172%,100%{visibility:visible}}
 .rv0_18{animation:rv0_18 58s linear infinite}
-@keyframes rv0_19{0%,18.0300%{visibility:hidden}18.0310%,100%{visibility:visible}}
+@keyframes rv0_19{0%,17.1680%{visibility:hidden}17.1690%,100%{visibility:visible}}
 .rv0_19{animation:rv0_19 58s linear infinite}
-@keyframes rv0_20{0%,18.2369%{visibility:hidden}18.2379%,100%{visibility:visible}}
+@keyframes rv0_20{0%,17.2197%{visibility:hidden}17.2207%,100%{visibility:visible}}
 .rv0_20{animation:rv0_20 58s linear infinite}
-@keyframes rv0_21{0%,18.2887%{visibility:hidden}18.2897%,100%{visibility:visible}}
+@keyframes rv0_21{0%,17.2714%{visibility:hidden}17.2724%,100%{visibility:visible}}
 .rv0_21{animation:rv0_21 58s linear infinite}
-@keyframes rv0_22{0%,18.3404%{visibility:hidden}18.3414%,100%{visibility:visible}}
+@keyframes rv0_22{0%,17.3231%{visibility:hidden}17.3241%,100%{visibility:visible}}
 .rv0_22{animation:rv0_22 58s linear infinite}
-@keyframes rv0_23{0%,18.3921%{visibility:hidden}18.3931%,100%{visibility:visible}}
+@keyframes rv0_23{0%,17.3749%{visibility:hidden}17.3759%,100%{visibility:visible}}
 .rv0_23{animation:rv0_23 58s linear infinite}
-@keyframes rv0_24{0%,18.4438%{visibility:hidden}18.4448%,100%{visibility:visible}}
+@keyframes rv0_24{0%,17.4266%{visibility:hidden}17.4276%,100%{visibility:visible}}
 .rv0_24{animation:rv0_24 58s linear infinite}
-@keyframes rv0_25{0%,18.4956%{visibility:hidden}18.4966%,100%{visibility:visible}}
+@keyframes rv0_25{0%,17.4783%{visibility:hidden}17.4793%,100%{visibility:visible}}
 .rv0_25{animation:rv0_25 58s linear infinite}
-@keyframes rv0_26{0%,18.5473%{visibility:hidden}18.5483%,100%{visibility:visible}}
+@keyframes rv0_26{0%,17.5300%{visibility:hidden}17.5310%,100%{visibility:visible}}
 .rv0_26{animation:rv0_26 58s linear infinite}
+@keyframes rv0_27{0%,17.5818%{visibility:hidden}17.5828%,100%{visibility:visible}}
+.rv0_27{animation:rv0_27 58s linear infinite}
+@keyframes rv0_28{0%,17.6335%{visibility:hidden}17.6345%,100%{visibility:visible}}
+.rv0_28{animation:rv0_28 58s linear infinite}
+@keyframes rv0_29{0%,17.6852%{visibility:hidden}17.6862%,100%{visibility:visible}}
+.rv0_29{animation:rv0_29 58s linear infinite}
+@keyframes rv0_30{0%,17.7369%{visibility:hidden}17.7379%,100%{visibility:visible}}
+.rv0_30{animation:rv0_30 58s linear infinite}
+@keyframes rv0_31{0%,17.7887%{visibility:hidden}17.7897%,100%{visibility:visible}}
+.rv0_31{animation:rv0_31 58s linear infinite}
+@keyframes rv0_32{0%,17.8404%{visibility:hidden}17.8414%,100%{visibility:visible}}
+.rv0_32{animation:rv0_32 58s linear infinite}
 @keyframes st1{0%,22.4128%{opacity:0}22.4138%,34.4818%{opacity:1}34.4828%,100%{opacity:0}}
 g.st1{animation:st1 58s linear infinite}
 @keyframes tp1_0{0%,22.4138%{width:0}25.0207%,100%{width:319.2px}}
@@ -251,32 +263,70 @@ clipPath rect{width:100000px}
 <clipPath id="cl0_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
 <text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="747.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh</tspan></text>
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
-<text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
-<text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  rosso cortex · installer   v0.9.3 · darwin/arm64</tspan></text>
-<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ downloaded   24.0 MB · sha256 verified</tspan></text>
-<text class="rv rv0_4" y="130.0"></text>
-<text class="rv rv0_5" y="148.0"><tspan x="16.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  This will:</tspan></text>
-<text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="394.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    install  agentop, cortex       ~/.local/bin</tspan></text>
-<text class="rv rv0_7" y="184.0"><tspan x="16.0" textLength="504.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    add      ~/.local/bin to PATH  ~/.zshrc (2 marked lines)</tspan></text>
-<text class="rv rv0_8" y="202.0"><tspan x="16.0" textLength="470.4" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    write    the cortex config     ~/.cortex/config.yaml</tspan></text>
-<text class="rv rv0_9" y="220.0"><tspan x="16.0" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    run      the cortex proxy      launchd user agent · 127.0.0.1:47600</tspan></text>
-<text class="rv rv0_10" y="238.0"></text>
-<text class="rv rv0_11" y="256.0"><tspan x="16.0" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Undo any time: agentop uninstall</tspan></text>
-<text class="rv rv0_12" y="274.0"></text>
-<text class="rv rv0_13" y="292.0"><tspan x="16.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Continue? [Y/n] y</tspan></text>
-<text class="rv rv0_14" y="310.0"></text>
-<text class="rv rv0_15" y="328.0"><tspan x="16.0" textLength="394.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ installed    agentop, cortex → ~/.local/bin</tspan></text>
-<text class="rv rv0_16" y="346.0"><tspan x="16.0" textLength="210.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ PATH         ~/.zshrc</tspan></text>
-<text class="rv rv0_17" y="364.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ config       ~/.cortex/config.yaml</tspan></text>
-<text class="rv rv0_18" y="382.0"><tspan x="16.0" textLength="537.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ started      launchd user agent · healthy on 127.0.0.1:47600</tspan></text>
-<text class="rv rv0_19" y="400.0"></text>
-<text class="rv rv0_20" y="418.0"><tspan x="16.0" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  cortex v0.9.3 ready.</tspan></text>
-<text class="rv rv0_21" y="436.0"></text>
-<text class="rv rv0_22" y="454.0"><tspan x="16.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Open a new terminal, then:</tspan></text>
-<text class="rv rv0_23" y="472.0"></text>
-<text class="rv rv0_24" y="490.0"><tspan x="16.0" textLength="529.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    agentop exec -- &lt;cmd&gt;        # send an agent through Cortex</tspan></text>
-<text class="rv rv0_25" y="508.0"></text>
-<text class="rv rv0_26" y="526.0"><tspan x="16.0" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Undo any time: agentop uninstall</tspan></text>
+<text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  rosso cortex · installer                               v0.9.3 · darwin/arm64</tspan></text>
+<clipPath id="cl0_2"><rect x="16.0" y="81.0" width="0" height="18.0"/></clipPath>
+<text clip-path="url(#cl0_2)" y="94.0"><tspan x="32.8" textLength="336.0" lengthAdjust="spacingAndGlyphs" fill="#d75f5f">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</tspan><tspan x="368.8" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  100%  15.6 MB · sha256 ✓  2.0s</tspan></text>
+<text class="rv rv0_4" y="130.0"><tspan x="16.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  This will:</tspan></text>
+<text class="rv rv0_5" y="148.0"><tspan x="16.0" textLength="294.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    install  agentop, cortex       </tspan><tspan x="310.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">~/.local/bin</tspan></text>
+<text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="294.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    add      ~/.local/bin to PATH  </tspan><tspan x="310.0" textLength="210.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">~/.zshrc (2 marked lines)</tspan></text>
+<text class="rv rv0_7" y="184.0"><tspan x="16.0" textLength="294.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    write    the cortex config     </tspan><tspan x="310.0" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">~/.cortex/config.yaml</tspan></text>
+<text class="rv rv0_8" y="202.0"><tspan x="16.0" textLength="294.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    run      the cortex proxy      </tspan><tspan x="310.0" textLength="302.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">launchd user agent · 127.0.0.1:47600</tspan></text>
+<text class="rv rv0_10" y="238.0"><tspan x="32.8" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">Undo any time: agentop uninstall</tspan></text>
+<text class="rv rv0_12" y="274.0"><tspan x="16.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  Continue? [Y/n] y</tspan></text>
+<text class="rv rv0_14" y="310.0"><tspan x="32.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">✓</tspan><tspan x="41.2" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> installed    agentop, cortex → ~/.local/bin                           </tspan><tspan x="637.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.3s</tspan></text>
+<text class="rv rv0_15" y="328.0"><tspan x="32.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">✓</tspan><tspan x="41.2" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> PATH         ~/.zshrc                                                 </tspan><tspan x="637.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.1s</tspan></text>
+<text class="rv rv0_16" y="346.0"><tspan x="32.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">✓</tspan><tspan x="41.2" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> config       ~/.cortex/config.yaml                                    </tspan><tspan x="637.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.2s</tspan></text>
+<text class="rv rv0_17" y="364.0"><tspan x="32.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">✓</tspan><tspan x="41.2" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> started      launchd user agent · healthy on 127.0.0.1:47600          </tspan><tspan x="637.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">1.3s</tspan></text>
+<rect class="rv rv0_19" x="41.2" y="387.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="108.4" y="387.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="175.6" y="387.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="242.8" y="387.0" width="67.2" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="318.4" y="387.0" width="58.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="385.6" y="387.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_19" x="427.6" y="387.0" width="16.8" height="18.0" fill="#f97066"/>
+<text class="rv rv0_19" y="400.0"><tspan x="32.8" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#f97066">       ╗       ╗       ╗         ╗       ╗  ╗    ╗</tspan></text>
+<rect class="rv rv0_20" x="32.8" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="100.0" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="150.4" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="175.6" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="217.6" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="268.0" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="318.4" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="394.0" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_20" x="419.2" y="405.0" width="16.8" height="18.0" fill="#f97066"/>
+<text class="rv rv0_20" y="418.0"><tspan x="32.8" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#f97066">  ╔════╝  ╔═══  ╗  ╔══  ╗╚══  ╔══╝  ╔════╝╚  ╗  ╔╝</tspan></text>
+<rect class="rv rv0_21" x="32.8" y="423.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="100.0" y="423.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="150.4" y="423.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="175.6" y="423.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="268.0" y="423.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="318.4" y="423.0" width="42.0" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_21" x="402.4" y="423.0" width="25.2" height="18.0" fill="#f97066"/>
+<text class="rv rv0_21" y="436.0"><tspan x="32.8" textLength="411.6" lengthAdjust="spacingAndGlyphs" fill="#f97066">  ║       ║     ║      ╔╝     ║        ╗   ╚   ╔╝</tspan></text>
+<rect class="rv rv0_22" x="32.8" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="100.0" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="150.4" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="175.6" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="217.6" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="268.0" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="318.4" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="394.0" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_22" x="419.2" y="441.0" width="16.8" height="18.0" fill="#f97066"/>
+<text class="rv rv0_22" y="454.0"><tspan x="32.8" textLength="411.6" lengthAdjust="spacingAndGlyphs" fill="#f97066">  ║       ║     ║  ╔══  ╗     ║     ╔══╝     ╔  ╗</tspan></text>
+<rect class="rv rv0_23" x="41.2" y="459.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="108.4" y="459.0" width="50.4" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="175.6" y="459.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="217.6" y="459.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="268.0" y="459.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="318.4" y="459.0" width="58.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="385.6" y="459.0" width="16.8" height="18.0" fill="#f97066"/>
+<rect class="rv rv0_23" x="427.6" y="459.0" width="16.8" height="18.0" fill="#f97066"/>
+<text class="rv rv0_23" y="472.0"><tspan x="32.8" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#f97066">╚      ╗╚      ╔╝  ║    ║     ║          ╗  ╔╝   ╗</tspan></text>
+<text class="rv rv0_24" y="490.0"><tspan x="32.8" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#f97066"> ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝</tspan></text>
+<text class="rv rv0_26" y="526.0"><tspan x="16.0" textLength="201.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    v0.9.3 ready in 1.9s</tspan></text>
+<text class="rv rv0_28" y="562.0"><tspan x="16.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  Open a new terminal, then:</tspan></text>
+<text class="rv rv0_30" y="598.0"><tspan x="16.0" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">    agentop exec -- &lt;cmd&gt;        </tspan><tspan x="293.2" textLength="252.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af"># send an agent through Cortex</tspan></text>
+<text class="rv rv0_32" y="634.0"><tspan x="32.8" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">Undo any time: agentop uninstall</tspan></text>
 </g>
 <g class="st st1 lbl-connect">
 <clipPath id="cl1_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
