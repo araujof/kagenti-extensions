@@ -10,9 +10,9 @@ go test ./...               # includes the staleness check
 
 ## What it is
 
-A ~50s animated SVG, in four narrative beats: the install one-liner, the Claude
-Code consent prompt, three Claude Code sessions, then `agentop` answering "where did
-the money go?".
+A ~1 minute animated SVG that follows the README's quick start: the install one-liner,
+`agentop configure claude-code enable` in a new terminal, three Claude Code sessions
+started as usual, then `agentop observe` answering "where did the money go?".
 
 **The agentop screens are rendered by the real agentop.** `tuicapture.go` starts a real
 `session.Store`, `usage.Aggregator` and `ledger.Writer`, attaches the

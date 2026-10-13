@@ -6,7 +6,7 @@ Works with **Claude Code**, **OpenCode** and **IBM Bob**, and with any agent tha
 use an HTTPS proxy.
 
 <img src="./docs/assets/cortex-demo.svg" width="100%"
-     alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
+     alt="A terminal installs Cortex with one command, and a second command points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
 
 Cortex sits in your agent's request path on your own machine, decrypts the traffic,
 and shows you every model call, tool call and agent-to-agent message as it happens.

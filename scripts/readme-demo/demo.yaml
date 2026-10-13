@@ -3,14 +3,19 @@
 # Regenerate the asset after editing:  go run .
 # CI fails if docs/assets/cortex-demo.svg does not match this file.
 #
-# Every string in the shell act is copied from the real source, not paraphrased.
-# The sources are scripts/install.sh (the download line) and agentop setup, which
+# The shell acts follow the README's quick start command for command: install, connect
+# the agent in a new terminal, run it as usual, and watch it in another.
+#
+# Every string in the shell acts is copied from the real source, not paraphrased.
+# The sources are scripts/install.sh (the download line); agentop setup, which
 # install.sh execs: cmd/agentop/cmd_setup.go, cmd/agentop/setup_step_*.go and
-# cmd/agentop/checklist. grep a quoted fragment below to find the line it came from,
-# rather than trusting a line number here. Most of these strings interpolate a variable
-# at source, so grep a literal prefix of one rather than the whole rendered line. Setup's
-# lines are the plain-mode output its e2e tests assert (setup_e2e_test.go), with the
-# demo's version in place of the tests' v9.9.9.
+# cmd/agentop/checklist; and agentop configure claude-code: cmd/agentop/cmd_claudecode.go.
+# grep a quoted fragment below to find the line it came from, rather than trusting a
+# line number here. Most of these strings interpolate a variable at source, so grep a
+# literal prefix of one rather than the whole rendered line. Setup's lines are its
+# plain-mode output, which setup_e2e_test.go asserts, with the demo's version in place
+# of the tests' v9.9.9; configure's are cmd_claudecode_characterize_test.go's, with
+# /Users/you as the home directory.
 # If those strings change, change them here too — the demo claims to be cortex.
 #
 # Plain mode, because a shell act only adds rows. On a real terminal the download line
@@ -19,33 +24,31 @@
 # and "v0.9.3 ready in Ns" replace "cortex v0.9.3 ready.". None of that can be drawn
 # here without inventing timings.
 
-total: 50s
+total: 58s
 grid:
   cols: 120
   rows: 34
 
 acts:
-  # Acts 1 and 2 of the storyboard are one continuous terminal, because
-  # --claude-code adds a "route Claude Code via Cortex" row to setup's one consent
-  # screen: the installer asks once, for everything, and routes Claude Code itself.
-  # So the consent prompt arrives in the middle of the install, with nothing typed
-  # but the y.
+  # The one-liner exactly as the README gives it, with no flags: setup asks once,
+  # for everything it will change, so the consent prompt arrives in the middle of the
+  # install with nothing typed but the y. Without --claude-code its closing hint
+  # names agentop exec, not configure; the next act is the README's next step.
   - name: install
     kind: shell
-    runtime: 14s
+    runtime: 13s
     steps:
-      - cmd: "curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --claude-code"
+      - cmd: "curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh"
         out:
           - "Downloading v0.9.3 for darwin/arm64..."
           - "  rosso cortex · installer   v0.9.3 · darwin/arm64"
           - "  ✓ downloaded   24.0 MB · sha256 verified"
           - ""
           - "  This will:"
-          - "    install  agentop, cortex         ~/.local/bin"
-          - "    add      ~/.local/bin to PATH    ~/.zshrc (2 marked lines)"
-          - "    write    the cortex config       ~/.cortex/config.yaml"
-          - "    run      the cortex proxy        launchd user agent · 127.0.0.1:47600"
-          - "    route    Claude Code via Cortex  ~/.claude/settings.json"
+          - "    install  agentop, cortex       ~/.local/bin"
+          - "    add      ~/.local/bin to PATH  ~/.zshrc (2 marked lines)"
+          - "    write    the cortex config     ~/.cortex/config.yaml"
+          - "    run      the cortex proxy      launchd user agent · 127.0.0.1:47600"
           - ""
           - "  Undo any time: agentop uninstall"
           - ""
@@ -55,13 +58,12 @@ acts:
           - "  ✓ PATH         ~/.zshrc"
           - "  ✓ config       ~/.cortex/config.yaml"
           - "  ✓ started      launchd user agent · healthy on 127.0.0.1:47600"
-          - "  ✓ routed       Claude Code → Cortex"
           - ""
           - "  cortex v0.9.3 ready."
           - ""
           - "  Open a new terminal, then:"
           - ""
-          - "    agentop        # watch your agent traffic live"
+          - "    agentop exec -- <cmd>        # send an agent through Cortex"
           - ""
           - "  Undo any time: agentop uninstall"
         # The long pause on the download is the trick that makes an authored
@@ -78,7 +80,6 @@ acts:
           - 40ms
           - 40ms
           - 40ms
-          - 40ms
           - 30ms
           - 30ms
           - 30ms
@@ -88,7 +89,6 @@ acts:
           - 150ms
           - 250ms
           - 1300ms
-          - 250ms
           - 30ms
           - 120ms
           - 30ms
@@ -98,9 +98,62 @@ acts:
           - 30ms
           - 30ms
 
-  # Three Claude Code sessions, one per working directory. These are the same
-  # three the next act opens on: agentop names sessions from Claude Code metadata,
-  # so the reader should recognise them by title.
+  # A new terminal, because the PATH edit reaches only new ones — and a new screen,
+  # which is what lets configure's preview fit. The macOS note is printed on every
+  # darwin enable that has something to write, so it stays.
+  - name: connect
+    kind: shell
+    runtime: 7s
+    steps:
+      - cmd: "agentop configure claude-code enable"
+        out:
+          - "Note: on macOS, Go tools (go, gh, helm) trust only the keychain, so unless"
+          - "  macOS trusts Cortex's CA, Cortex passes their HTTPS through unread rather"
+          - "  than breaking them. To have Cortex read them:"
+          - "    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db -p ssl \\"
+          - "      /Users/you/.cortex/ca/ca.crt"
+          - "  (undo: security delete-certificate -c authbridge-tls-bridge-ca \\"
+          - "     ~/Library/Keychains/login.keychain-db)"
+          - ""
+          - "Adds to the \"env\" block of /Users/you/.claude/settings.json:"
+          - "  HTTPS_PROXY=http://127.0.0.1:47600"
+          - "  NODE_EXTRA_CA_CERTS=/Users/you/.cortex/ca/ca.crt"
+          - "  SSL_CERT_FILE=/Users/you/.cortex/ca/bundle.crt"
+          - "  GIT_SSL_CAINFO=/Users/you/.cortex/ca/bundle.crt"
+          - "  REQUESTS_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt"
+          - "  CURL_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt"
+          - "  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+          - "Nothing else in the file changes; a copy is kept as /Users/you/.claude/settings.json.bak"
+          - ""
+          - "Apply? [y/N] y"
+          - "Enabled — run `claude` as usual."
+        # Everything up to the prompt prints at once; the pause before the y is the
+        # reader's time to take in what will be written.
+        slow:
+          - 200ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 30ms
+          - 1500ms
+          - 300ms
+
+  # Three Claude Code sessions, one per working directory, each started the way it
+  # always was. These are the same three agentop opens on: it names sessions from
+  # Claude Code metadata, so the reader should recognise them by title.
   - name: sessions
     kind: windows
     runtime: 6s
@@ -120,6 +173,14 @@ acts:
           - "$ claude"
           - "▸ debug the helm chart"
           - "  Bash helm template ."
+
+  # In another terminal, the command that opens the next act. Nothing else on screen
+  # names it now that setup's closing hint is agentop exec.
+  - name: observe
+    kind: shell
+    runtime: 2s
+    steps:
+      - cmd: "agentop observe"
 
   # Where did the money go? Answered with evidence, in the real agentop.
   - name: insights
