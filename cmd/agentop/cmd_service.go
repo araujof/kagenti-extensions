@@ -697,7 +697,7 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Cortex is healthy according to %s\n", p.healthURL)
 		return 0
 	}
-	reportNotAnswering(p.healthURL, p.logFile, stdout)
+	reportNotAnswering(p, stdout)
 	return 1
 }
 
@@ -740,12 +740,53 @@ func proxyServing(p servicePaths) bool {
 
 // reportNotAnswering names the state worth naming loudly: installed but not serving,
 // so a configured Claude Code or OpenCode is pointed at a proxy that is not answering.
-func reportNotAnswering(where, logFile string, stdout io.Writer) {
-	fmt.Fprintf(stdout, "Cortex is NOT answering %s\n", where)
+// When something else holds the forward port, that is named first — it is the one
+// cause of this silence that no amount of restarting fixes (#1122).
+func reportNotAnswering(p servicePaths, stdout io.Writer) {
+	fmt.Fprintf(stdout, "Cortex is NOT answering %s\n", p.healthURL)
+	for _, line := range foreignHolderLines(p) {
+		fmt.Fprintf(stdout, "  %s\n", line)
+	}
 	fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Last log lines:\n")
-	for _, line := range lastLines(logFile, 5) {
+	for _, line := range lastLines(p.logFile, 5) {
 		fmt.Fprintf(stdout, "    %s\n", line)
 	}
+}
+
+// foreignHolderLines names a process that holds the forward port and is not this
+// install's proxy, in the sentence setup's own preflight uses — it is the same
+// condition met at a different time, and `service install` cannot catch it because the
+// other install may be started long afterwards. The proxy's log says it too, on every
+// restart attempt, but the log tail below is five lines of a supervisor's output and
+// the one line that explains them should not have to be found in it.
+//
+// Empty when the port is free, when our own proxy holds it (the pidfile is stale, or
+// it is starting), or when the holder cannot be named: "something holds it" would add
+// noise rather than an answer.
+func foreignHolderLines(p servicePaths) []string {
+	if p.forwardAddr == "" {
+		return nil
+	}
+	pid, exe, ok := portHolder(portOfAddr(p.forwardAddr))
+	if !ok || ourProxy(filepath.Dir(p.binary), p.pidFile, pid, exe) {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("%s is held by %s (pid %d), not this Cortex", p.forwardAddr, tildePath(p.home, exe), pid)}
+	// A foreign Cortex also explains the OTHER symptom, which does not look related:
+	// requests do reach the port, and are bridged with that install's CA, so agents
+	// report a self-signed certificate rather than a connection failure.
+	if b := filepath.Base(exe); b == "cortex" || b == "authbridge-proxy" {
+		lines = append(lines, "That is another Cortex, so requests reaching it are bridged with ITS CA — which is the self-signed-certificate error agents report.")
+	}
+	switch job := holderJob(runtime.GOOS, pid); {
+	case job != "": // a kill would only have its supervisor start it again
+		lines = append(lines, "Stop the job that runs it: "+job)
+	case runtime.GOOS == "darwin":
+		lines = append(lines, fmt.Sprintf("Stop it:  kill %d  — or, if it is an older Cortex service:  %s", pid, launchdBootout(launchdLabel)))
+	default:
+		lines = append(lines, fmt.Sprintf("Stop it:  kill %d  — or, if it is an older Cortex service:  systemctl --user disable --now %s", pid, systemdUnit))
+	}
+	return lines
 }
 
 // serviceControl is the whole reason users never need launchctl or systemctl: a
