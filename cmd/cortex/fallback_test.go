@@ -182,3 +182,46 @@ func startFallback(t *testing.T) string {
 	t.Cleanup(fb.close)
 	return addr
 }
+
+// The sequence the supervisor runs, asserted as a property rather than by driving
+// runSupervisor, which execs a real binary: the fallback must be closed while a child
+// holds the address and open again once it does not. Binding the address in between is
+// the stand-in for the child.
+func TestFallbackServer_YieldsTheAddressToAChildAndTakesItBack(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	fb := &fallbackServer{}
+	fb.openOn(ln)
+
+	// What the supervisor does before every cmd.Start().
+	fb.close()
+	child, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("the child could not bind %s after the fallback closed: %v", addr, err)
+	}
+
+	// While the child serves, the fallback must not be listening -- opening it here is
+	// what the supervisor must NOT do, and if it did, this bind would fail.
+	_ = child.Close()
+
+	// What the supervisor does once the child exits.
+	fb.open(addr)
+	t.Cleanup(fb.close)
+
+	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("nothing is listening on %s after the child exited: %v", addr, err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.Write([]byte("CONNECT x:443 HTTP/1.1\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(c)
+	if !strings.Contains(string(b), fallbackReason) {
+		t.Errorf("after the child exited the address answers %q, want the refusal", string(b))
+	}
+}
