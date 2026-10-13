@@ -83,12 +83,14 @@ const SessionIDHeader = "X-Session-Id"
 // in that list, so any client sending one of the three dedicated headers still
 // wins. Canonical casing, for the reason the others give.
 //
-// Only Codex's INFERENCE requests carry it; its plugin-list and MCP chatter does
-// not, which is the right side of that split to be on. Unconfirmed on the
-// interactive TUI — its startup chatter carries Originator but had not reached
-// an inference request when the capture window closed, and the TUI shares one
-// HTTP client with codex exec, so it probably sends this too. If it does not,
-// this still earns its place on `codex exec` alone.
+// WHICH REQUESTS CARRY IT DIFFERS BY FRONT-END, measured on both. Under `codex
+// exec` only the inference requests do, so a run also leaves a small
+// pending:codex@<pid> bucket for the chatter that preceded them. The TUI sends
+// it on its chatter too — a TUI session was named with zero inference requests
+// in it — so a TUI run leaves one row rather than two. Both confirmed by
+// driving the real clients through the proxy; the TUI needed
+// `-c check_for_update_on_startup=false -c features.api_key_model_discovery=false`
+// to suppress the two modal dialogs that otherwise block its composer.
 const CodexSessionHeader = "Session-Id"
 
 // IDFromHeaders returns the first usable session id found in h among names,

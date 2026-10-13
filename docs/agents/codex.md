@@ -157,11 +157,17 @@ unrecognised and shows under its raw label. Captured from Codex 0.160.1.
 install reads it. Captured on `codex_exec/0.160.1`: a UUID, constant across all nine
 inference requests of one multi-turn session and different in the next.
 
-Only Codex's **inference** requests carry it; its plugin-list and MCP chatter does not,
-which is the right side of that split to be on — though it does mean one Codex run leaves
-**two** rows: the conversation under its real id, and a small `pending:codex@<pid>.<start>`
-bucket holding the chatter that arrived before any inference request named the session
-(15 events against 113 on a measured run). The tokens and cost are all in the named one. `Session-Id` is read **last** in the
+**Which requests carry it differs between the two front-ends**, and it is worth knowing
+because it decides how many rows a run leaves:
+
+| | Carries `Session-Id` | Rows per run |
+|---|---|---|
+| `codex exec` | its **inference** requests; the plugin-list and MCP chatter does not | **two** — the conversation under its real id, plus a small `pending:codex@<pid>.<start>` bucket for the chatter that arrived before anything named the session (15 events against 113, measured) |
+| the TUI (plain `codex`) | **also its chatter** — a TUI session was named with *zero* inference requests in it | **one** — everything lands in the named session, no pending bucket |
+
+Either way the tokens and cost are in the named session. Note that once a session is
+named, `client_affinity` files header-less requests from the same agent into it too, so a
+row's presence there is not by itself proof that *that* request carried the header. `Session-Id` is read **last** in the
 header precedence order, after the three dedicated names, because it is the least
 namespaced of the four — and for the same reason it is read **only on a loopback-only
 install**, exactly as `X-Session-Id` is. In a cluster an agent may send a bare
@@ -175,12 +181,6 @@ shipped keeps the old three names and will not read Codex's. Check with
 `grep -A5 id_headers ~/.cortex/config.yaml`: if the list is there and has no
 `"Session-Id"`, add it as the last entry, or delete the whole `id_headers:` block to fall
 back to the current default. A config that never had the block is already fine.
-
-⚠️ **Unconfirmed on the interactive TUI.** The evidence above is `codex exec` only — the
-TUI's startup chatter carries `Originator` but had not reached an inference request when
-the capture window closed. The two share one HTTP client, so the TUI very likely sends it
-too, but that is inference rather than evidence. If it does not, `codex exec` still gets
-named sessions.
 
 Before this, Codex's traffic landed in a per-process bucket (`pending:codex@<pid>.<start>`)
 and stayed there — one bucket per process rather than per conversation, so two
