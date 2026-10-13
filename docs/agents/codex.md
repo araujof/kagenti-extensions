@@ -188,15 +188,39 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
-**Tokens, but not cost.** Token counts come from the Responses API's usage block and
-aggregate alongside other agents (verified: a one-turn `codex exec` reported 13,260 tokens
-under the `codex` series of `GET /v1/usage?group=agent`). **Cost does not**, because Cortex
-ships no rate for the model Codex uses — that turn counted as one *priceable* request and
-zero *priced* ones, with no amount. The model is served on a ChatGPT subscription rather
-than per-token API billing, so there may be no public per-token rate to apply. Add a
-`pricing:` entry if you have one;
-[Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced) shows
-how to identify the endpoint and model.
+**Tokens always; cost only if you configure a rate.** Token counts come from the Responses
+API's usage block and aggregate alongside other agents (verified: a one-turn `codex exec`
+reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`). **Cost is
+blank out of the box**, and the reason is not Codex-specific: the bundled rate table is
+**Anthropic-only by design**, so any agent on a non-Anthropic model reports its requests
+as *priceable but unpriced* — named, never under-priced. See
+[Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced).
+
+A rate does exist upstream if you want one. These are the first-party OpenAI list prices
+for the model Codex uses, from the same LiteLLM table the bundled one is generated from:
+
+```yaml
+# ~/.cortex/config.yaml
+pricing:
+  endpoints:
+    - hosts: ["chatgpt.com"]
+      models:
+        "gpt-6-luna":
+          input_cost_per_million:       0.10
+          cache_write_cost_per_million: 0.125
+          cache_read_cost_per_million:  0.01
+          output_cost_per_million:      0.50
+```
+
+⚠️ **Read the resulting number as an estimate, not a bill.** Those are **per-token API
+list prices**, while Codex on a ChatGPT subscription bills a flat monthly fee — so the
+figure is "what this would have cost via the API", which is useful for comparison and
+wrong if read as spend. The same caveat applies to Claude Code on a Pro/Max subscription,
+which Cortex prices today without saying so; this is a subscription-vs-API distinction
+Cortex does not currently model for any agent, not something peculiar to Codex. Check the
+model name against `agentop pricing` or `unpricedBy` before copying the block — Codex
+selects its own model and it changes between releases (`gpt-6.1-sol` has also been
+observed).
 
 **Tool pruning is unsupported**, for three independent reasons, any one of which is
 sufficient:
