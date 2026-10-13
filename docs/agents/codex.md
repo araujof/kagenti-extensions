@@ -143,8 +143,8 @@ how the `CODEX_CA_CERTIFICATE` mistake survived its first review.
 |---|---|
 | `codex_exec/<version> (<os>; <arch>) unknown` — sometimes with a trailing `(codex_exec; <version>)` comment | its inference (`/backend-api/codex/responses`) and most other backend calls |
 | `codex-mcp-client/<version>` | its MCP client (`/backend-api/ps/mcp`) |
-| `codex-tui/<version> (<os>; <arch>) unknown` | the interactive TUI — i.e. plain `codex` |
-| `codex_cli_rs/<version> (<os>; <arch>) unknown` | anything sent before its app-server finishes initializing |
+| `codex-tui/<version> (<os>; <arch>) <term>` | the interactive TUI — i.e. plain `codex` — including its inference |
+| `codex_cli_rs/<version> (<os>; <arch>) <term>` | anything sent before its app-server finishes initializing |
 
 The version is the field after the first slash in both. The MCP client folds to the same
 name deliberately: it is one agent's component, not a second agent. **Codex's telemetry
@@ -219,15 +219,19 @@ with Cortex built from the change that added this page. This was exercised:
   judged on the bridge terminating rather than on Codex replying (see CA trust);
 - **each of the four proxy-variable spellings alone**, with the other three absent: all
   four independently routed Codex's traffic, which is why `enable` writes all four;
-- agent recognition for all three User-Agents above, including the telemetry exporter
-  staying unrecognised;
+- agent recognition for every User-Agent above, including the TUI's — captured from a
+  real interactive session driven through the proxy over a pty, not inferred from
+  Codex's source — and including the telemetry exporter staying unrecognised;
 - the `codex` series in `GET /v1/usage?group=agent`, and the model showing as priceable
   but unpriced.
 
 Not tested:
 
-- **Linux, and any other Codex version.** Every string here was captured from 0.160.1 on
-  macOS; the User-Agent shapes and the `.env` behaviour are pinned to that.
+- **Linux.** Everything here was exercised on macOS only.
+- **Codex versions other than 0.160.1 and 0.162.1.** Both appeared in one capture (an
+  auto-update landed mid-session) and both parse identically, which is some evidence the
+  User-Agent shape is stable across releases rather than pinned to one build — but the
+  `.env` loading behaviour and the `CODEX_` filter were only read from 0.160.1's source.
 - **The public `/v1/responses` API** (an OpenAI API key rather than a ChatGPT
   subscription). The parser recognises the path, and the non-streaming shape of that
   dialect is modelled from the published schema rather than from captured traffic.
