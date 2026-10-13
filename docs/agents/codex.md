@@ -168,6 +168,14 @@ install**, exactly as `X-Session-Id` is. In a cluster an agent may send a bare
 `Session-Id` for its own purposes, and filing its calls by it would take them away from
 the session holding its user's intent.
 
+⚠️ **An existing `~/.cortex/config.yaml` may need one line added.** The laptop config
+writes `session.id_headers` out explicitly, and an explicit list is used exactly as
+written rather than merged with the built-in default — so a Cortex installed before this
+shipped keeps the old three names and will not read Codex's. Check with
+`grep -A5 id_headers ~/.cortex/config.yaml`: if the list is there and has no
+`"Session-Id"`, add it as the last entry, or delete the whole `id_headers:` block to fall
+back to the current default. A config that never had the block is already fine.
+
 ⚠️ **Unconfirmed on the interactive TUI.** The evidence above is `codex exec` only — the
 TUI's startup chatter carries `Originator` but had not reached an inference request when
 the capture window closed. The two share one HTTP client, so the TUI very likely sends it
