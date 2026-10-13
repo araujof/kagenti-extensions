@@ -265,6 +265,23 @@ func capUA(s string) string {
 // it.
 var knownClients = map[string]string{
 	"claude-cli": "claude-code",
+	// THE SAME AGENT UNDER ITS OTHER PRODUCT TOKEN, which until #1363 was a value in this
+	// map but never a key — so the lookup missed and ~13% of one capture's Claude Code
+	// events pooled into agentop's catch-all Other row with their spend, while
+	// IsKnownAgent said false for them wherever that gates. Claude Code sends both shapes
+	// on live traffic, and they look like different COMPONENTS rather than
+	// interactive-vs-headless, since both name claude-vscode and agent-sdk:
+	//
+	//	claude-cli/2.1.233 (external, claude-vscode, agent-sdk/0.3.233)
+	//	claude-code/2.1.233 (claude-vscode, agent-sdk/0.3.233)
+	//
+	// Unlike claude-cli, this key IS the canonical name — the token Claude Code sends here
+	// is already its product name, so there is no third spelling to invent.
+	//
+	// Captured 2026-10-13 from Claude Code 2.1.233. This does NOT claim the third shape,
+	// "Claude-User (claude-code/…)"; see TestParseUserAgent_ClaudeUserIsNotClaimed and
+	// AffinityName's doc comment for why that one stays unrecognised.
+	"claude-code": "claude-code",
 	// bob-shell IS the canonical name here, unlike claude-cli above: the product token Bob
 	// Shell sends is already its product name, so renaming it would invent a third spelling
 	// beside the binary (`bob`) and the IDE ("IBM Bob"). It arrives with its own detection
