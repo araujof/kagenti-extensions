@@ -152,19 +152,31 @@ exporter is not claimed** — it sends `OTel-OTLP-Exporter-Rust/<version>` to
 `ab.chatgpt.com`, which names a generic Rust crate rather than Codex, so it stays
 unrecognised and shows under its raw label. Captured from Codex 0.160.1.
 
-**It does not group into named sessions.** Codex's traffic lands in a pending bucket named
-for its process — `pending:codex@<pid>.<start>` — and stays there. A laptop install reads
-three session headers by default (`X-Claude-Code-Session-Id`, `X-Task-Id` and
-`X-Session-Id`); Codex sends none of them, which is what the bucket never being adopted
-shows — any one of the three arriving with a value would have claimed the session. If a
-future Codex sends one, naming it in `session.id_headers` is enough, but note that setting
-that list replaces the built-in one rather than adding to it.
+**It groups into named sessions.** Codex sends its session id in a header named
+`Session-Id` — the bare name, not the `X-Session-Id` that OpenCode uses — and a laptop
+install reads it. Captured on `codex_exec/0.160.1`: a UUID, constant across all nine
+inference requests of one multi-turn session and different in the next.
 
-Being in a bucket of its own is still an improvement on being unrecognised. Before Codex
-had an agent entry, a `codex` launched from inside another agent's process tree had its
-traffic attributed to *that* agent's session — observed directly: the same `codex exec`
-run filed its events under the Claude Code session that spawned it before the entry
-existed, and into its own `pending:codex@…` bucket after.
+Only Codex's **inference** requests carry it; its plugin-list and MCP chatter does not,
+which is the right side of that split to be on — though it does mean one Codex run leaves
+**two** rows: the conversation under its real id, and a small `pending:codex@<pid>.<start>`
+bucket holding the chatter that arrived before any inference request named the session
+(15 events against 113 on a measured run). The tokens and cost are all in the named one. `Session-Id` is read **last** in the
+header precedence order, after the three dedicated names, because it is the least
+namespaced of the four — and for the same reason it is read **only on a loopback-only
+install**, exactly as `X-Session-Id` is. In a cluster an agent may send a bare
+`Session-Id` for its own purposes, and filing its calls by it would take them away from
+the session holding its user's intent.
+
+⚠️ **Unconfirmed on the interactive TUI.** The evidence above is `codex exec` only — the
+TUI's startup chatter carries `Originator` but had not reached an inference request when
+the capture window closed. The two share one HTTP client, so the TUI very likely sends it
+too, but that is inference rather than evidence. If it does not, `codex exec` still gets
+named sessions.
+
+Before this, Codex's traffic landed in a per-process bucket (`pending:codex@<pid>.<start>`)
+and stayed there — one bucket per process rather than per conversation, so two
+conversations in one long-lived process merged and one spanning a restart split in two.
 
 **Typed inference.** Codex speaks OpenAI's Responses API, which `inference-parser` reads
 (model, messages, tools, completion, token counts) on any path ending in `/responses` —
@@ -238,9 +250,6 @@ Not tested:
 
 ## Known issues
 
-- **No named sessions.** Codex's traffic stays in a `pending:codex@<pid>.<start>` bucket
-  rather than a session id, because it sends no session header Cortex reads. One bucket per
-  Codex process.
 - **Cost is blank.** Tokens aggregate; cost does not, for want of a rate — see
   [What Cortex shows for it](#what-cortex-shows-for-it).
 - **Chatty non-inference traffic.** A single one-turn `codex exec` produced ~100 recorded
