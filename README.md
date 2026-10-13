@@ -2,8 +2,8 @@
 
 **See what your coding agent actually sends — and pay less for it.**
 
-Works with **Claude Code**, **OpenCode** and **IBM Bob**, and with any agent that can
-use an HTTPS proxy.
+Works with **Claude Code**, **OpenCode**, **Codex** and **IBM Bob**, and with any agent
+that can use an HTTPS proxy.
 
 <img src="./docs/assets/cortex-demo.svg" width="100%"
      alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
