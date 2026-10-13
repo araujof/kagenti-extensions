@@ -95,18 +95,40 @@ var fallbackRefusal = []byte("HTTP/1.1 502 " + fallbackReason + "\r\n" +
 // open only while no child is serving, so in steady state it is closed and a healthy
 // install is unchanged: no extra hop, no second process, no new port.
 type fallbackServer struct {
-	mu sync.Mutex
-	ln net.Listener
+	mu                sync.Mutex
+	ln                net.Listener
+	warnedBindFailure bool // true once a bind failure has been logged at WARN
 }
 
 // open binds addr and starts answering. A bind that fails is logged and otherwise
 // ignored: restarting the child is the supervisor's actual job, and losing the
 // diagnostic listener must never stop it. The usual cause is the previous child not
 // having released the port yet, which the next iteration retries anyway.
+//
+// During a port conflict the child exits immediately and this bind fails for the same
+// reason, so this runs every restart cycle -- the same per-restart WARN flood that
+// runSupervisor's own restart line was rewritten to quiet (see "quiet" there). The
+// child already logs an ERROR naming the address and its holder on every attempt, so
+// this would be a third per-cycle message carrying no new information. State it once
+// at WARN; every bind failure after that logs the same message and fields at DEBUG. Not
+// reset on a later successful open: the point is that the condition has been explained
+// once per supervisor lifetime, and a recovery is already announced by runSupervisor's
+// "the proxy is up" line.
 func (f *fallbackServer) open(addr string) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		slog.Warn("supervisor: could not open the fallback listener, so a client will see a refused connection rather than an explanation",
+		f.mu.Lock()
+		first := !f.warnedBindFailure
+		f.warnedBindFailure = true
+		f.mu.Unlock()
+
+		// Shaped after runSupervisor's own restart line, which solves this exact problem
+		// the same way: pick the level, then log once.
+		unbound := slog.Warn
+		if !first {
+			unbound = slog.Debug
+		}
+		unbound("supervisor: could not open the fallback listener, so a client will see a refused connection rather than an explanation",
 			"addr", addr, "error", err)
 		return
 	}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -223,5 +225,33 @@ func TestFallbackServer_YieldsTheAddressToAChildAndTakesItBack(t *testing.T) {
 	b, _ := io.ReadAll(c)
 	if !strings.Contains(string(b), fallbackReason) {
 		t.Errorf("after the child exited the address answers %q, want the refusal", string(b))
+	}
+}
+
+// A port conflict is the one condition where this bind fails every restart cycle: the
+// child cannot take the address and neither can the fallback. Repeating the same WARN
+// per cycle is what supervise.go was rewritten to stop doing, so it is said once and
+// then at DEBUG -- asserted here by filtering the logger at WARN and counting.
+func TestFallbackServer_BindFailureIsExplainedOnceNotEveryCycle(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+	addr := held.Addr().String()
+
+	var buf bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	fb := &fallbackServer{}
+	for range 4 {
+		fb.open(addr) // every one of these fails: `held` has the address
+	}
+	t.Cleanup(fb.close)
+
+	if got := strings.Count(buf.String(), "could not open the fallback listener"); got != 1 {
+		t.Errorf("the bind failure was logged at WARN %d times across 4 cycles, want 1:\n%s", got, buf.String())
 	}
 }
