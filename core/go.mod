@@ -12,7 +12,7 @@ require (
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.21.1
 	github.com/rossoctl/context-guru v0.3.4
-	github.com/spiffe/go-spiffe/v2 v2.8.2
+	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	go.opentelemetry.io/otel v1.47.0
