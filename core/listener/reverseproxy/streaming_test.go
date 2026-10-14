@@ -236,8 +236,8 @@ func framesAsStrings(frames [][]byte) []string {
 
 // TestReverseProxy_Streaming_PreservesEventLine is the regression
 // guard for the SSE "event:" line bug: a client reading through the
-// proxy must see the upstream's "event: <type>" line reproduced
-// before each re-framed "data:" line, not just the bare data payload.
+// proxy must see the upstream's "event: <type>" line before each
+// "data:" line, not just the bare data payload.
 // The Anthropic SDK types each event from the "event:" field, so
 // dropping it made downstream clients decode zero typed events even
 // though the data bytes were intact.
@@ -301,8 +301,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 // must strip the client's Accept-Encoding so Go's transport negotiates
 // (and transparently decompresses) gzip itself. Leaving an explicit
 // "Accept-Encoding: gzip" through produced a gzipped body the SSE
-// re-framer read as garbage plus a Content-Encoding: gzip header over
-// re-emitted plaintext. The pipeline here carries a body-inspecting
+// parser read as garbage, so plugins saw no events. The pipeline here carries a body-inspecting
 // StreamingResponder (streamingProbe, ReadsBody=true) so the strip is
 // in scope.
 //
@@ -403,6 +402,7 @@ func TestReverseProxy_PreservesAcceptEncoding_PassThrough(t *testing.T) {
 		t.Errorf("outbound request Accept-Encoding = %q, want %q preserved (pure pass-through must not strip)", gotAcceptEncoding, "gzip")
 	}
 }
+
 // The reverse proxy relays the upstream's SSE bytes unchanged — id:, retry:,
 // comments, CRLF and an unterminated final event included — while the
 // streaming plugin still sees every payload.
