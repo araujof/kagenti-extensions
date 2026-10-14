@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +37,9 @@ func TestConfigPathFromArgs(t *testing.T) {
 		{"repeated, last wins", []string{"--config", "/etc/a.yaml", "--config", "/etc/b.yaml"}, "/etc/b.yaml"},
 		{"repeated across spellings", []string{"-config=/etc/a.yaml", "--config", "/etc/b.yaml"}, "/etc/b.yaml"},
 		{"repeated then dangling", []string{"--config", "/etc/a.yaml", "--config"}, ""},
+		// A value the flag before it consumed is not itself a flag. flag.Parse reads
+		// this as -config with the literal value "--config=/etc/b.yaml".
+		{"a value that looks like the flag", []string{"--config", "--config=/etc/b.yaml"}, "--config=/etc/b.yaml"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := configPathFromArgs(tc.args); got != tc.want {
@@ -45,10 +49,12 @@ func TestConfigPathFromArgs(t *testing.T) {
 	}
 }
 
-// Every miss has to yield an address, not an error. The whole point of the fallback is
-// to speak when the proxy cannot start, and "the config will not load" is one of the
-// reasons it cannot start -- so that case must not be the one where we fall silent.
-func TestSupervisorForwardAddr_FallsBackWhereverTheConfigCannotAnswer(t *testing.T) {
+// Two obligations in one table. The address must be the one the CHILD will bind, which
+// takes the child's whole resolution sequence and not just a config read; and every miss
+// must still yield an address rather than an error, because the whole point of the
+// fallback is to speak when the proxy cannot start and "the config will not load" is one
+// of the reasons it cannot start.
+func TestSupervisorForwardAddr_ResolvesTheAddressTheChildWillBind(t *testing.T) {
 	dir := t.TempDir()
 
 	good := filepath.Join(dir, "good.yaml")
@@ -72,6 +78,20 @@ func TestSupervisorForwardAddr_FallsBackWhereverTheConfigCannotAnswer(t *testing
 	if err := os.WriteFile(presetOnly, []byte("mode: proxy-sidecar\nlistener:\n  roles: [forward]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// No `mode:` at all. The child defaults it (main.go:500) before applying the preset,
+	// so it lands on :8081 -- and a fallback that applied the preset without the default
+	// would get nothing from it, because ApplyPreset switches on the mode.
+	noMode := filepath.Join(dir, "no-mode.yaml")
+	if err := os.WriteFile(noMode, []byte("listener:\n  roles: [forward]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Reverse-only: the preset fills an address only for an active role, so the child
+	// binds no forward proxy and there is nothing for the fallback to stand in for. It
+	// still has to answer with an address rather than an empty string.
+	reverseOnly := filepath.Join(dir, "reverse.yaml")
+	if err := os.WriteFile(reverseOnly, []byte("mode: proxy-sidecar\nlistener:\n  roles: [reverse]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -84,6 +104,8 @@ func TestSupervisorForwardAddr_FallsBackWhereverTheConfigCannotAnswer(t *testing
 		{"no config flag at all", []string{"-local"}, fallbackDefaultAddr},
 		{"loopback-only localises a bare port", []string{"--config", loopback}, "127.0.0.1:48155"},
 		{"preset fills an omitted address", []string{"--config", presetOnly}, ":8081"},
+		{"an omitted mode is defaulted first", []string{"--config", noMode}, ":8081"},
+		{"reverse-only leaves no forward address", []string{"--config", reverseOnly}, fallbackDefaultAddr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := supervisorForwardAddr(tc.args); got != tc.want {
@@ -298,6 +320,13 @@ func TestFallbackServer_LargeRequestStillGetsTheResponse(t *testing.T) {
 	if _, err := c.Write([]byte(req)); err != nil {
 		t.Fatal(err)
 	}
+	// Half-close so the drain ends on EOF rather than on fallbackDrainTimeout. The
+	// condition under test is unread bytes in the SERVER's receive queue, which a client
+	// FIN does not flush, so this changes nothing about what is being asserted -- it only
+	// removes a dependency on 32 KiB crossing loopback inside 250ms.
+	if err := c.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
 
 	b, err := io.ReadAll(c)
 	if err != nil {
@@ -306,6 +335,90 @@ func TestFallbackServer_LargeRequestStillGetsTheResponse(t *testing.T) {
 	if !strings.HasPrefix(string(b), "HTTP/1.1 502 "+fallbackReason) {
 		t.Errorf("response = %q, want the 502 and the reason phrase", string(b))
 	}
+}
+
+// The cap on the request read, asserted the only way that distinguishes it from no cap:
+// a client that writes past it and then goes quiet WITHOUT ever sending a newline. With
+// the cap the LimitReader hits EOF and the refusal goes out at once; without it
+// ReadString blocks for the whole of fallbackIOTimeout while bufio grows its buffer, and
+// the supervisor is the one process here that nothing restarts before the next login.
+// The two-second read deadline is what fails in that case -- deliberately far below the
+// five-second timeout it would otherwise wait out, so this is not a tight race.
+func TestFallbackServer_UnterminatedRequestIsCappedNotAwaited(t *testing.T) {
+	addr := startFallback(t)
+
+	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if _, err := c.Write([]byte(strings.Repeat("x", 2*fallbackMaxRequestLine))); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b := make([]byte, len(fallbackRefusal))
+	if _, err := io.ReadFull(c, b); err != nil {
+		t.Fatalf("no refusal within 2s of an unterminated request: %v — the read is waiting for a newline that is not coming", err)
+	}
+	if !strings.HasPrefix(string(b), "HTTP/1.1 502 "+fallbackReason) {
+		t.Errorf("response = %q, want the 502 and the reason phrase", string(b))
+	}
+}
+
+// refuse has to route the request line through requestLineForLog, not log it raw. Without
+// this nothing connects the helper to its one call site: reverting that line leaves
+// requestLineForLog fully tested, unused, and query strings back in ~/.cortex/proxy.log.
+func TestFallbackServer_LogsNoQueryString(t *testing.T) {
+	var buf syncBuffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	addr := startFallback(t)
+	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.Write([]byte("GET http://h/v1/m?api_key=sk-secret HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	// refuse logs before it writes, so having the response in hand means the log line is
+	// already in the buffer.
+	if _, err := io.ReadFull(c, make([]byte, len(fallbackRefusal))); err != nil {
+		t.Fatal(err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "sk-secret") {
+		t.Errorf("the log carries the query string, which can carry an API key:\n%s", logged)
+	}
+	if !strings.Contains(logged, "?<redacted>") {
+		t.Errorf("the log does not show the redaction, so the line may not be going through requestLineForLog at all:\n%s", logged)
+	}
+}
+
+// syncBuffer is a log sink safe to read while a server goroutine writes to it. The
+// bind-failure test below needs no such thing -- open logs on the test's own goroutine --
+// but refuse logs on the goroutine serving the connection.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // A port conflict is the one condition where this bind fails every restart cycle: the
@@ -333,5 +446,46 @@ func TestFallbackServer_BindFailureIsExplainedOnceNotEveryCycle(t *testing.T) {
 
 	if got := strings.Count(buf.String(), "could not open the fallback listener"); got != 1 {
 		t.Errorf("the bind failure was logged at WARN %d times across 4 cycles, want 1:\n%s", got, buf.String())
+	}
+}
+
+// Once per RUN of failures, not once per supervisor lifetime. The difference is the case
+// that matters: without the reset, a transient failure spends the WARN and a persistent
+// conflict afterwards is DEBUG-only, so nothing in proxy.log names the condition the
+// operator has to fix. A successful bind in between is the signal that the next failure
+// is a new condition.
+func TestFallbackServer_BindFailureIsExplainedAgainAfterASuccess(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := held.Addr().String()
+
+	var buf bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	fb := &fallbackServer{}
+	t.Cleanup(fb.close)
+
+	fb.open(addr) // fails: held has the address. WARN 1.
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fb.open(addr) // succeeds, which re-arms the WARN
+	fb.close()
+
+	again, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("could not re-take %s to stage the second conflict: %v", addr, err)
+	}
+	defer func() { _ = again.Close() }()
+
+	fb.open(addr) // fails again, and this is a new condition. WARN 2.
+
+	if got := strings.Count(buf.String(), "could not open the fallback listener"); got != 2 {
+		t.Errorf("the second run of failures was logged at WARN %d times, want 2 total — a successful bind in between must re-arm it:\n%s", got, buf.String())
 	}
 }

@@ -31,11 +31,19 @@ const fallbackDefaultAddr = "127.0.0.1:47600"
 // flag package is a trap for the next reader, and agreeing with it costs three lines.
 func configPathFromArgs(args []string) string {
 	path := ""
+	// A value consumed by the flag before it is not itself a flag -- `--config
+	// --config=/x` names the file "--config=/x", which is what flag.Parse does with it.
+	// Without this the second element would be read as a flag naming /x instead.
+	consumed := -1
 	for i, a := range args {
+		if i == consumed {
+			continue
+		}
 		switch {
 		case a == "-config" || a == "--config":
 			if i+1 < len(args) {
 				path = args[i+1]
+				consumed = i + 1
 			} else {
 				path = "" // dangling; flag.Parse would reject it outright
 			}
@@ -52,14 +60,21 @@ func configPathFromArgs(args []string) string {
 // own, so a client routed at it reaches the fallback when no child holds it. Every miss
 // falls back rather than failing, for the reason on fallbackDefaultAddr.
 //
-// Load then ApplyPreset, in that order, because that is the pair main.go runs (and
-// presets.go says so outright) and only the pair yields the address the child will
-// actually bind. Load alone diverges from the child twice: a config carrying
+// The three steps below mirror the child's own sequence -- Load, coerce the mode,
+// ApplyPreset (main.go:491, :500, :501) -- because only all three yield the address the
+// child will actually bind. Load alone diverges from it three ways. A config carrying
 // bind_loopback_only with a bare ":47600" has the child on 127.0.0.1 while the fallback
-// would take every interface -- an unauthenticated listener on the LAN of a machine
-// whose config asked for loopback only -- and a config that omits forward_proxy_addr has
-// the child on the preset's :8081 while the fallback would sit on 47600 answering for a
-// proxy that is running.
+// would take every interface: an unauthenticated listener on the LAN of a machine whose
+// config asked for loopback only. A config that omits forward_proxy_addr has the child on
+// the preset's :8081 while the fallback would sit on 47600, answering for a proxy that is
+// running. And ApplyPreset fills a listener address only for the mode it is handed, so
+// omitting the coercion would leave a config with no `mode:` at all in that second case --
+// the child defaults the mode and the preset fills :8081; the fallback would not.
+//
+// Coercing rather than honouring a foreign mode is faithful to the child, which refuses
+// anything but proxy-sidecar (main.go:495) and so binds nothing at all. The fallback
+// still has somewhere useful to be: whatever the config pinned, else the laptop default,
+// which is where a client routed at this install points either way.
 func supervisorForwardAddr(args []string) string {
 	path := configPathFromArgs(args)
 	if path == "" {
@@ -74,7 +89,12 @@ func supervisorForwardAddr(args []string) string {
 			"config", path, "addr", fallbackDefaultAddr, "error", err)
 		return fallbackDefaultAddr
 	}
+	cfg.Mode = config.ModeProxySidecar
 	config.ApplyPreset(cfg)
+	// Still reachable after the preset, which fills an address only for an ACTIVE role
+	// (presets.go:29): a reverse-only config leaves this empty, and the child then binds
+	// no forward proxy at all. Nothing is routed at the fallback in that case, so where
+	// it listens does not much matter -- but it has to listen somewhere.
 	if cfg.Listener.ForwardProxyAddr == "" {
 		return fallbackDefaultAddr
 	}
@@ -146,15 +166,19 @@ type fallbackServer struct {
 // this would be a third per-cycle message carrying no new information. State it once
 // at WARN; every bind failure after that logs the same message and fields at DEBUG.
 //
-// Deliberately NOT reset in close(), which is the obvious-looking place: close() runs
-// immediately before every cmd.Start(), so resetting there would re-arm the WARN once
-// per cycle and restore exactly the flood this exists to stop. That leaves it
-// once-per-supervisor-lifetime rather than once-per-run-of-failures, and the gap is
-// real though narrow: the open at the top of runSupervisor can spend the WARN on a
-// transient bind failure, after which a persistent one is DEBUG-only. Not covered by a
-// recovery line either -- restartPolicy.healthy only reports recovered when blocked > 0,
-// which a fallback bind failure does not touch. Accepted: the loud case is a port
-// conflict, where the child's own per-attempt ERROR names the address and its holder.
+// Reset on a SUCCESSFUL bind (in openOn), which makes this once per RUN of failures.
+// Not in close(), the obvious-looking place: close() runs immediately before every
+// cmd.Start(), so resetting there would re-arm the WARN once per cycle and restore
+// exactly the flood this exists to stop. Resetting on success cannot, because the
+// condition that makes this log at all -- another process holding the address -- is
+// also what stops the bind ever succeeding to reset it. Nothing else plausibly makes
+// it alternate: a child's listening socket is released the moment cmd.Wait reaps the
+// process (a LISTEN socket never enters TIME_WAIT), so the previous child is not a
+// source of intermittent failure. And it closes the gap the alternative leaves, which
+// is the case that matters: a transient failure spending the WARN, after which a
+// PERSISTENT conflict is DEBUG-only and nothing in proxy.log names it. No recovery line
+// covers that -- restartPolicy.healthy only reports recovered when blocked > 0, which a
+// fallback bind failure does not touch.
 func (f *fallbackServer) open(addr string) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -186,6 +210,9 @@ func (f *fallbackServer) openOn(ln net.Listener) {
 		return
 	}
 	f.ln = ln
+	// The address was bindable, so the next run of failures is a new condition and gets
+	// its own WARN -- see open's comment on why success is the safe place to re-arm.
+	f.warnedBindFailure = false
 	slog.Debug("supervisor: fallback listener open", "addr", ln.Addr().String())
 	go f.serve(ln)
 }

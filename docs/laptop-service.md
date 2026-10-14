@@ -543,7 +543,8 @@ direct TLS call it makes.
 
 An agent routed through Cortex shows this when the proxy is installed and routed but
 not currently serving — a config it cannot load, a crash it is restarting from, or one
-of its other ports (9091, 9093, 9094) held by another process. The supervisor answers
+of its other ports held by another process (a local install pins them: 47601 for the
+session API, 47602 for stats, 47604 for health). The supervisor answers
 on the proxy's address while no proxy is running, so that you get this message instead
 of a bare connection error that names nothing:
 
@@ -557,8 +558,13 @@ API Error: 502 Cortex is routed in this environment (HTTPS_PROXY) but is not ser
 or whatever `listener.forward_proxy_addr` names. The supervisor holds that address only
 while it is free, so if another process has it, neither the proxy nor this message can
 get there and you are back to a bare connection error. `~/.cortex/proxy.log` is where to
-look: the proxy names the holder on every start attempt, and gives you the
-`lsof -nP -iTCP:47600 -sTCP:LISTEN` to confirm it.
+look: the proxy says `cannot start: another process already holds this address` on every
+start attempt, and names the holder's pid and executable where the kernel will say. Where
+it could not, the same line hands you the `lsof` to find it yourself:
+
+```sh
+lsof -nP -iTCP:47600 -sTCP:LISTEN
+```
 
 The fix is the one in the message. If `agentop service start` does not take, run
 `agentop doctor`, which names the reason, and read `~/.cortex/proxy.log` for what the
