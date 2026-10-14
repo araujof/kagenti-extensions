@@ -418,3 +418,53 @@ func TestInferenceParser_ResponsesAPI_NonStreamingToolCall(t *testing.T) {
 		t.Errorf("ToolCalls = %+v, want one call: exec(ls)", ext.ToolCalls)
 	}
 }
+
+// TestInferenceParser_ResponsesRequest_ToolResults pins what a Codex turn looks like
+// after tools ran: the function_call/function_call_output round-trip, sent back as input
+// items on the next request. Each function_call_output becomes one ToolResults entry,
+// keyed by its call_id; the conversation text (Messages) is untouched, same as the
+// Anthropic dialect keeps tool output out of Content.
+func TestInferenceParser_ResponsesRequest_ToolResults(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: "/backend-api/codex/responses",
+		Body: []byte(`{
+			"model": "gpt-6-luna",
+			"stream": true,
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "list the files"}]},
+				{"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"ls\"]}"},
+				{"type": "function_call_output", "call_id": "call_1", "output": "file_a\nfile_b"},
+				{"type": "function_call_output", "call_id": "call_2", "output": ""},
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "thanks"}]}
+			]
+		}`),
+	}
+	p.OnRequest(context.Background(), pctx)
+
+	ext := pctx.Extensions.Inference
+	if ext == nil {
+		t.Fatal("Extensions.Inference is nil")
+	}
+	want := []pipeline.InferenceToolResult{
+		{ToolUseID: "call_1", Content: "file_a\nfile_b"},
+		{ToolUseID: "call_2", Content: ""},
+	}
+	if len(ext.ToolResults) != len(want) {
+		t.Fatalf("ToolResults = %+v, want %+v", ext.ToolResults, want)
+	}
+	for i := range want {
+		if ext.ToolResults[i] != want[i] {
+			t.Errorf("ToolResults[%d] = %+v, want %+v", i, ext.ToolResults[i], want[i])
+		}
+	}
+	// The conversation keeps only its messages: the call and its output are not text
+	// turns, and tool output must not reach Messages any more than it does on the
+	// Anthropic dialect.
+	if len(ext.Messages) != 2 {
+		t.Fatalf("Messages = %+v, want the two user messages only", ext.Messages)
+	}
+	if ext.Messages[0].Content != "list the files" || ext.Messages[1].Content != "thanks" {
+		t.Errorf("Messages = %+v, want conversation text unchanged", ext.Messages)
+	}
+}

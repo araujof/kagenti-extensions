@@ -38,7 +38,7 @@ type responsesRequest struct {
 }
 
 // responsesInputItem is one entry of a Responses API request's `input`
-// array. Two shapes are read, both confirmed on live Codex traffic:
+// array. Three shapes are read, the first two confirmed on live Codex traffic:
 //
 //   - "message": the conversation itself — role + content, where content is
 //     an array of parts tagged input_text/output_text/... (not Chat
@@ -53,16 +53,27 @@ type responsesRequest struct {
 //     `tools` array from some other Responses API caller is not modeled
 //     here and yields no tools for that request, the same outcome this
 //     parser already has for any tool definition it cannot read.
+//   - "function_call_output": what an earlier tool call returned, keyed by
+//     its call_id — the Responses dialect's counterpart of Anthropic's
+//     tool_result block. Goes to InferenceExtension.ToolResults, never into
+//     Messages, for the same reason the Anthropic one does: tool output
+//     must not reach the plugins that read Messages. The output value is
+//     read with flattenResponsesContent, which accepts the string form this
+//     API documents (and Codex sends) and a text-part array should one
+//     arrive.
 //
-// Every other item type (reasoning echoes, function_call/function_call_output
-// round-trips) is skipped — this parser surfaces conversation text and the
-// tool manifest, not the full agent-loop bookkeeping.
+// Every other item type (reasoning echoes, function_call round-trips) is
+// skipped — this parser surfaces conversation text, the tool manifest, and
+// tool output, not the rest of the agent-loop bookkeeping. The function_call
+// item itself needs no capture here: the model's request for a tool arrives
+// on the RESPONSE side, whole, as a response.output_item.done event.
 type responsesInputItem struct {
 	Type         string
 	Role         string
 	Content      string
 	ContentBytes int
 	Tools        []pipeline.InferenceTool
+	ToolResults  []pipeline.InferenceToolResult
 }
 
 func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
@@ -71,6 +82,8 @@ func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
 		Role    string                   `json:"role"`
 		Content json.RawMessage          `json:"content"`
 		Tools   []responsesToolNamespace `json:"tools"`
+		CallID  string                   `json:"call_id"`
+		Output  json.RawMessage          `json:"output"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -92,6 +105,12 @@ func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
 				Parameters:  schemaObject(t.Parameters),
 			})
 		}
+	}
+	if raw.Type == "function_call_output" {
+		it.ToolResults = append(it.ToolResults, pipeline.InferenceToolResult{
+			ToolUseID: raw.CallID,
+			Content:   flattenResponsesContent(raw.Output),
+		})
 	}
 	return nil
 }
@@ -246,6 +265,9 @@ func parseResponsesRequest(headers http.Header, body []byte) *pipeline.Inference
 			})
 		}
 		ext.Tools = append(ext.Tools, item.Tools...)
+		// Tool results ride whichever item carried them, message or not — the same
+		// append-everything shape the Anthropic loop uses for its per-message blocks.
+		ext.ToolResults = append(ext.ToolResults, item.ToolResults...)
 	}
 	return ext
 }
