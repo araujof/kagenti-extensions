@@ -137,15 +137,29 @@ func TestReadBlock_TooLargeReturnsNoBlock(t *testing.T) {
 	}
 }
 
-// Non-data bytes count toward the Raw cap too: a stream of comments with no
+// Non-data lines have a cap of their own: a stream of comments with no
 // data line in sight cannot grow one block without bound.
 func TestReadBlock_RawCapBoundsCommentFlood(t *testing.T) {
 	var body bytes.Buffer
 	for i := 0; i < 100; i++ {
 		body.WriteString(": aaaaaaaaaa\n") // 13 bytes per line, no blank line
 	}
-	_, err := NewReader(&body, 64).ReadBlock() // Raw cap = 2*64
+	_, err := NewReader(&body, 64).ReadBlock() // non-data cap = 64
 	if !errors.Is(err, ErrFrameTooLarge) {
 		t.Fatalf("err = %v, want ErrFrameTooLarge", err)
+	}
+}
+
+// Short data lines make Raw several times larger than Data ("data: a\n" is
+// 8 bytes for 1). An event under the data cap must still pass, as it did
+// before ReadBlock existed.
+func TestReadBlock_ManyShortDataLinesUnderDataCap(t *testing.T) {
+	body := strings.Repeat("data: a\n", 20) + "\n" // Data 39 bytes, Raw 161
+	data, err := NewReader(strings.NewReader(body), 64).ReadFrame()
+	if err != nil {
+		t.Fatalf("ReadFrame: %v (Data is under the 64-byte cap)", err)
+	}
+	if len(data) != 39 {
+		t.Errorf("len(Data) = %d, want 39", len(data))
 	}
 }

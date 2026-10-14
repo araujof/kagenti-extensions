@@ -104,12 +104,6 @@ type Block struct {
 	HasData bool
 }
 
-// rawCapFactor bounds a block's Raw at this multiple of maxSize. Raw is
-// larger than Data by its "data: " prefixes and terminators, so the data
-// cap stays the binding limit for an ordinary event; this one stops a run
-// of non-data lines, which never touch scratch, from growing unbounded.
-const rawCapFactor = 2
-
 // ReadBlock reads the next SSE block. It returns (block, nil) for every
 // block with at least one byte, (Block{}, io.EOF) once the stream is
 // exhausted, and (Block{}, err) on ErrFrameTooLarge or a read error — no
@@ -120,6 +114,12 @@ func (r *Reader) ReadBlock() (Block, error) {
 	r.raw = r.raw[:0]
 	r.lastEvent = r.lastEvent[:0]
 	hasData := false
+	// nonData counts the bytes of this block's non-data lines. They never
+	// reach scratch, so the data cap does not bound them; this does, at the
+	// same size. Raw itself is not capped: its data lines are already bounded
+	// by the data cap, and capping Raw would refuse an event of many short
+	// data lines that the data cap admits ("data: a\n" is 8 bytes for 1).
+	nonData := 0
 
 	// ONE LEADING BYTE-ORDER MARK IS REMOVED, and the spec requires it: "If the stream begins
 	// with a U+FEFF BYTE ORDER MARK character, then remove it."
@@ -180,6 +180,12 @@ func (r *Reader) ReadBlock() (Block, error) {
 
 		// Comment line — silently skipped per spec ("If the line
 		// starts with a U+003A COLON character, ignore the line").
+		if field, _ := splitField(line); field != "data" {
+			nonData += len(line)
+			if nonData > r.maxSize {
+				return Block{}, ErrFrameTooLarge
+			}
+		}
 		if line[0] == ':' {
 			continue
 		}
@@ -277,9 +283,6 @@ func (r *Reader) readLine() ([]byte, error) {
 				return line, nil
 			}
 			return nil, err
-		}
-		if len(r.raw) >= rawCapFactor*r.maxSize {
-			return nil, ErrFrameTooLarge
 		}
 		r.raw = append(r.raw, b)
 		switch b {
