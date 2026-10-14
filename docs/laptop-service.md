@@ -539,6 +539,67 @@ followed by this machine's public roots. Pointing a replacing variable at `ca.cr
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
 
+### `502 Cortex proxy is not serving`
+
+An agent routed through Cortex shows this when the proxy is installed and routed but
+not currently serving — a config it cannot load, a crash it is restarting from, or one
+of its other ports held by another process (a local install pins them: 47601 for the
+session API, 47602 for stats, 47604 for health). The supervisor answers
+on the proxy's address while no proxy is running, so that you get this message instead
+of a bare connection error that names nothing:
+
+```
+API Error: 502 Cortex is routed in this environment (HTTPS_PROXY) but is not serving — run: agentop service start
+```
+
+(One line; wrapped here only if your terminal is narrow.)
+
+**The one case this cannot cover is a conflict on the forward address itself** — 47600,
+or whatever `listener.forward_proxy_addr` names. The supervisor holds that address only
+while it is free, so if another process has it, neither the proxy nor this message can
+get there and you are back to a bare connection error. `~/.cortex/proxy.log` is where to
+look: the proxy says `cannot start: another process already holds this address` on every
+start attempt, and names the holder's pid and executable where the kernel will say. Where
+it could not, the same line hands you the `lsof` to find it yourself:
+
+```sh
+lsof -nP -iTCP:47600 -sTCP:LISTEN
+```
+
+The fix is the one in the message. If `agentop service start` does not take, run
+`agentop doctor`, which names the reason, and read `~/.cortex/proxy.log` for what the
+proxy said as it failed.
+
+No single response field reaches every client, so the response sets two: the reason
+phrase (`Cortex proxy is not serving`) and the body above. What you actually see
+depends on which client you are reading this from:
+
+| Client | What it shows |
+|---|---|
+| `curl` 8.7.1 | `curl: (56) CONNECT tunnel failed, response 502` — neither the reason phrase nor the body |
+| Go `net/http` | the reason phrase, as the error text |
+| Claude Code | the body, inside its own `API Error: 502 ...` framing |
+
+Two things to expect, neither of them fast. Requests **fail** rather than going out
+unobserved, which is deliberate: Cortex does not let traffic past unseen just because
+it is down — failing closed buys legibility, not speed. And the message is not
+prompt: against Claude Code it took three retries and over two minutes before this
+surfaced, so allow a couple of minutes before concluding the fix did not work.
+
+This does **not** appear after `agentop service stop`, which stops the supervisor
+too — nothing is left to answer on the address, so a stopped Cortex still looks like
+a bare connection error, and `stop` already tells you how many connections it cut.
+
+The supervisor reads the address once, at its own start. If you edit
+`listener.forward_proxy_addr`, restart the service rather than only the proxy — the same
+rule every other `listener.*` field follows.
+
+**macOS only, in practice.** The supervisor exists only where `agentop` installs it
+with `--supervise`, which is the launchd path. The systemd unit deliberately does not
+pass `--supervise` — it relies on `Restart=on-failure` instead — so on Linux there is
+no supervisor to hold the address, and a Linux local install still gets a bare
+connection-refused in this situation.
+
 ### Everything shows as `tunnel` and no plugin ever runs
 
 `agentop observe` shows rows like this, with `tunnel` in ACTION and no method:
