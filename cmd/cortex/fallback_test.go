@@ -31,6 +31,11 @@ func TestConfigPathFromArgs(t *testing.T) {
 		{"among others", []string{"-local", "--config", "/etc/c.yaml", "-ca-dir", "/d"}, "/etc/c.yaml"},
 		{"absent", []string{"-local"}, ""},
 		{"dangling value", []string{"-local", "--config"}, ""},
+		// Repeated: flag.Parse takes the last, so the child reads the last. Binding the
+		// address named by the first would hold a port the child never asked for.
+		{"repeated, last wins", []string{"--config", "/etc/a.yaml", "--config", "/etc/b.yaml"}, "/etc/b.yaml"},
+		{"repeated across spellings", []string{"-config=/etc/a.yaml", "--config", "/etc/b.yaml"}, "/etc/b.yaml"},
+		{"repeated then dangling", []string{"--config", "/etc/a.yaml", "--config"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := configPathFromArgs(tc.args); got != tc.want {
@@ -54,6 +59,19 @@ func TestSupervisorForwardAddr_FallsBackWhereverTheConfigCannotAnswer(t *testing
 	if err := os.WriteFile(broken, []byte("listener: [this is not a mapping\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The two configs where Load alone disagrees with the child, which runs Load AND
+	// ApplyPreset: bind_loopback_only localises a bare port, and an omitted
+	// forward_proxy_addr gets the proxy-sidecar preset. Reading the address before the
+	// preset put the fallback on every interface in the first case and on a port the
+	// child never binds in the second.
+	loopback := filepath.Join(dir, "loopback.yaml")
+	if err := os.WriteFile(loopback, []byte("mode: proxy-sidecar\nlistener:\n  bind_loopback_only: true\n  forward_proxy_addr: \":48155\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	presetOnly := filepath.Join(dir, "preset.yaml")
+	if err := os.WriteFile(presetOnly, []byte("mode: proxy-sidecar\nlistener:\n  roles: [forward]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -64,6 +82,8 @@ func TestSupervisorForwardAddr_FallsBackWhereverTheConfigCannotAnswer(t *testing
 		{"config will not parse", []string{"--config", broken}, fallbackDefaultAddr},
 		{"config is not there", []string{"--config", filepath.Join(dir, "absent.yaml")}, fallbackDefaultAddr},
 		{"no config flag at all", []string{"-local"}, fallbackDefaultAddr},
+		{"loopback-only localises a bare port", []string{"--config", loopback}, "127.0.0.1:48155"},
+		{"preset fills an omitted address", []string{"--config", presetOnly}, ":8081"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := supervisorForwardAddr(tc.args); got != tc.want {
@@ -205,8 +225,9 @@ func TestFallbackServer_YieldsTheAddressToAChildAndTakesItBack(t *testing.T) {
 		t.Fatalf("the child could not bind %s after the fallback closed: %v", addr, err)
 	}
 
-	// While the child serves, the fallback must not be listening -- opening it here is
-	// what the supervisor must NOT do, and if it did, this bind would fail.
+	// The bind above is the assertion: it succeeds only because the fallback is not
+	// listening, which is what the supervisor must guarantee before every cmd.Start().
+	// Release it again to stand in for the child exiting.
 	_ = child.Close()
 
 	// What the supervisor does once the child exits.
@@ -222,9 +243,68 @@ func TestFallbackServer_YieldsTheAddressToAChildAndTakesItBack(t *testing.T) {
 	if _, err := c.Write([]byte("CONNECT x:443 HTTP/1.1\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := io.ReadAll(c)
+	b, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(b), fallbackReason) {
 		t.Errorf("after the child exited the address answers %q, want the refusal", string(b))
+	}
+}
+
+// The request line reaches ~/.cortex/proxy.log, and an absolute-form plain-HTTP request
+// carries a query string that can carry an API key -- the repo's standing rule is to
+// record the address but never the query. CONNECT lines have no query and must survive
+// intact, since they are the only thing identifying a refused tunnel.
+func TestRequestLineForLog(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"connect passes through", "CONNECT api.anthropic.com:443 HTTP/1.1\r\n", "CONNECT api.anthropic.com:443 HTTP/1.1"},
+		{"plain path passes through", "GET /v1/models HTTP/1.1\r\n", "GET /v1/models HTTP/1.1"},
+		{
+			"query is redacted",
+			"GET http://h/v1/m?api_key=sk-secret&x=1 HTTP/1.1\r\n",
+			"GET http://h/v1/m?<redacted>",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := requestLineForLog(tc.in)
+			if got != tc.want {
+				t.Errorf("requestLineForLog(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.Contains(got, "sk-secret") {
+				t.Error("the logged line still carries the secret")
+			}
+		})
+	}
+}
+
+// A request bigger than bufio's buffer leaves unread bytes behind, and closing on those
+// sends RST where the client may lose the response it was about to read. Asserted with a
+// body well past fallbackMaxRequestLine, which is also the cap that keeps a newline-free
+// client from making the supervisor allocate without bound.
+func TestFallbackServer_LargeRequestStillGetsTheResponse(t *testing.T) {
+	addr := startFallback(t)
+
+	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+
+	body := strings.Repeat("x", 4*fallbackMaxRequestLine)
+	req := "POST http://h/v1/messages HTTP/1.1\r\nHost: h\r\nContent-Length: " +
+		strconv.Itoa(len(body)) + "\r\n\r\n" + body
+	if _, err := c.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("reading the response failed (a reset would look like this): %v", err)
+	}
+	if !strings.HasPrefix(string(b), "HTTP/1.1 502 "+fallbackReason) {
+		t.Errorf("response = %q, want the 502 and the reason phrase", string(b))
 	}
 }
 

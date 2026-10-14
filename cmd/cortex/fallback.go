@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -22,26 +23,43 @@ const fallbackDefaultAddr = "127.0.0.1:47600"
 // configPathFromArgs finds the -config value in the arguments the supervisor is about
 // to hand the child. main.go declares it with flag.String, so all four spellings are
 // accepted and all four are read here.
+//
+// Last occurrence wins, because that is what flag.Parse does with a repeated flag: the
+// child would read the last one, and a fallback that bound the address named by the
+// first would hold a port the child never wanted. Unreachable from the installed
+// service, whose plist passes -config exactly once -- but silently disagreeing with the
+// flag package is a trap for the next reader, and agreeing with it costs three lines.
 func configPathFromArgs(args []string) string {
+	path := ""
 	for i, a := range args {
 		switch {
 		case a == "-config" || a == "--config":
 			if i+1 < len(args) {
-				return args[i+1]
+				path = args[i+1]
+			} else {
+				path = "" // dangling; flag.Parse would reject it outright
 			}
-			return ""
 		case strings.HasPrefix(a, "-config="):
-			return strings.TrimPrefix(a, "-config=")
+			path = strings.TrimPrefix(a, "-config=")
 		case strings.HasPrefix(a, "--config="):
-			return strings.TrimPrefix(a, "--config=")
+			path = strings.TrimPrefix(a, "--config=")
 		}
 	}
-	return ""
+	return path
 }
 
 // supervisorForwardAddr is the address the fallback listener binds: the forward proxy's
 // own, so a client routed at it reaches the fallback when no child holds it. Every miss
 // falls back rather than failing, for the reason on fallbackDefaultAddr.
+//
+// Load then ApplyPreset, in that order, because that is the pair main.go runs (and
+// presets.go says so outright) and only the pair yields the address the child will
+// actually bind. Load alone diverges from the child twice: a config carrying
+// bind_loopback_only with a bare ":47600" has the child on 127.0.0.1 while the fallback
+// would take every interface -- an unauthenticated listener on the LAN of a machine
+// whose config asked for loopback only -- and a config that omits forward_proxy_addr has
+// the child on the preset's :8081 while the fallback would sit on 47600 answering for a
+// proxy that is running.
 func supervisorForwardAddr(args []string) string {
 	path := configPathFromArgs(args)
 	if path == "" {
@@ -49,10 +67,14 @@ func supervisorForwardAddr(args []string) string {
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		slog.Debug("supervisor: cannot read the config for the fallback address; using the default",
+		// WARN, not DEBUG: this runs once per supervisor lifetime, outside the restart
+		// loop, so there is no flood to suppress -- and it is the one line saying the
+		// fallback is listening somewhere other than where the config asked.
+		slog.Warn("supervisor: cannot read the config for the fallback address; using the default",
 			"config", path, "addr", fallbackDefaultAddr, "error", err)
 		return fallbackDefaultAddr
 	}
+	config.ApplyPreset(cfg)
 	if cfg.Listener.ForwardProxyAddr == "" {
 		return fallbackDefaultAddr
 	}
@@ -84,6 +106,18 @@ const (
 // down, which can be the whole of a long port conflict.
 const fallbackIOTimeout = 5 * time.Second
 
+// fallbackDrainTimeout bounds the post-response drain, which exists only to make the
+// close a FIN. Short on purpose -- see refuse.
+const fallbackDrainTimeout = 250 * time.Millisecond
+
+// fallbackMaxRequestLine caps how much of the request is read. bufio's ReadString grows
+// its buffer until it finds the delimiter, so without this a client streaming
+// newline-free bytes for the whole of fallbackIOTimeout could make the supervisor
+// allocate without bound -- and the supervisor is the one process here that nothing
+// restarts before the next login, so an OOM in it costs the service, not just the
+// diagnostic. 8 KiB is well past any real request line.
+const fallbackMaxRequestLine = 8 << 10
+
 var fallbackRefusal = []byte("HTTP/1.1 502 " + fallbackReason + "\r\n" +
 	"Content-Type: text/plain; charset=utf-8\r\n" +
 	"Content-Length: " + strconv.Itoa(len(fallbackBody)) + "\r\n" +
@@ -110,10 +144,17 @@ type fallbackServer struct {
 // runSupervisor's own restart line was rewritten to quiet (see "quiet" there). The
 // child already logs an ERROR naming the address and its holder on every attempt, so
 // this would be a third per-cycle message carrying no new information. State it once
-// at WARN; every bind failure after that logs the same message and fields at DEBUG. Not
-// reset on a later successful open: the point is that the condition has been explained
-// once per supervisor lifetime, and a recovery is already announced by runSupervisor's
-// "the proxy is up" line.
+// at WARN; every bind failure after that logs the same message and fields at DEBUG.
+//
+// Deliberately NOT reset in close(), which is the obvious-looking place: close() runs
+// immediately before every cmd.Start(), so resetting there would re-arm the WARN once
+// per cycle and restore exactly the flood this exists to stop. That leaves it
+// once-per-supervisor-lifetime rather than once-per-run-of-failures, and the gap is
+// real though narrow: the open at the top of runSupervisor can spend the WARN on a
+// transient bind failure, after which a persistent one is DEBUG-only. Not covered by a
+// recovery line either -- restartPolicy.healthy only reports recovered when blocked > 0,
+// which a fallback bind failure does not touch. Accepted: the loud case is a port
+// conflict, where the child's own per-attempt ERROR names the address and its holder.
 func (f *fallbackServer) open(addr string) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -173,20 +214,52 @@ func (f *fallbackServer) serve(ln net.Listener) {
 }
 
 // refuse answers one connection and closes it. The request is read as far as its first
-// line and then ignored -- the answer does not depend on it -- but it is read rather
-// than answered blind so the client has finished writing before the close, which keeps
-// the peer from seeing a reset in place of the response it was about to read.
+// line and then ignored -- the answer does not depend on it.
 //
 // Logging is DEBUG per connection on purpose: clients retry, Claude Code three times
 // per request, so anything louder would fill the log while the proxy is down.
 func refuse(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(fallbackIOTimeout))
-	line, err := bufio.NewReader(c).ReadString('\n')
+	line, err := bufio.NewReader(io.LimitReader(c, fallbackMaxRequestLine)).ReadString('\n')
 	if err != nil && line == "" {
 		return
 	}
 	slog.Debug("supervisor: refused a request while the proxy is not serving",
-		"request", strings.TrimSpace(line), "remote", c.RemoteAddr().String())
-	_, _ = c.Write(fallbackRefusal)
+		"request", requestLineForLog(line), "remote", c.RemoteAddr().String())
+	if _, err := c.Write(fallbackRefusal); err != nil {
+		return
+	}
+
+	// Closing with bytes still unread in the receive queue makes the kernel send RST
+	// rather than FIN, and a reset can make the peer discard the response it was about
+	// to read -- which would be the opaque failure this whole feature exists to remove.
+	// Reading one line leaves exactly that whenever the request is bigger than bufio's
+	// buffer: an absolute-form POST with a body. (CONNECT fits, which is why the tests
+	// are not flaky -- but that is an accident of buffer size, not a guarantee.) So
+	// half-close to say the response is complete, then drain what is pending so the
+	// close is a FIN. Briefly: a client that got "Connection: close" closes its own
+	// side, and waiting out fallbackIOTimeout for one that does not would pin this
+	// goroutine for no gain.
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
+	// Bounded by time, not by bytes: io.Discard retains nothing, so there is no
+	// allocation to cap here, and a cap is what made the first attempt at this still
+	// reset on a body larger than the cap. fallbackMaxRequestLine bounds the one read
+	// that does allocate -- bufio's.
+	_ = c.SetReadDeadline(time.Now().Add(fallbackDrainTimeout))
+	_, _ = io.Copy(io.Discard, c)
+}
+
+// requestLineForLog reduces the request line to what is safe to write to proxy.log. An
+// absolute-form plain-HTTP request carries a full URL, and a query string can carry an
+// API key -- the same reason the session timeline records a query-stripped path. CONNECT
+// lines are host:port and pass through unchanged.
+func requestLineForLog(line string) string {
+	line = strings.TrimSpace(line)
+	if i := strings.IndexByte(line, '?'); i >= 0 {
+		return line[:i] + "?<redacted>"
+	}
+	return line
 }

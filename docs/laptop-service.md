@@ -542,15 +542,23 @@ direct TLS call it makes.
 ### `502 Cortex proxy is not serving`
 
 An agent routed through Cortex shows this when the proxy is installed and routed but
-not currently serving — a config it cannot load, a crash it is restarting from, or an
-address another process holds. The supervisor answers on the proxy's address while no
-proxy is running, so that you get this message instead of a bare connection error that
-names nothing:
+not currently serving — a config it cannot load, a crash it is restarting from, or one
+of its other ports (9091, 9093, 9094) held by another process. The supervisor answers
+on the proxy's address while no proxy is running, so that you get this message instead
+of a bare connection error that names nothing:
 
 ```
-API Error: 502 Cortex is routed in this environment (HTTPS_PROXY) but is not
-serving — run: agentop service start
+API Error: 502 Cortex is routed in this environment (HTTPS_PROXY) but is not serving — run: agentop service start
 ```
+
+(One line; wrapped here only if your terminal is narrow.)
+
+**The one case this cannot cover is a conflict on the forward address itself** — 47600,
+or whatever `listener.forward_proxy_addr` names. The supervisor holds that address only
+while it is free, so if another process has it, neither the proxy nor this message can
+get there and you are back to a bare connection error. `~/.cortex/proxy.log` is where to
+look: the proxy names the holder on every start attempt, and gives you the
+`lsof -nP -iTCP:47600 -sTCP:LISTEN` to confirm it.
 
 The fix is the one in the message. If `agentop service start` does not take, run
 `agentop doctor`, which names the reason, and read `~/.cortex/proxy.log` for what the
@@ -575,6 +583,10 @@ surfaced, so allow a couple of minutes before concluding the fix did not work.
 This does **not** appear after `agentop service stop`, which stops the supervisor
 too — nothing is left to answer on the address, so a stopped Cortex still looks like
 a bare connection error, and `stop` already tells you how many connections it cut.
+
+The supervisor reads the address once, at its own start. If you edit
+`listener.forward_proxy_addr`, restart the service rather than only the proxy — the same
+rule every other `listener.*` field follows.
 
 **macOS only, in practice.** The supervisor exists only where `agentop` installs it
 with `--supervise`, which is the launchd path. The systemd unit deliberately does not
