@@ -948,3 +948,21 @@ func TestResend_ARefusedSubstituteEndsThere(t *testing.T) {
 		t.Error("Resend = true for a substitute chosen up front and refused")
 	}
 }
+
+// A session's kept substitute need not be what the server's list resolves now: the
+// word changed, the list moved, or the model was deleted from the server. Refused, it
+// still reaches the agent, because a request is resent for its model once at most,
+// whatever a second substitute would be.
+func TestResend_AKeptSubstituteRefusedIsNotResentAgain(t *testing.T) {
+	const stale = "rits/zai-org/glm-4-6"
+	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	pctx := chat(newStore(t), "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	r.keepSubstitute(pctx, "glm", "exo-free", stale)
+	run(t, p, pctx)
+	if got := sentModel(t, pctx); got != stale {
+		t.Fatalf("model = %q, want the session's kept substitute %s", got, stale)
+	}
+	if resend(p, pctx, http.StatusNotFound, `{"error":{"message":"model '`+stale+`' not found","type":"not_found_error","param":null,"code":null}}`) {
+		t.Error("Resend = true for a kept substitute the server refused: a second model for one request")
+	}
+}
