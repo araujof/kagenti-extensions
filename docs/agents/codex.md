@@ -202,16 +202,30 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
-**Tokens always; cost only if you configure a rate.** Token counts come from the Responses
+**Tokens always; cost on a laptop once the price list downloads, or wherever you
+configure a rate.** Token counts come from the Responses
 API's usage block and aggregate alongside other agents (verified: a one-turn `codex exec`
-reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`). **Cost is
-blank out of the box**, and the reason is not Codex-specific: the bundled rate table is
-**Anthropic-only by design**, so any agent on a non-Anthropic model reports its requests
-as *priceable but unpriced* — named, never under-priced. See
+reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`).
+
+**Cost on a laptop install: usually yes, and from a download rather than from the
+binary.** The bundled table carries first-party OpenAI list rates, so a GPT model prices
+the same way a Claude one does — but the *shipped* table is pinned to a LiteLLM commit,
+and a model added upstream after that commit is not in it. `gpt-6-luna` is one such, so
+the compiled-in table alone does not price it. What closes the gap is the price-list
+download: a local install fetches LiteLLM `main` at startup and hourly through the same
+filter that generated the table, keeps it in `~/.cortex/price-list.json`, and today's
+upstream prices `gpt-6-luna` at $0.10 in / $0.50 out per million. So cost appears without
+configuring anything, once that first download lands.
+
+**On a sidecar in a cluster, no.** Sidecars make no such call and keep the compiled-in
+table, so a model newer than the pin reports *priceable but unpriced* there — named,
+never under-priced. See
 [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced).
 
-A rate does exist upstream if you want one. These are the first-party OpenAI list prices
-for the model Codex uses, from the same LiteLLM table the bundled one is generated from:
+Pin the rate yourself when you want it independent of a download — in a sidecar, with
+`bundled: false`, or to assert a figure rather than inherit one. These are the first-party
+OpenAI list prices for the model Codex uses, and a configured entry outranks both the
+shipped table and the download:
 
 ```yaml
 # ~/.cortex/config.yaml
@@ -287,12 +301,19 @@ Not tested:
   dialect is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
-- **Cost**, since no rate applies to the model — the pricing path is unexercised for Codex.
+- **Cost from a downloaded rate, against live Codex traffic.** The rate exists upstream and
+  the bundled table now carries first-party OpenAI prices, so the arithmetic is the same one
+  every other agent uses — but nobody has watched a real `codex exec` turn get priced from
+  `~/.cortex/price-list.json`. A configured `pricing:` entry is the exercised path.
 - **Tool pruning**, which is unsupported above rather than merely untested.
 
 ## Known issues
 
-- **Cost is blank.** Tokens aggregate; cost does not, for want of a rate — see
+- **Cost is blank where no list price reaches the model.** Two cases, and neither is
+  Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
+  model newer than the pinned commit has no rate there; and `bundled: false` turns the
+  shipped table *and* the download off together. On a laptop with defaults the rate arrives
+  with the first hourly fetch. See
   [What Cortex shows for it](#what-cortex-shows-for-it).
 - **Chatty non-inference traffic.** A single one-turn `codex exec` produced ~100 recorded
   events, most of them not inference: repeated polling of

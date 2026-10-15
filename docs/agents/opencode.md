@@ -248,6 +248,11 @@ at a rate:
 - **Claude models**, Zen's included, are priced at the bundled Anthropic list rates.
   For the model checked, Claude Sonnet 4.6 at $3 in and $15 out per million tokens, that
   is what Zen charges.
+- **GPT models** now also resolve to a bundled rate, because the shipped table carries
+  first-party OpenAI list prices as well. ⚠️ Unlike the Claude row above, that was **not**
+  checked against what Zen charges — Zen resells, and a reseller's price is its own. Treat
+  a GPT figure on `opencode.ai` as OpenAI list until you have verified it, and pin the
+  model if it disagrees.
 - **Any other model** is reported unpriced until you add a `pricing:` entry for it.
   [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
   shows how to find the endpoint and model to add. Name the model rather than writing
