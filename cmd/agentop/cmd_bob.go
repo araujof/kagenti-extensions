@@ -24,9 +24,10 @@ const (
 	// VS Code fork, so this is VS Code's own layout with Bob's product name in it.
 	bobSettingsRel = "Library/Application Support/IBM Bob/User/settings.json"
 
-	// bobProxyKey is the one setting this command writes. VS Code's settings
-	// document is FLAT — dotted keys are literal top-level keys, not a nested
-	// object — so this is the whole path, unlike claude-code's "env" block.
+	// bobProxyKey is the setting this command writes on every platform (macOS adds
+	// bobSysCertsKey). VS Code's settings document is FLAT — dotted keys are literal
+	// top-level keys, not a nested object — so this is the whole path, unlike
+	// claude-code's "env" block.
 	bobProxyKey = "http.proxy"
 
 	// bobCACommonName is the subject every generated bridge CA carries. A literal
@@ -35,8 +36,8 @@ const (
 	// carries the same copy for the same reason.
 	bobCACommonName = "authbridge-tls-bridge-ca"
 
-	// bobSystemKeychain is machine-wide trust, which is the right scope for a
-	// proxy that every process on the box is pointed at.
+	// bobSystemKeychain is where earlier versions of enable had the user trust the
+	// CA. Kept for bobUntrustNote, which prints the undo for anyone who did.
 	bobSystemKeychain = "/Library/Keychains/System.keychain"
 )
 
@@ -57,20 +58,36 @@ Flags:
 IBM Bob is a VS Code fork, so it has a settings file and one flat key decides
 where its networking goes: "http.proxy". enable sets it to Cortex's forward
 proxy, read from ~/.cortex/config.yaml so the address always matches the proxy
-that is actually running. Only that one key is written — every other setting is
-left exactly as it was, and the first write copies the original to
-settings.json.bak and never overwrites that copy.
+that is actually running. Every other setting is left exactly as it was, and the
+first write copies the original to settings.json.bak and never overwrites that
+copy. Bob writes settings.json only once a setting has changed, so on a Bob still
+on its defaults enable creates the file; it refuses only when Bob's settings
+directory is missing too, which means Bob has not run here.
 
-disable removes "http.proxy" ONLY when it points at Cortex. A value that does
-not — a corporate proxy, say — is reported and left alone, because a proxy agentop
-did not write is not agentop's to delete.
+The proxy is only half of it: Bob must also trust Cortex's CA. On macOS enable
+does that without touching the keychain, in two more changes:
 
-The proxy is only half of it. Bob's requests are terminated by Cortex's TLS
-bridge, so Bob must also trust the bridge CA, and that is an OS trust-store
-change agentop does not make for you: it needs sudo, and a tool that silently
-escalates to alter machine-wide trust is not one you can audit. enable prints
-the command that does it, disable prints how to undo it, status prints how to
-check it.
+  "http.systemCertificates": false in settings.json, so Bob's extensions use
+      Node's own trust store, which takes NODE_EXTRA_CA_CERTS
+  a block in your shell's rc file that exports NODE_EXTRA_CA_CERTS for IBM Bob
+      only — Bob runs your login shell when it starts from the Dock or Spotlight
+      and takes its environment. The file is the one "configure bobshell" uses:
+      ~/.zshrc for zsh, ~/.bashrc for bash; any other shell gets the block
+      printed to place yourself.
+
+enable then starts your login shell the way Bob does to check the block is read,
+and warns if it is not — bash's login shell reads ~/.bash_profile, which has to
+source ~/.bashrc. Quit Bob and reopen it from the Dock or Spotlight afterwards: a
+Bob started from a terminal takes that terminal's environment instead. Off macOS,
+enable prints how to add the CA to the system trust store; that needs sudo, so
+agentop does not do it for you.
+
+disable removes "http.proxy" ONLY when it points at Cortex — a corporate proxy,
+say, is reported and left alone — "http.systemCertificates" only when enable
+recorded adding it (in ~/.cortex/bob-state.json) and it is still false, and the
+block only when it is exactly what enable wrote. A missing settings.json is not an
+error: there is simply nothing to remove from it. status reports all three from
+the files and runs nothing.
 
 "agentop configure bobshell" is a different thing and the two are independent.
 That one defines a "bob" shell function so typing "bob" runs through Cortex;
@@ -182,16 +199,20 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 		*settingsPath = p
 	}
 
+	// Resolved once, here, for all three verbs: the rc file status reads is the one
+	// enable writes and disable edits.
+	launch := resolveBobLaunch(home, os.Getenv("SHELL"))
+
 	switch action {
 	case "enable":
 		// enable derives the CA path itself, from the config it already requires.
-		return bobEnable(*settingsPath, *cortexCfgPath, yes, stdout, stderr)
+		return bobEnable(*settingsPath, *cortexCfgPath, launch, yes, stdout, stderr)
 	case "disable":
 		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
-		return bobDisable(*settingsPath, *cortexCfgPath, wantProxy, caPath, yes, stdout, stderr)
+		return bobDisable(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, yes, stdout, stderr)
 	default:
 		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
-		return bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, stdout)
+		return bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, stdout)
 	}
 }
 
@@ -372,39 +393,23 @@ func bobProxyIsListening(val string) bool {
 	return true
 }
 
-// bobTrustNote is the trust-store step agentop does NOT take, printed for the user
-// to run.
+// bobTrustNote is the trust-store step agentop does NOT take off macOS, printed for
+// the user to run.
 //
-// Printed rather than executed on purpose. Adding a root to the System keychain
-// needs sudo, and a tool that escalates on its own to change machine-wide trust
-// is not one anybody can audit after the fact — the user should see the exact
-// command before it runs. Same reasoning as darwinGoNote, which prints its
-// keychain command too.
+// Printed rather than executed on purpose: adding a root to the system store needs
+// sudo, and a tool that escalates on its own to change machine-wide trust is not one
+// anybody can audit after the fact.
 //
-// caPath is ca.crt — the single bridge CA — and NOT bundle.crt, even though
-// bundle.crt is the file most of agentop's other CA messages name. The keychain is
-// ADDITIVE, so it wants one certificate; bundle.crt exists for the tools whose CA
-// setting REPLACES their trust store, and it holds the bridge CA followed by
-// every platform root. `add-trusted-cert -r trustRoot` on that file would install
-// explicit root-trust settings for every public CA in it machine-wide — a count
-// that varies by machine and by platform, which is the reason not to name one —
-// and that is both far broader than intended and not undone by the single
-// delete-certificate below. See
-// core/tlsbridge/bundle.go's header, which states which file is for which job.
+// Not printed on macOS, where enable's launch environment does the job with no trust
+// change at all — see cmd_bob_launch.go. Earlier versions printed a System-keychain
+// command there; bobUntrustNote still prints its undo for anyone who ran it.
+//
+// caPath is ca.crt — the single bridge CA — and NOT bundle.crt: the trust store is
+// ADDITIVE, so it wants one certificate, and bundle.crt holds every platform root as
+// well. See core/tlsbridge/bundle.go's header, which states which file is for which
+// job.
 func bobTrustNote(caPath string) string {
 	q := shellQuote(caPath)
-	if runtime.GOOS == "darwin" {
-		return "Bob must also trust the bridge CA, or every https request fails verification.\n" +
-			"  That is a machine-wide trust change needing sudo, so agentop does not make it\n" +
-			"  for you — run:\n\n" +
-			"    sudo security add-trusted-cert -d -r trustRoot \\\n" +
-			"      -k " + bobSystemKeychain + " " + q + "\n\n" +
-			"  That is the single bridge CA, not the " + tlsbridge.TrustBundleName + " in the same\n" +
-			"  directory: the keychain adds to what it already trusts, so it wants one\n" +
-			"  certificate. The bundle carries every platform root as well, and trusting it\n" +
-			"  as a root would change how this machine treats certificates that have\n" +
-			"  nothing to do with Cortex.\n\n"
-	}
 	// Suggestive by design. The exact route differs per distribution and a
 	// confidently wrong command is worse than a named one plus a caveat.
 	return "Bob must also trust the bridge CA, or every https request fails verification.\n" +
@@ -422,9 +427,12 @@ func bobTrustNote(caPath string) string {
 // bobUntrustNote is the undo for bobTrustNote, and says plainly that it is
 // optional: a CA left in the store signs nothing but Cortex's own forged leaves,
 // and removing it is tidiness rather than a fix.
-func bobUntrustNote(caPath string) string {
+//
+// On macOS it is the undo for what EARLIER versions of enable printed — this one makes
+// no trust change there — so it is worded as conditional on having run that command.
+func bobUntrustNote(caPath string, macOS bool) string {
 	q := shellQuote(caPath)
-	if runtime.GOOS == "darwin" {
+	if macOS {
 		// Two commands, because the add did two things and one undo does not cover
 		// both. `add-trusted-cert -d` writes TRUST SETTINGS to the admin domain, and
 		// `remove-trusted-cert -d` is its documented inverse — the -d has to be
@@ -434,8 +442,8 @@ func bobUntrustNote(caPath string) string {
 		// admin-domain trust the add created in place. The keychain must be named on
 		// the delete for the same reason -d is repeated on the remove: an add to the
 		// System keychain is not undone by a delete that defaults to the login one.
-		return "Optionally, undo the trust change as well — the trust settings first,\n" +
-			"  then the certificate:\n\n" +
+		return "If an earlier agentop had you trust the bridge CA in the System keychain,\n" +
+			"  you can undo that too — the trust settings first, then the certificate:\n\n" +
 			"    sudo security remove-trusted-cert -d " + q + "\n" +
 			"    sudo security delete-certificate -c " + bobCACommonName + " \\\n" +
 			"      -t " + bobSystemKeychain + "\n\n" +
@@ -449,23 +457,6 @@ func bobUntrustNote(caPath string) string {
 		"  re-run update-ca-certificates / update-ca-trust.\n\n" +
 		"  Safe to leave in place if you expect to re-enable: it only validates\n" +
 		"  certificates Cortex itself issues.\n\n"
-}
-
-// bobVerifyNote is status's suggestion, and is only ever printed — running
-// verify-cert here would turn a report into an action, and status writes nothing.
-//
-// Nothing is printed off macOS: there is no portable equivalent to suggest, and
-// inventing one is the confidently-wrong-command failure bobTrustNote's non-mac
-// arm already hedges against.
-func bobVerifyNote(caPath string) string {
-	if runtime.GOOS != "darwin" {
-		return ""
-	}
-	return "To check that this machine trusts the bridge CA:\n\n" +
-		"    security verify-cert -c " + shellQuote(caPath) + "\n\n" +
-		"  A failure does not by itself mean Bob is misconfigured: the CA only matters\n" +
-		"  for hosts the bridge terminates, and it is trusted separately from the\n" +
-		"  proxy setting above.\n"
 }
 
 // bobWanted is the best-effort form of wantedFromConfig, for the two verbs that must
@@ -827,24 +818,34 @@ func isBobSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-// bobWriteKey is bob's replacement for writeSettings: same backup and atomic-rename
-// behaviour, but the content is the original file with one key edited rather than a
-// re-marshal of the whole document. value == nil deletes the key.
+// bobEdit is one key bobWriteKeys sets, or deletes when value is nil.
+type bobEdit struct {
+	key   string
+	value any
+}
+
+// bobWriteKey is bobWriteKeys for a single key.
 func bobWriteKey(path, key string, value any) error {
+	return bobWriteKeys(path, []bobEdit{{key, value}})
+}
+
+// bobWriteKeys is bob's replacement for writeSettings: same backup and atomic-rename
+// behaviour, but the content is the original file with the given keys edited rather
+// than a re-marshal of the whole document.
+//
+// Every edit lands in ONE write. enable sets http.proxy and http.systemCertificates
+// together, and two writes would leave a window — or, on a failed second write, a
+// file — holding one without the other.
+func bobWriteKeys(path string, edits []bobEdit) error {
 	src, rerr := os.ReadFile(path) //nolint:gosec // operator-supplied path
 	if rerr != nil {
 		if !os.IsNotExist(rerr) {
 			return rerr
 		}
 		// No file yet: start from an empty object so the insert path has a document
-		// to work on. Nothing to back up either.
-		//
-		// Unreachable from enable and disable, for the same reason bobBackupNote's
-		// no-backup arm is: bobNoDocument gates both verbs on the file existing and
-		// being non-empty, so a caller that gets here has already found one. Kept
-		// rather than deleted, on the same terms — bobWriteKey's contract is to edit
-		// whatever path it is handed, and dropping the arm would turn a first write
-		// into an error for any future caller that does not pre-check.
+		// to work on. Nothing to back up either. This is a first enable on a Bob that
+		// has never saved a setting — bobNoDocument has already checked that Bob's
+		// User directory is there.
 		src = []byte("{}\n")
 	} else {
 		// Back the file up ONCE and never overwrite it, matching writeSettings: a
@@ -864,9 +865,12 @@ func bobWriteKey(path, key string, value any) error {
 		src = []byte("{}\n")
 	}
 
-	out, err := bobSetKey(src, key, value)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+	out := src
+	for _, e := range edits {
+		var err error
+		if out, err = bobSetKey(out, e.key, e.value); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	// Never hand back something that is not valid JSON, whatever the splicing did.
@@ -915,12 +919,8 @@ func bobBackupNote(settingsPath string) string {
 	bak := settingsPath + ".bak"
 	if _, err := os.Stat(settingsPath); err != nil {
 		// Covers a missing file and an unreadable one alike: in both cases this run
-		// will not produce a .bak, which is the only thing being claimed.
-		//
-		// Unreachable from enable and disable since bobNoDocument gates both on the file
-		// existing, so a caller that prints this note has already found one. Kept rather
-		// than deleted: the note's job is to describe bobWriteKey truthfully for any
-		// path handed to it, and its own test still exercises this arm directly.
+		// will not produce a .bak, which is the only thing being claimed. Reached by
+		// enable on a Bob that has never saved a setting.
 		return unchanged + ".\n  No backup is made — there is no existing file to copy.\n\n"
 	}
 	if _, err := os.Stat(bak); err == nil {
@@ -930,9 +930,9 @@ func bobBackupNote(settingsPath string) string {
 	return unchanged + "; a copy is kept as " + bak + "\n\n"
 }
 
-// bobDuplicateKey reports whether the settings file names the proxy key more than
-// once at the top level, which readSettings cannot show: it decodes into a map, and a
-// map keeps only the last of two same-named members.
+// bobDuplicateKey reports whether the settings file names either key this command
+// writes more than once at the top level, which readSettings cannot show: it decodes
+// into a map, and a map keeps only the last of two same-named members.
 //
 // Called before anything is printed or prompted. bobWriteKey refuses the same file, so
 // leaving this out still fails safe — but it fails AFTER asking the user to approve a
@@ -948,28 +948,33 @@ func bobDuplicateKey(settingsPath string) error {
 	if len(bytes.TrimSpace(src)) == 0 {
 		return nil
 	}
-	_, _, _, ferr := bobFindMember(src, bobProxyKey)
-	// Only the duplicate verdict is this check's to report. Any other parse failure is
-	// readSettings' to describe, and bob's readSettings arm says more about it than a
-	// tokenizer error would.
-	if ferr != nil && errors.Is(ferr, errBobDuplicateKey) {
-		return ferr
+	for _, key := range []string{bobProxyKey, bobSysCertsKey} {
+		_, _, _, ferr := bobFindMember(src, key)
+		// Only the duplicate verdict is this check's to report. Any other parse failure
+		// is readSettings' to describe, and bob's readSettings arm says more about it
+		// than a tokenizer error would.
+		if ferr != nil && errors.Is(ferr, errBobDuplicateKey) {
+			return ferr
+		}
 	}
 	return nil
 }
 
 // bobNoDocument reports why the settings file cannot be treated as IBM Bob's, or nil.
 //
-// readSettings cannot answer this: it returns an empty map for a missing file, for an
-// empty one, and for a bare `null` alike, so every one of the three reads back as "a
-// settings document that happens to set nothing". They are not the same thing. IBM Bob
-// writes this file the first time it stores a setting, so no document at all means Bob
-// has not run here — most often a --settings typo, or the wrong machine.
+// A MISSING settings.json is not that reason by itself. Bob writes the file only the
+// first time a setting is changed, so a Bob that has run for months with every default
+// has none — and enable refusing it told exactly that user that Bob "has not saved
+// settings here". What says whether Bob has run is the directory the file goes in:
+// Bob creates its User directory on first launch, whatever the settings. So a missing
+// file inside an existing directory is an empty document (enable creates the file),
+// and a missing directory is the --settings typo or the wrong machine this check was
+// written for. An empty file reads the same way: the directory is there by definition.
 //
-// That matters because the write path only discovers it late: `null` reaches bobSetKey,
-// which rejects a non-object top level, but by then enable has printed what it will set,
-// prompted, and copied the file to .bak. Promising a write that cannot happen is the
-// failure being closed, so this runs before anything is printed.
+// `null` is still refused: it is a document, and not an object, so bobSetKey cannot
+// edit it — and the write path would only discover that after enable had printed what
+// it will set, prompted, and copied the file to .bak. This runs before anything is
+// printed for that reason.
 //
 // It is deliberately NOT fixed inside readSettings, which claude-code shares: coercing
 // null to an empty document is the right reading for a command that re-marshals the whole
@@ -981,12 +986,13 @@ func bobNoDocument(settingsPath string) error {
 	src, err := os.ReadFile(settingsPath) //nolint:gosec // operator-supplied path
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("%s does not exist, so IBM Bob has not saved settings here", settingsPath)
+			dir := filepath.Dir(settingsPath)
+			if st, serr := os.Stat(dir); serr == nil && st.IsDir() {
+				return nil
+			}
+			return fmt.Errorf("%s does not exist, so IBM Bob has not run here", dir)
 		}
 		return nil
-	}
-	if len(bytes.TrimSpace(src)) == 0 {
-		return fmt.Errorf("%s is empty, so IBM Bob has not saved settings here", settingsPath)
 	}
 	if bytes.Equal(bytes.TrimSpace(src), []byte("null")) {
 		return fmt.Errorf("%s holds only `null`, which sets nothing", settingsPath)
@@ -994,16 +1000,22 @@ func bobNoDocument(settingsPath string) error {
 	return nil
 }
 
-// bobNotInstalled is the refusal enable and disable share. One wording for both, because
-// the reason is the same and only the verb differs.
-func bobNotInstalled(what string, reason error, stderr io.Writer) int {
+// bobSettingsExist reports whether the settings file is there at all, for the lines
+// that say so. bobNoDocument has already decided a missing one is usable.
+func bobSettingsExist(settingsPath string) bool {
+	_, err := os.Stat(settingsPath)
+	return err == nil
+}
+
+// bobNotInstalled is enable's refusal when there is no Bob to configure.
+func bobNotInstalled(reason error, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "agentop: %v.\n"+
-		"  Nothing to %s. Start IBM Bob and change any setting so it writes the file,\n"+
-		"  or pass --settings with the path to a settings.json it does use.\n", reason, what)
+		"  Nothing to enable. Start IBM Bob once so it creates its settings directory,\n"+
+		"  or pass --settings with the path to a settings.json it does use.\n", reason)
 	return 1
 }
 
-func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
+func bobEnable(settingsPath, cortexCfgPath string, launch bobLaunch, yes bool, stdout, stderr io.Writer) int {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
@@ -1026,7 +1038,13 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	proxy := want[envProxy]
 
 	if nerr := bobNoDocument(settingsPath); nerr != nil {
-		return bobNotInstalled("enable", nerr, stderr)
+		return bobNotInstalled(nerr, stderr)
+	}
+	// bobshell exits 1 when it cannot even look at the rc file, and so does this:
+	// nothing below can say whether the block is already there.
+	if launch.macOS && launch.rcReadErr != nil {
+		fmt.Fprintf(stderr, "agentop: %v\n", launch.rcReadErr)
+		return 1
 	}
 
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
@@ -1047,13 +1065,14 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		return 1
 	}
 
+	setProxy := true
 	switch existing := doc[bobProxyKey].(type) {
 	case nil:
 		// Not set. Nothing to weigh.
 	case string:
 		if existing == proxy {
-			fmt.Fprintf(stdout, "Already enabled: %s routes IBM Bob through Cortex.\n", settingsPath)
-			return 0
+			setProxy = false
+			break
 		}
 		// bobNotOurs, not "!= bobOurs": enable reaches here only with a readable
 		// config (it exits 1 above otherwise), so bobUnknown cannot occur — but if
@@ -1088,26 +1107,119 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		return 1
 	}
 
-	// Enabling before Cortex's first start is legitimate — the proxy generates the
-	// CA on boot — but the trust command printed below would fail on a missing
-	// file, so say so now rather than let it be discovered at the sudo prompt.
-	if _, serr := os.Stat(caPath); serr != nil {
-		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
-			"  Cortex creates it on first start. Start Cortex, then run the trust command\n"+
-			"  below — until the CA is trusted, Bob's https requests fail verification.\n\n",
-			caPath)
+	// The launch environment, on macOS only — see cmd_bob_launch.go for why both the
+	// settings key and the shell block are needed, and why neither applies elsewhere.
+	block := bobLaunchBlock(caPath)
+	var setSysCerts, addBlock bool
+	var rcContent, rcNote string
+	if launch.macOS {
+		if setSysCerts, err = bobSysCertsWanted(doc); err != nil {
+			fmt.Fprintf(stderr, "agentop: %s: %v.\n", settingsPath, err)
+			return 1
+		}
+		if launch.rcPath != "" {
+			b, rerr := os.ReadFile(launch.rcPath)
+			if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				fmt.Fprintf(stderr, "agentop: read %s: %v\n", launch.rcPath, rerr)
+				return 1
+			}
+			rcContent = string(b)
+			switch copies, edited := bobRCBlockState(rcContent, block); {
+			case copies > 0:
+				// Already there.
+			case edited:
+				// bobshell's rule for its own block: appending a second copy beside a
+				// hand-edited one leaves two competing definitions, which is worse
+				// than declining. The probe below says whether the edited one works.
+				rcNote = fmt.Sprintf("%s already has a cortex bob block, but not one matching what\n"+
+					"  this agentop writes. Left alone — remove it by hand and re-run enable to\n"+
+					"  replace it.\n\n", launch.rcPath)
+			default:
+				addBlock = true
+			}
+		}
+	}
+	// manual is bobshell's advice case: an unrecognised shell, a dangling link, a
+	// chain past the hop limit. The settings are still agentop's to write; the block
+	// is printed for the user to place.
+	manual := launch.macOS && launch.rcErr != nil
+
+	if !setProxy && !setSysCerts && !addBlock {
+		fmt.Fprintf(stdout, "Already enabled: %s routes IBM Bob through Cortex.\n", settingsPath)
+		if launch.macOS {
+			fmt.Fprint(stdout, "\n"+rcNote)
+			if manual {
+				bobManualBlock(launch.rcErr, block, stdout)
+			}
+			// Probed here too: a re-run of enable is how someone asks whether it
+			// is working, and the block can be in place and still not be read.
+			bobReportProbe(launch, caPath, stdout)
+		}
+		return 0
 	}
 
-	fmt.Fprintf(stdout, "Sets in %s:\n  %q: %q\n", settingsPath, bobProxyKey, proxy)
-	fmt.Fprint(stdout, bobBackupNote(settingsPath))
-	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
+	// Enabling before Cortex's first start is legitimate — the proxy generates the
+	// CA on boot — but nothing can trust a file that is not there yet, so say so now
+	// rather than let it be discovered as failed requests.
+	if _, serr := os.Stat(caPath); serr != nil {
+		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
+			"  Cortex creates it on first start. Until then, Bob's https requests through\n"+
+			"  Cortex fail verification.\n\n", caPath)
+	}
+
+	var edits []bobEdit
+	if setProxy || setSysCerts {
+		fmt.Fprintf(stdout, "Sets in %s:\n", settingsPath)
+		if setProxy {
+			fmt.Fprintf(stdout, "  %q: %q\n", bobProxyKey, proxy)
+			edits = append(edits, bobEdit{bobProxyKey, proxy})
+		}
+		if setSysCerts {
+			fmt.Fprintf(stdout, "  %q: false\n", bobSysCertsKey)
+			edits = append(edits, bobEdit{bobSysCertsKey, false})
+		}
+		fmt.Fprint(stdout, bobBackupNote(settingsPath))
+	}
+	var targets []string
+	if len(edits) > 0 {
+		targets = append(targets, settingsPath)
+	}
+	if addBlock {
+		fmt.Fprintf(stdout, "Adds to %s:\n%s\n", launch.rcPath, block)
+		targets = append(targets, launch.rcPath)
+	}
+	fmt.Fprint(stdout, rcNote)
+	if manual {
+		bobManualBlock(launch.rcErr, block, stdout)
+	}
+	if !yes && !bobConfirm(strings.Join(targets, " and "), "Write to", stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
 
-	if werr := bobWriteKey(settingsPath, bobProxyKey, proxy); werr != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", werr)
-		return 1
+	// The block goes first. With the settings written and the block not, Bob's
+	// extensions would stop trusting the keychain and have no Cortex CA instead;
+	// the other way round, the block only exports a variable Bob does not yet use.
+	if addBlock {
+		if werr := writeRCFile(launch.rcPath, rcContent+block); werr != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", werr)
+			return 1
+		}
+	}
+	// The record before the key it describes: a record for a key that never got
+	// written makes disable find nothing to remove, while a key with no record would
+	// be left behind by disable as the user's.
+	if setSysCerts {
+		if werr := writeState(launch.statePath, bobSysCertsRecord(settingsPath)); werr != nil {
+			fmt.Fprintf(stderr, "agentop: recording that agentop sets %q: %v\n", bobSysCertsKey, werr)
+			return 1
+		}
+	}
+	if len(edits) > 0 {
+		if werr := bobWriteKeys(settingsPath, edits); werr != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", werr)
+			return 1
+		}
 	}
 
 	// Deliberately not "all Bob traffic now goes through Cortex": http.proxy is what
@@ -1118,105 +1230,240 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	fmt.Fprintf(stdout, "\nEnabled. %q in %s now points at Cortex — this is the setting\n"+
 		"VS Code forks read for their own networking and their extension host.\n\n",
 		bobProxyKey, settingsPath)
-	// Restart, rather than a claim either way about live pickup: bobWriteKey is
-	// temp+rename so Bob never sees a half-written file, but whether Bob re-reads a
-	// proxy change without restarting is not something this command has verified.
-	fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
-	fmt.Fprint(stdout, bobTrustNote(caPath))
+	if launch.macOS {
+		bobReportProbe(launch, caPath, stdout)
+		// The environment is read once, when Bob starts, and only on a start that does
+		// not come from a terminal — VS Code skips the shell when it can inherit one.
+		fmt.Fprint(stdout, "Quit IBM Bob and reopen it from the Dock or Spotlight so it picks this up.\n"+
+			"  Started from a terminal (bobide), Bob takes that terminal's environment\n"+
+			"  instead and does not run the block.\n\n")
+	} else {
+		// Restart, rather than a claim either way about live pickup: bobWriteKey is
+		// temp+rename so Bob never sees a half-written file, but whether Bob re-reads a
+		// proxy change without restarting is not something this command has verified.
+		fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
+		fmt.Fprint(stdout, bobTrustNote(caPath))
+	}
 	fmt.Fprintf(stdout, "Undo with: agentop configure bob disable\n")
 	return 0
 }
 
-func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
-	if nerr := bobNoDocument(settingsPath); nerr != nil {
-		return bobNotInstalled("disable", nerr, stderr)
-	}
+// bobManualBlock is enable's half of bobShellAdviseManual: the block, for the user to
+// place, when agentop will not edit the startup file itself.
+func bobManualBlock(reason error, block string, stdout io.Writer) {
+	fmt.Fprintf(stdout, "agentop will not edit your startup file: %v.\n"+
+		"  Add this to whichever file your login shell reads at startup:\n%s\n", reason, block)
+}
 
-	if derr := bobDuplicateKey(settingsPath); derr != nil {
-		fmt.Fprintf(stderr, "agentop: %s: %v\n", settingsPath, derr)
+func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, launch bobLaunch, yes bool, stdout, stderr io.Writer) int {
+	if launch.macOS && launch.rcReadErr != nil {
+		fmt.Fprintf(stderr, "agentop: %v\n", launch.rcReadErr)
 		return 1
 	}
 
-	doc, err := readSettings(settingsPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+	// The settings half. No settings file — or no Bob at all — holds nothing of
+	// agentop's, which is a finding and not a failure: the shell block may still need
+	// removing, and the off switch has to work whatever state Bob is in.
+	var edits []bobEdit
+	var notes []string
+	note := func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) }
+	var proxyVal string
+	owns := bobNotOurs
+	removeRecord := false
+	switch nerr := bobNoDocument(settingsPath); {
+	case nerr != nil:
+		note("%v; nothing to remove there.", nerr)
+	case !bobSettingsExist(settingsPath):
+		note("%s does not exist; nothing to remove there.", settingsPath)
+	default:
+		if derr := bobDuplicateKey(settingsPath); derr != nil {
+			fmt.Fprintf(stderr, "agentop: %s: %v\n", settingsPath, derr)
+			return 1
+		}
+		doc, err := readSettings(settingsPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", err)
+			return 1
+		}
+
+		if existing, ok := doc[bobProxyKey]; !ok {
+			note("%s sets no %q.", settingsPath, bobProxyKey)
+		} else {
+			s, isString := existing.(string)
+			// One verdict, read three times below. bobOwns is pure and the inputs do
+			// not change between those reads, so the repetition was only an invitation
+			// to let two of them drift apart.
+			owns = bobOwns(s, wantProxy)
+			if !isString || owns == bobNotOurs {
+				// Not a failure. "Remove it only if it points at Cortex" is the
+				// contract, and this file already satisfies it — there is nothing for
+				// the user to fix.
+				note("%s sets %q to %v, which is not a Cortex proxy.\n"+
+					"  Left alone — agentop removes only values it would have written.",
+					settingsPath, bobProxyKey, existing)
+			} else {
+				// A guess plus --yes is not consent. bobUnknown means the config could
+				// not be read, so there was no address to compare against and all that
+				// is known is the value's SHAPE: a loopback http proxy. That describes
+				// every local proxy anyone runs — Squid on 3128, a corporate agent, a
+				// dev tunnel — not just Cortex's, because with no config there is no
+				// port to compare at all.
+				//
+				// Interactively that is survivable: the prompt prints the value and the
+				// user recognizes their own proxy. --yes removes exactly that
+				// safeguard, so a scripted `disable --yes` would silently delete a
+				// stranger's proxy. Refuse instead, and say which flag turns the guess
+				// into an answer. Exit 1, not 0: the user asked for a removal that did
+				// not happen. Nothing else is removed either, so a refusal never leaves
+				// half a disable behind.
+				if yes && owns == bobUnknown {
+					// Name the config path. Without it the message is the same whether
+					// Cortex is uninstalled or --config was a typo, and only the second is
+					// worth retrying.
+					fmt.Fprintf(stderr, "agentop: %s sets %q to %q, which is shaped like a Cortex\n"+
+						"  proxy but cannot be confirmed as one: %s could not be read, so there is no\n"+
+						"  address to compare against — every loopback http proxy looks like this.\n"+
+						"  Refusing to delete it unattended. Re-run without --yes to see the value and\n"+
+						"  decide, or pass --config with a readable Cortex config.\n",
+						settingsPath, bobProxyKey, s, cortexCfgPath)
+					return 1
+				}
+				proxyVal = s
+				edits = append(edits, bobEdit{bobProxyKey, nil})
+			}
+		}
+
+		if launch.macOS {
+			st, serr := readState(launch.statePath)
+			_, present := doc[bobSysCertsKey]
+			switch {
+			case !present:
+			case serr != nil:
+				// An unreadable record cannot say the value is ours, and a false the
+				// user set is indistinguishable from the one enable writes.
+				note("%q left alone: the record of whether agentop set it is unreadable (%v).",
+					bobSysCertsKey, serr)
+			case bobOwnsSysCerts(st, settingsPath, doc):
+				edits = append(edits, bobEdit{bobSysCertsKey, nil})
+				removeRecord = true
+			default:
+				note("%q is %v, which agentop did not set. Left alone.", bobSysCertsKey, doc[bobSysCertsKey])
+			}
+		}
 	}
 
-	existing, ok := doc[bobProxyKey]
-	if !ok {
-		fmt.Fprintf(stdout, "Not enabled: %s sets no %q. Nothing to do.\n", settingsPath, bobProxyKey)
+	// The launch half: bobShellDisable's rules for its own block.
+	block := bobLaunchBlock(caPath)
+	var rcOut string
+	removeBlock := false
+	if launch.macOS {
+		if launch.rcErr != nil {
+			note("agentop will not edit your startup file: %v.\n"+
+				"  If you added the block yourself, delete it between %s\n  and %s.",
+				launch.rcErr, bobLaunchMarkerStart, bobLaunchMarkerEnd)
+		} else {
+			b, rerr := os.ReadFile(launch.rcPath)
+			if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				fmt.Fprintf(stderr, "agentop: read %s: %v\n", launch.rcPath, rerr)
+				return 1
+			}
+			content := string(b)
+			// Counting rather than testing presence: every count but 1 is a case where
+			// removing one copy would leave the file in a state nobody chose.
+			switch copies, edited := bobRCBlockState(content, block); {
+			case copies == 1:
+				rcOut = strings.Replace(content, block, "", 1)
+				removeBlock = true
+			case copies > 1:
+				note("%s has %d copies of the cortex bob block.\n"+
+					"  Left alone — remove them by hand, between the marker lines:\n\n  %s\n  ...\n  %s",
+					launch.rcPath, copies, bobLaunchMarkerStart, bobLaunchMarkerEnd)
+			case edited:
+				// Edited by hand, or written for a CA path the config no longer names —
+				// either way not the bytes this run would remove.
+				note("%s has a cortex bob block that is not the one this agentop writes for\n"+
+					"  %s. Left alone — remove it by hand if you want it gone, between the\n"+
+					"  marker lines:\n\n  %s\n  ...\n  %s",
+					launch.rcPath, caPath, bobLaunchMarkerStart, bobLaunchMarkerEnd)
+			}
+		}
+	}
+
+	for _, n := range notes {
+		fmt.Fprintln(stdout, n)
+	}
+	if len(edits) == 0 && !removeBlock {
+		fmt.Fprintln(stdout, "Not enabled. Nothing to do.")
 		return 0
 	}
-	s, isString := existing.(string)
-	// One verdict, read three times below. bobOwns is pure and the inputs do not
-	// change between those reads, so the repetition was only an invitation to let
-	// two of them drift apart.
-	owns := bobOwns(s, wantProxy)
-	if !isString || owns == bobNotOurs {
-		// Exit 0, not 1. "Remove it only if it points at Cortex" is the contract, and
-		// this file already satisfies it — there is nothing for the user to fix, so
-		// reporting a failure would be wrong.
-		fmt.Fprintf(stdout, "%s sets %q to %v, which is not a Cortex proxy.\n"+
-			"  Left alone — agentop removes only values it would have written.\n",
-			settingsPath, bobProxyKey, existing)
-		return 0
+	if len(notes) > 0 {
+		fmt.Fprintln(stdout)
 	}
 
-	// A guess plus --yes is not consent. bobUnknown means the config could not be
-	// read, so there was no address to compare against and all that is known is the
-	// value's SHAPE: a loopback http proxy. That describes every local proxy anyone
-	// runs — Squid on 3128, a corporate agent, a dev tunnel — not just Cortex's
-	// 476xx block, because with no config there is no port to compare at all.
-	//
-	// Interactively that is survivable: the prompt prints the value and the user
-	// recognizes their own proxy. --yes removes exactly that safeguard, so a
-	// scripted `disable --yes` would silently delete a stranger's proxy. Refuse
-	// instead, and say which flag turns the guess into an answer. Exit 1, not 0:
-	// the user asked for a removal that did not happen.
-	if yes && owns == bobUnknown {
-		// Name the config path. Without it the message is the same whether Cortex is
-		// uninstalled or --config was a typo, and only the second is worth retrying —
-		// so the reader needs to see WHICH file was not read to tell them apart.
-		// bobStatus's equivalent arm already names it; this one did not.
-		fmt.Fprintf(stderr, "agentop: %s sets %q to %q, which is shaped like a Cortex\n"+
-			"  proxy but cannot be confirmed as one: %s could not be read, so there is no\n"+
-			"  address to compare against — every loopback http proxy looks like this.\n"+
-			"  Refusing to delete it unattended. Re-run without --yes to see the value and\n"+
-			"  decide, or pass --config with a readable Cortex config.\n",
-			settingsPath, bobProxyKey, s, cortexCfgPath)
-		return 1
+	var targets []string
+	if len(edits) > 0 {
+		fmt.Fprintf(stdout, "Removes from %s:\n", settingsPath)
+		for _, e := range edits {
+			if e.key == bobProxyKey {
+				fmt.Fprintf(stdout, "  %q: %q\n", bobProxyKey, proxyVal)
+			} else {
+				fmt.Fprintf(stdout, "  %q: false\n", e.key)
+			}
+		}
+		if owns == bobUnknown {
+			// Say it is a guess, because it is: with no readable config there is no
+			// address to compare against, and what is left is that the value is a
+			// loopback http proxy — the shape agentop writes. Removing it is still the
+			// right default (this is the uninstalled-Cortex case, when the off switch
+			// matters most), but the user should know which of the two answers they are
+			// getting, and the prompt below names the value before anything is written.
+			fmt.Fprintf(stdout, "  (%s\n"+
+				"   is not readable, so this is judged by shape alone — a loopback\n"+
+				"   proxy, which is what agentop writes)\n", cortexCfgPath)
+		}
+		fmt.Fprint(stdout, bobBackupNote(settingsPath))
+		targets = append(targets, settingsPath)
 	}
-
-	fmt.Fprintf(stdout, "Removes from %s:\n  %q: %q\n", settingsPath, bobProxyKey, s)
-	if owns == bobUnknown {
-		// Say it is a guess, because it is: with no readable config there is no
-		// address to compare against, and what is left is that the value is a
-		// loopback http proxy — the shape agentop writes. Removing it is still the
-		// right default (this is the uninstalled-Cortex case, when the off switch
-		// matters most), but the user should know which of the two answers they are
-		// getting, and the prompt below names the value before anything is written.
-		fmt.Fprintf(stdout, "  (%s\n"+
-			"   is not readable, so this is judged by shape alone — a loopback\n"+
-			"   proxy, which is what agentop writes)\n", cortexCfgPath)
+	if removeBlock {
+		fmt.Fprintf(stdout, "Removes the cortex bob block from %s.\n\n", launch.rcPath)
+		targets = append(targets, launch.rcPath)
 	}
-	fmt.Fprint(stdout, bobBackupNote(settingsPath))
-	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
+	if !yes && !bobConfirm(strings.Join(targets, " and "), "Write to", stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
 
-	// nil value means delete. bobWriteKey, not writeSettings: the promise printed
+	// nil value means delete. bobWriteKeys, not writeSettings: the promise printed
 	// above is that nothing else in the file changes, and a re-marshal would
 	// reorder and reindent every other key.
-	if werr := bobWriteKey(settingsPath, bobProxyKey, nil); werr != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", werr)
-		return 1
+	if len(edits) > 0 {
+		if werr := bobWriteKeys(settingsPath, edits); werr != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", werr)
+			return 1
+		}
+	}
+	if removeBlock {
+		if werr := writeRCFile(launch.rcPath, rcOut); werr != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", werr)
+			return 1
+		}
+	}
+	// The key the record describes is gone, so the record goes too: left behind, it
+	// would claim a later false the user sets themselves as agentop's.
+	if removeRecord {
+		if rerr := os.Remove(launch.statePath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "agentop: removing %s: %v\n", launch.statePath, rerr)
+			return 1
+		}
 	}
 
 	fmt.Fprintf(stdout, "\nDisabled. IBM Bob no longer routes through Cortex.\n")
-	fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
-	fmt.Fprint(stdout, bobUntrustNote(caPath))
+	if launch.macOS {
+		fmt.Fprint(stdout, "Quit IBM Bob and reopen it so it re-reads its settings.\n\n")
+	} else {
+		fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
+	}
+	fmt.Fprint(stdout, bobUntrustNote(caPath, launch.macOS))
 	return 0
 }
 
@@ -1236,7 +1483,7 @@ const (
 	bobStatusUnknown = "IBM Bob's Cortex status is unknown"
 )
 
-func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.Writer) int {
+func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, launch bobLaunch, stdout io.Writer) int {
 	// The first line answers the question someone ran this to ask, in the words they
 	// would use to ask it: is IBM Bob going through Cortex or not. Everything else is
 	// detail under that, and the order is deliberate — this used to open with the raw
@@ -1246,11 +1493,12 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
 	// `agentop configure bob status` unusable in a shell conditional for anything but
 	// "is it on".
-	// No document means no answer. The verdict this used to print was bobStatusNo with
-	// `"http.proxy" is unset` under it — a positive report about a file that is not
-	// there, indistinguishable from a real Bob that simply is not routed through Cortex.
-	// Saying so is the difference between "Bob is not configured" and "agentop cannot tell
-	// whether Bob is configured", and only the second is true here.
+	// No Bob, or a `null` document, means no answer. The verdict this used to print was
+	// bobStatusNo with `"http.proxy" is unset` under it — a positive report about a Bob
+	// that is not there, indistinguishable from a real Bob that simply is not routed
+	// through Cortex. A settings.json missing from a Bob directory that exists is not
+	// this case: that is a Bob on its defaults, and bobNoDocument lets it through to
+	// the "not configured" it is.
 	if nerr := bobNoDocument(settingsPath); nerr != nil {
 		fmt.Fprintf(stdout, "%s\n  %v\n", bobStatusUnknown, nerr)
 		return 0
@@ -1295,8 +1543,9 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	//
 	// Only configureOn becomes bobStatusYes, so this command's wording is unchanged by
 	// any of the table's finer distinctions: configurePartial is a drifted loopback
-	// proxy and configureUnknown the unjudgeable-loopback case, both of which it has
-	// always reported as bobStatusNo with the reason in the detail below.
+	// proxy, or on macOS our proxy without the launch half, and configureUnknown the
+	// unjudgeable-loopback case — all reported as bobStatusNo with the reason in the
+	// detail below.
 	//
 	// THE EARLY RETURNS ABOVE ARE THIS COMMAND'S OWN, not a shared wording. Of the
 	// cases the table calls uncertain, only no-document prints bobStatusUnknown here;
@@ -1305,8 +1554,14 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// this line computes, and deliberately differ on how they word the file-level
 	// problems each one reports first.
 	verdict, listening := bobStatusNo, ""
-	if bobStateFrom(settingsPath, doc, cortexCfgPath, wantProxy).State == configureOn {
+	if bobStateFrom(settingsPath, doc, cortexCfgPath, wantProxy, launch, caPath).State == configureOn {
 		verdict = bobStatusYes
+	}
+	if !bobSettingsExist(settingsPath) {
+		// A finding about Bob, not a fault: it writes the file only when a setting is
+		// first changed, and enable creates it.
+		add("%s does not exist yet — IBM Bob writes it the first time a setting", settingsPath)
+		add("changes, and `agentop configure bob enable` creates it")
 	}
 	switch existing := doc[bobProxyKey].(type) {
 	case nil:
@@ -1354,6 +1609,10 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 		add("%q=%v in %s", bobProxyKey, existing, settingsPath)
 		add("that value is a %T, not a string", existing)
 	}
+	if launch.macOS {
+		_, lines, _ := bobLaunchCheck(launch, caPath, doc)
+		detail = append(detail, lines...)
+	}
 
 	fmt.Fprintln(stdout, verdict)
 
@@ -1367,10 +1626,6 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 
 	for _, line := range detail {
 		fmt.Fprintf(stdout, "  %s\n", line)
-	}
-
-	if note := bobVerifyNote(caPath); note != "" {
-		fmt.Fprint(stdout, "\n"+note)
 	}
 	return 0
 }
