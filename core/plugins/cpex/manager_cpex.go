@@ -13,14 +13,15 @@ import (
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // cpexManager is the CPEX-backed Manager implementation. Wraps
-// rcpex.PluginManager and translates pctx ↔ CMF on every Invoke.
+// rcpex.PolicyEngine and translates pctx ↔ CMF on every Invoke.
 // Lives behind //go:build cpex; the matching stub in manager_stub.go
 // handles the !cpex case.
 type cpexManager struct {
-	mgr *rcpex.PluginManager
+	mgr *rcpex.PolicyEngine
 }
 
 // NewManager constructs a CPEX-backed Manager. Tokio worker pool size
@@ -36,7 +37,7 @@ func NewManager(opts ManagerOptions) (Manager, error) {
 			return nil, fmt.Errorf("cpex configure runtime: %w", err)
 		}
 	}
-	mgr, err := rcpex.NewPluginManagerDefault()
+	mgr, err := rcpex.NewPolicyEngineDefault()
 	if err != nil {
 		return nil, fmt.Errorf("cpex new manager: %w", err)
 	}
@@ -53,7 +54,7 @@ func (c *cpexManager) LoadConfig(yaml string) error {
 
 // Initialize honors ctx's deadline. The rcpex binding's Initialize is
 // blocking and NOT context-aware (no ctx param; see
-// PluginManager.Initialize), so we run it in a goroutine and select on
+// PolicyEngine.Initialize), so we run it in a goroutine and select on
 // ctx.Done vs completion. On ctx cancellation we return ctx.Err() so
 // the caller's init budget (main.go's 60s initCtx) is actually
 // enforced.
@@ -166,6 +167,21 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 			fmt.Errorf("cpex invoke %q: %w", hookName, err)
 	}
 
+	if pres.ContinueProcessing {
+		withheld, derr := delegatedTokensWithheld(pres)
+		if derr != nil {
+			return Result{Decision: DecisionError, Reason: derr.Error()},
+				fmt.Errorf("cpex invoke %q: %w", hookName, derr)
+		}
+		if withheld {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codeDelegationUnavailable,
+				Reason:   "delegated credential not available to the host",
+			}, nil
+		}
+	}
+
 	// Apply modifications only when the policy will allow the request
 	// through. On deny, the modifications are moot — nothing of the
 	// modified request is forwarded — so skip the work.
@@ -187,6 +203,31 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	}
 
 	return mapResult(pres), nil
+}
+
+// codeDelegationUnavailable is the violation code for an allowed result
+// whose delegate() step minted a credential the host cannot read.
+const codeDelegationUnavailable = "delegation_unavailable"
+
+// delegatedTokensWithheld reports whether a delegate() step granted a
+// token on this invocation. CPEX 0.3.0 returns only the token's metadata
+// (audience, outbound header) in raw_credentials.delegated_tokens; the
+// value is never serialized across the FFI. Forwarding the request would
+// then send the caller's inbound bearer where the policy asked for the
+// delegated one, so Invoke denies instead.
+func delegatedTokensWithheld(pres *rcpex.PipelineResult) (bool, error) {
+	if len(pres.ModifiedExtensions) == 0 {
+		return false, nil
+	}
+	var ext struct {
+		RawCredentials *struct {
+			DelegatedTokens []msgpack.RawMessage `msgpack:"delegated_tokens"`
+		} `msgpack:"raw_credentials"`
+	}
+	if err := msgpack.Unmarshal(pres.ModifiedExtensions, &ext); err != nil {
+		return false, fmt.Errorf("decode modified extensions: %w", err)
+	}
+	return ext.RawCredentials != nil && len(ext.RawCredentials.DelegatedTokens) > 0, nil
 }
 
 // lowerHeaders flattens http.Header into the lowercase-keyed single-value
@@ -526,8 +567,8 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 //	entity        → MetaExtension.{EntityType,EntityName} for route dispatch
 //	identity      → SecurityExtension.Subject{ID, Roles} + AuthMethod +
 //	                curated Claims (issuer/audience/exp) via ClaimsCarrier
-//	agent         → SecurityExtension.Agent (workload client_id / SPIFFE id /
-//	                trust domain) — the agent's OWN identity, distinct from
+//	agent         → SecurityExtension.ThisWorkload (SPIFFE id / trust
+//	                domain / client_id) — the agent's OWN identity, distinct from
 //	                the caller in Subject
 //	inference     → LLMExtension (model/provider), CompletionExtension
 //	                (stop reason + token usage) on response, and the request
@@ -589,22 +630,25 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 		if cc, ok := id.(capabilities.ClaimsCarrier); ok {
 			ext.Security.AuthMethod = cc.AuthMethod()
 			if claims := cc.Claims(); len(claims) > 0 {
-				ext.Security.Subject.Claims = claims
+				ext.Security.Subject.Claims = make(map[string]any, len(claims))
+				for k, v := range claims {
+					ext.Security.Subject.Claims[k] = v
+				}
 			}
 		}
 	}
 
-	// Agent workload identity → SecurityExtension.Agent. This is the
-	// agent's OWN identity (its Keycloak client / SPIFFE id), not the
+	// Agent workload identity → SecurityExtension.ThisWorkload. This is
+	// the agent's OWN identity (its Keycloak client / SPIFFE id), not the
 	// caller's — kept distinct from Subject above.
 	if a := pctx.Agent; a != nil && (a.ClientID != "" || a.WorkloadID != "" || a.TrustDomain != "") {
 		if ext.Security == nil {
 			ext.Security = &rcpex.SecurityExtension{}
 		}
-		ext.Security.Agent = &rcpex.AgentIdentity{
-			ClientID:    a.ClientID,
-			WorkloadID:  a.WorkloadID,
+		ext.Security.ThisWorkload = &rcpex.WorkloadIdentity{
+			SpiffeID:    a.WorkloadID,
 			TrustDomain: a.TrustDomain,
+			ClientID:    a.ClientID,
 		}
 	}
 

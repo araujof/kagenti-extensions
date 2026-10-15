@@ -179,7 +179,7 @@ typed extensions that CPEX policies read.
 | A2A session / task / message id | `AgentExtension.{SessionID, ConversationID}` + `ProvenanceExtension.MessageID` | |
 | Identity subject + scopes | `SecurityExtension.Subject.{ID, Roles}` | always mapped |
 | Identity auth method + curated claims | `SecurityExtension.AuthMethod`, `Subject.Claims` | issuer / audience / exp, not the raw claim map |
-| Agent workload identity | `SecurityExtension.Agent.{ClientID, WorkloadID, TrustDomain}` | the agent's own identity, distinct from the caller |
+| Agent workload identity | `SecurityExtension.ThisWorkload.{SpiffeID, TrustDomain, ClientID}` | the agent's own identity, distinct from the caller |
 | Delegation chain | `DelegationExtension.{Chain, Depth, OriginSubjectID, ActorSubjectID}` | populated by token exchange |
 | Request id / trace headers | `RequestExtension.{RequestID, TraceID, SpanID}` | from `X-Request-Id` / B3 / traceparent |
 | Session id | `AgentExtension.SessionID` | from A2A natively or `X-Session-Id` |
