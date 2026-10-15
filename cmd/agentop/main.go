@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -33,6 +34,48 @@ import (
 // version is the agentop build version, overridden at release time via
 // -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
+
+// displayVersion is version as the TUI's title bar shows it: the release tag, or for a
+// local build the commit it was built from, since "dev" alone cannot tell two of those apart.
+//
+// Not a replacement for version itself, which the service unit records and compares
+// against: a revision there would make every rebuild look like a different install.
+func displayVersion() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	return devVersion(info.Settings)
+}
+
+// devVersion is "dev-<short revision>", with "+dirty" when the tree had uncommitted
+// changes; plain "dev" when the build carried no VCS stamp (go run, -buildvcs=false).
+func devVersion(settings []debug.BuildSetting) string {
+	var rev string
+	var dirty bool
+	for _, s := range settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "dev"
+	}
+	if len(rev) > 8 {
+		rev = rev[:8]
+	}
+	v := "dev-" + rev
+	if dirty {
+		v += "+dirty"
+	}
+	return v
+}
 
 // dispatchableSubcommands are the documented names main routes on, in the order
 // the usage block lists them.
@@ -522,7 +565,7 @@ func runObserve(args []string) int {
 	// address would point [l] at it and take away the in-cluster default, so a
 	// working `kubectl port-forward` on 9094 could not be reached with the one key
 	// that exists for exactly that.
-	opts := tui.RunOptions{Endpoint: *endpoint}
+	opts := tui.RunOptions{Endpoint: *endpoint, Version: displayVersion()}
 	opts.Harvest = observeHarvester(f, os.Stderr)
 	if prefsPath != "" {
 		opts.Save = func(s tui.UserSettings) error { return saveUserConfig(prefsPath, s) }
