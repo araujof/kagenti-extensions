@@ -797,9 +797,11 @@ echo ollama | agentop server add ollama http://localhost:11434 \
 agentop server use ollama --agent bob-shell
 ```
 
-The refusals recognised are Ollama 0.40.4's, vLLM 0.31.0's and llama.cpp b11429's
-serving several models (`--models-dir`). llama.cpp serving one model (`-m`) and LM
-Studio with a model loaded answer any name with that model, so their `--main` and
+The refusals recognised are Ollama 0.40.4's and 0.7.0's, vLLM 0.31.0's and
+llama.cpp b11429's serving several models (`--models-dir`); the two Ollama
+versions word theirs differently, and both readings are matched. llama.cpp serving
+one model (`-m`) and LM Studio with a model loaded answer any name with that model,
+so their `--main` and
 `--helper` never come into play; LM Studio with nothing loaded refuses in words the
 router does not read. A prompt larger than the server's window is trimmed by Ollama
 rather than refused, so set its context length above the agent's prompts: Claude

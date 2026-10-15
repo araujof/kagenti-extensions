@@ -50,16 +50,22 @@ const (
 // modelNotFound are the phrases a model server's error message carries for a model it
 // does not have, %s standing for the name the refused attempt was sent with, and the
 // statuses each was recorded at. Each was recorded from the server named, on
-// /v1/chat/completions, /v1/messages and /v1/responses alike; a phrase is added only
-// once a server has been seen to answer with it.
+// /v1/chat/completions, /v1/messages and /v1/responses alike for Ollama 0.40.4 and
+// llama.cpp, and on /v1/chat/completions alone for Ollama 0.7.0, the only one of the
+// three it serves; a phrase is added only once a server has been seen to answer with
+// it. A phrase carries no quoting around
+// the name — each server quotes it in its own style, Ollama 0.40.4 and llama.cpp
+// 'name', Ollama 0.7.0 "name" with ", try pulling it first" appended, vLLM `name` —
+// and refusesModel tries each style a server has been seen to use.
 var modelNotFound = []struct {
 	phrase   string
 	statuses []int
 }{
-	// Ollama 0.40.4 (404) and llama.cpp b11429 serving several models (400).
-	{"model '%s' not found", []int{http.StatusBadRequest, http.StatusNotFound}},
+	// Ollama 0.40.4 (404), Ollama 0.7.0 (404) and llama.cpp b11429 serving several
+	// models (400).
+	{"model %s not found", []int{http.StatusBadRequest, http.StatusNotFound}},
 	// vLLM 0.31.0.
-	{"The model `%s` does not exist.", []int{http.StatusNotFound}},
+	{"The model %s does not exist.", []int{http.StatusNotFound}},
 }
 
 // capturedPaths are the paths a captured request is sent to, by how the path the
@@ -287,8 +293,13 @@ func refusesModel(status int, body []byte, model string) bool {
 	}
 	msg := errorMessage(body)
 	for _, nf := range modelNotFound {
-		if slices.Contains(nf.statuses, status) && strings.Contains(msg, fmt.Sprintf(nf.phrase, model)) {
-			return true
+		if !slices.Contains(nf.statuses, status) {
+			continue
+		}
+		for _, quotes := range []string{"'", `"`, "`"} {
+			if strings.Contains(msg, fmt.Sprintf(nf.phrase, quotes+model+quotes)) {
+				return true
+			}
 		}
 	}
 	return false

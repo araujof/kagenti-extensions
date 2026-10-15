@@ -270,8 +270,9 @@ decides:
   does not read the server's list to judge it, because a LiteLLM server serves
   aliases it does not list. When the server refuses the model — LiteLLM's 403
   `team_model_access_denied` or 400 `Invalid model name passed in model=`, Ollama's
-  404 or llama.cpp's 400 `model '<m>' not found`, or vLLM's 404 ``The model `<m>`
-  does not exist.``, where `<m>` is the name the request was sent with — the router
+  404 or llama.cpp's 400 `model <m> not found`, or vLLM's 404 ``The model `<m>`
+  does not exist.``, where `<m>` is the name the request was sent with, quoted in
+  any of the styles a server has been seen to use — the router
   records the refusal for an hour and, through `pipeline.Resender`, has the forward proxy send the request
   again, once and before the agent sees anything, with the server's substitute:
   `main` for a request with tools, `helper` for one without, as the server's list

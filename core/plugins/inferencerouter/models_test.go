@@ -856,6 +856,7 @@ func TestRefusesModel_ReadsEachLocalServersWording(t *testing.T) {
 		body   string
 	}{
 		{"ollama chat completions", 404, "premium-ide", `{"error":{"message":"model 'premium-ide' not found","type":"not_found_error","param":null,"code":null}}`},
+		{"ollama 0.7.0 chat completions", 404, "premium-ide", `{"error":{"message":"model \"premium-ide\" not found, try pulling it first","type":"api_error","param":null,"code":null}}`},
 		{"ollama messages", 404, "premium-ide", `{"type":"error","error":{"type":"not_found_error","message":"model 'premium-ide' not found"},"request_id":"req_0291eb92e74aac2c0064755e"}`},
 		{"ollama responses", 404, "claude-opus-5-5", `{"error":{"message":"model 'claude-opus-5-5' not found","type":"not_found_error","param":null,"code":null}}`},
 		{"ollama, a name with a tag and a namespace", 404, "ibm/granite4:latest", `{"error":{"message":"model 'ibm/granite4:latest' not found","type":"not_found_error","param":null,"code":null}}`},
@@ -891,6 +892,7 @@ func TestRefusesModel_OtherAnswersAreNotRefusals(t *testing.T) {
 		{"lm studio with nothing loaded", 400, "premium-ide", `{"error":{"message":"No models loaded. Please load a model in the developer page or use the 'lms load' command.","type":"invalid_request_error","param":"model","code":null}}`},
 		{"another model named", 404, "granite3.3", ollama},
 		{"a name the refused one starts with", 404, "qwen3", `{"error":{"message":"model 'qwen3:4b' not found","type":"not_found_error","param":null,"code":null}}`},
+		{"a name the refused one starts with, ollama 0.7.0's quoting", 404, "qwen3", `{"error":{"message":"model \"qwen3:4b\" not found, try pulling it first","type":"api_error","param":null,"code":null}}`},
 		{"ollama's phrase at a status not recorded", 500, "premium-ide", ollama},
 		{"vllm's phrase at a status not recorded", 400, "premium-ide", vllm},
 		{"no model sent", 404, "", `{"error":{"message":"model '' not found"}}`},
