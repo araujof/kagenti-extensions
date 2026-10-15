@@ -158,11 +158,12 @@ func isProtected(name string) bool {
 // diffing against the headers sent to it: a header CPEX dropped is
 // deleted, one it added or changed is set, and one it returned unchanged
 // keeps its original (possibly multi-value) form. A nil or empty returned
-// map, or one equal to sent, changes nothing. Protected headers are never written;
-// their names come back in dropped so the caller can log them.
-func applyHeaderWriteBack(h http.Header, sent, returned map[string]string) (dropped []string) {
+// map, or one equal to sent, changes nothing. changed reports whether h was
+// written. Protected headers are never written; their names come back in
+// dropped so the caller can log them.
+func applyHeaderWriteBack(h http.Header, sent, returned map[string]string) (changed bool, dropped []string) {
 	if len(returned) == 0 {
-		return nil
+		return false, nil
 	}
 	before := canonicalMap(sent)
 	after := canonicalMap(returned)
@@ -175,6 +176,7 @@ func applyHeaderWriteBack(h http.Header, sent, returned map[string]string) (drop
 			continue
 		}
 		h.Del(name)
+		changed = true
 	}
 	for name, v := range after {
 		if old, ok := before[name]; ok && old == v {
@@ -185,9 +187,10 @@ func applyHeaderWriteBack(h http.Header, sent, returned map[string]string) (drop
 			continue
 		}
 		h.Set(name, v)
+		changed = true
 	}
 	sort.Strings(dropped)
-	return dropped
+	return changed, dropped
 }
 
 // canonicalMap re-keys m by canonical header name.

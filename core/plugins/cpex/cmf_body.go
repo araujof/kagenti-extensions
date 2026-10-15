@@ -283,7 +283,10 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, e
 // prompt to text parts makes every message redactable via cmf.llm_input,
 // and the strict "non-empty string content, in order" rule is the contract
 // applyInferenceRequestBodyMod relies on to map redacted text back onto the
-// right body message positionally.
+// right body message positionally. Tool output becomes tool-result parts
+// instead: an OpenAI chat message with role "tool", and each Anthropic
+// tool_result block the parser kept in inf.ToolResults. A result with no
+// text (an image block only) yields no part.
 //
 // Response phase: parsed from responseBody, NOT from inf.Completion.
 // Response hooks run in reverse pipeline order, so cpex executes BEFORE
@@ -299,13 +302,30 @@ func inferenceToCMFParts(inf *pipeline.InferenceExtension, isResponse bool, resp
 	}
 	var parts []cmfPart
 	for _, m := range inf.Messages {
-		if m.Content == "" {
+		switch {
+		case m.Content == "":
+		case m.Role == roleTool:
+			parts = append(parts, cmfPart{Kind: cmfPartToolResult, Content: m.Content})
+		default:
+			parts = append(parts, cmfPart{Kind: cmfPartText, Text: m.Content})
+		}
+	}
+	for _, r := range inf.ToolResults {
+		if r.Content == "" {
 			continue
 		}
-		parts = append(parts, cmfPart{Kind: cmfPartText, Text: m.Content})
+		parts = append(parts, cmfPart{
+			Kind:          cmfPartToolResult,
+			CorrelationID: r.ToolUseID,
+			Content:       r.Content,
+			IsError:       r.IsError,
+		})
 	}
 	return parts
 }
+
+// roleTool is the OpenAI chat role of a message carrying tool output.
+const roleTool = "tool"
 
 // a2aToCMFParts maps an A2AExtension onto ordered CMF content parts.
 //
@@ -544,7 +564,8 @@ type MCPRequestBodyMod struct {
 // changed and SetBody was called; returns mutated=false (with no
 // error) when the original body didn't match the expected shape
 // (e.g., parsed JSON has no `params` object, method is unsupported,
-// or the mod struct's relevant field is empty for the method).
+// or the mod struct's relevant field is empty for the method), or the new
+// value equals the one already there.
 func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPRequestBodyMod) (mutated bool, err error) {
 	if len(pctx.Body) == 0 {
 		return false, nil
@@ -564,12 +585,12 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 		// stripped all arguments returns an empty map and still means to
 		// rewrite. Inferring no-op from emptiness would forward the
 		// original (un-redacted) arguments.
-		if !mod.ArgsSet {
+		if !mod.ArgsSet || jsonEqual(params["arguments"], mod.NewArguments) {
 			return false, nil
 		}
 		params["arguments"] = mod.NewArguments
 	case "resources/read":
-		if !mod.URISet {
+		if !mod.URISet || params["uri"] == mod.NewURI {
 			return false, nil
 		}
 		params["uri"] = mod.NewURI
@@ -607,7 +628,8 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 //
 // Returns mutated=true when SetResponseBody was called; mutated=false
 // when the body wasn't a tools/call response, had no result.content,
-// or the response had no replaceable text block.
+// the response had no replaceable text block, or newContent equals the
+// result the policy was shown.
 func applyMCPResponseBodyMod(pctx *pipeline.Context, method string, newContent any) (mutated bool, err error) {
 	if method != "tools/call" {
 		return false, nil
@@ -620,7 +642,7 @@ func applyMCPResponseBodyMod(pctx *pipeline.Context, method string, newContent a
 		return false, fmt.Errorf("decode response body as JSON: %w", err)
 	}
 	result, ok := envelope["result"].(map[string]any)
-	if !ok {
+	if !ok || jsonEqual(extractToolResultContent(result), newContent) {
 		return false, nil
 	}
 

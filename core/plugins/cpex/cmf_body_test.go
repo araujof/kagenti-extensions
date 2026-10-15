@@ -775,3 +775,20 @@ func TestIsStreamingResponseGap_NoProtocolExtension(t *testing.T) {
 		t.Fatal("no protocol extension → no gap (unrecognised traffic)")
 	}
 }
+
+// A payload returned as it was sent is not a rewrite.
+func TestMCPBodyMod_UnchangedValuesNoOp(t *testing.T) {
+	pctx := &pipeline.Context{Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"n":1,"s":"x"}}}`)}
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{
+		NewArguments: map[string]any{"n": int64(1), "s": "x"}, ArgsSet: true,
+	})
+	if err != nil || mutated || pctx.BodyMutated() {
+		t.Fatalf("request: mutated=%v err=%v", mutated, err)
+	}
+
+	pctx = &pipeline.Context{ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)}
+	mutated, err = applyMCPResponseBodyMod(pctx, "tools/call", map[string]any{"ok": true})
+	if err != nil || mutated {
+		t.Fatalf("response: mutated=%v err=%v", mutated, err)
+	}
+}

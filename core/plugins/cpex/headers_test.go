@@ -93,8 +93,8 @@ func TestApplyHeaderWriteBack(t *testing.T) {
 		h := base()
 		ret := sentOf(h)
 		delete(ret, "X-Auth-User-Id")
-		if dropped := applyHeaderWriteBack(h, sentOf(base()), ret); dropped != nil {
-			t.Fatalf("dropped = %v", dropped)
+		if changed, dropped := applyHeaderWriteBack(h, sentOf(base()), ret); !changed || dropped != nil {
+			t.Fatalf("changed = %v, dropped = %v", changed, dropped)
 		}
 		if _, ok := h["X-Auth-User-Id"]; ok {
 			t.Fatal("stripped header still forwarded")
@@ -117,7 +117,9 @@ func TestApplyHeaderWriteBack(t *testing.T) {
 
 	t.Run("unmodified map keeps multi-value headers", func(t *testing.T) {
 		h := base()
-		applyHeaderWriteBack(h, sentOf(base()), sentOf(base()))
+		if changed, _ := applyHeaderWriteBack(h, sentOf(base()), sentOf(base())); changed {
+			t.Fatal("unmodified map reported a change")
+		}
 		if got := h.Values("Accept"); len(got) != 2 {
 			t.Fatalf("Accept = %v, want two values", got)
 		}
@@ -129,7 +131,9 @@ func TestApplyHeaderWriteBack(t *testing.T) {
 	t.Run("nil or empty map deletes nothing", func(t *testing.T) {
 		for _, ret := range []map[string]string{nil, {}} {
 			h := base()
-			applyHeaderWriteBack(h, sentOf(base()), ret)
+			if changed, _ := applyHeaderWriteBack(h, sentOf(base()), ret); changed {
+				t.Fatalf("returned %v: reported a change", ret)
+			}
 			if h.Get("Authorization") != "Bearer caller" || len(h) != len(base()) {
 				t.Fatalf("returned %v: headers = %v, want unchanged", ret, h)
 			}
@@ -139,7 +143,7 @@ func TestApplyHeaderWriteBack(t *testing.T) {
 	t.Run("headers never sent are untouched", func(t *testing.T) {
 		h := base()
 		ret := map[string]string{"Authorization": "Bearer caller", "Cookie": "sid=evil"}
-		dropped := applyHeaderWriteBack(h, sentOf(base()), ret)
+		_, dropped := applyHeaderWriteBack(h, sentOf(base()), ret)
 		if h.Get("Cookie") != "sid=1" || h.Get("X-Api-Key") != "k" {
 			t.Fatalf("unsent headers changed: %v", h)
 		}
@@ -155,7 +159,7 @@ func TestApplyHeaderWriteBack(t *testing.T) {
 		ret["Content-Length"] = "999"
 		ret["X-Authbridge-Direction"] = "inbound"
 		ret["Proxy-Connection"] = "keep-alive"
-		dropped := applyHeaderWriteBack(h, sentOf(base()), ret)
+		_, dropped := applyHeaderWriteBack(h, sentOf(base()), ret)
 		want := []string{"Content-Length", "Host", "Proxy-Connection", "X-Authbridge-Direction"}
 		if strings.Join(dropped, ",") != strings.Join(want, ",") {
 			t.Fatalf("dropped = %v, want %v", dropped, want)

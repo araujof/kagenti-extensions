@@ -172,6 +172,7 @@ typed extensions that CPEX policies read.
 | MCP `tools/call`, `prompts/get`, `resources/read`, result | `ContentPart` tool_call / prompt_request / resource_ref / tool_result | structured; rewritable on write-back |
 | MCP tool / prompt / resource name | `MetaExtension.{EntityType, EntityName}` | drives per-route dispatch |
 | Inference request messages | CMF text parts + `AgentExtension.Conversation.History` | drives `cmf.llm_input` |
+| Inference request tool output (Anthropic `tool_result` blocks, OpenAI chat `tool` messages) | CMF tool_result parts | read-only; APL `args` and CEL `args` on `llm:` routes read the text parts only |
 | Inference model | `MetaExtension.{EntityType: llm, EntityName}` + `LLMExtension.{ModelID, Provider}` | `llm:` routes; provider derived from model id |
 | Inference finish reason + token usage | `CompletionExtension.{StopReason, Tokens, Model}` | response phase |
 | A2A text parts | CMF text parts | role from phase |
@@ -264,13 +265,18 @@ disable the plugin, remove it from the pipeline.
 The plugin maps the CPEX outcome onto AuthBridge's five-value invocation
 vocabulary:
 
-- **allow**: all sub-plugins continued, request proceeds untouched.
+- **allow**: all sub-plugins continued and the forwarded message is unchanged.
+  A result that only adds labels (`taint`) or runs a `delegate` step is an
+  allow, as is one returning the headers and payload as sent, which CPEX 0.3.0
+  does on every allowed call.
 - **deny**: a sub-plugin returned a policy violation with a `cpex.<code>` code
   (`cpex.pii_detected`, `cpex.session_tainted_secret`, and so on). The plugin
   emits a `Reject`; how it appears on the wire is the listener's call, not the
   plugin's (see below).
-- **modify**: policy rewrote the body, headers, or labels. Changes are applied,
-  the request continues. Request headers are written back as a diff against
+- **modify**: policy changed the forwarded body or headers. Changes are
+  applied, the request continues. A body rewrite of an inference request is
+  supported on OpenAI chat requests only; one on any other dialect, or a
+  changed tool result, is an error that `fail_open` governs. Request headers are written back as a diff against
   those sent to CPEX, so an assertion can strip or replace a header. Headers
   never sent (Cookie, API keys) and `host`, `content-length`,
   `transfer-encoding`, `connection`, `proxy-*` and `x-authbridge-*` are never

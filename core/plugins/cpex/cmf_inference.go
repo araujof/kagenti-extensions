@@ -3,6 +3,7 @@ package cpex
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -78,7 +79,8 @@ func inferenceResponseParts(body []byte) []cmfPart {
 // positionally from newContents. newContents is the ordered list of
 // redacted text parts CPEX returned, which the read path
 // (inferenceToCMFParts) produced one-per-message for every message with
-// non-empty string content, in document order.
+// non-empty string content, in document order. Messages with role "tool"
+// are skipped: the read path sends them as tool-result parts.
 //
 // Alignment is enforced, not assumed: the count of body messages with
 // non-empty string content MUST equal len(newContents). A mismatch means
@@ -114,6 +116,9 @@ func applyInferenceRequestBodyMod(pctx *pipeline.Context, newContents []string) 
 	for _, m := range rawMsgs {
 		mo, ok := m.(map[string]any)
 		if !ok {
+			continue
+		}
+		if role, _ := mo["role"].(string); role == roleTool {
 			continue
 		}
 		if c, ok := mo["content"].(string); ok && c != "" {
@@ -217,4 +222,63 @@ func applyInferenceResponseBodyMod(pctx *pipeline.Context, newCompletion string)
 	}
 	pctx.SetResponseBody(newBody)
 	return true, nil
+}
+
+// applyInferenceRequestMod applies the text parts and tool-result contents
+// CPEX returned for an inference request. It reports no change when they
+// equal what was sent, so a label- or security-only result is not a
+// modification. A real change is applied only to an OpenAI chat request's
+// message text; a changed tool result, or any change to another dialect's
+// body, has no re-serializer and is an error the caller fails closed on.
+func applyInferenceRequestMod(pctx *pipeline.Context, texts []string, toolResults []any) (mutated bool, err error) {
+	var sentTexts []string
+	var sentResults []any
+	for _, part := range inferenceToCMFParts(pctx.Extensions.Inference, false, nil) {
+		switch part.Kind {
+		case cmfPartText:
+			sentTexts = append(sentTexts, part.Text)
+		case cmfPartToolResult:
+			sentResults = append(sentResults, part.Content)
+		}
+	}
+	resultsChanged := !jsonEqual(sentResults, toolResults)
+	if !resultsChanged && jsonEqual(sentTexts, texts) {
+		return false, nil
+	}
+	if resultsChanged {
+		return false, fmt.Errorf("tool result rewrite on an inference request is not supported")
+	}
+	if !isOpenAIDialect(pctx.Path) {
+		return false, fmt.Errorf("body modification is supported on OpenAI chat requests only, not %q", pctx.Path)
+	}
+	return applyInferenceRequestBodyMod(pctx, texts)
+}
+
+// isOpenAIDialect reports whether path is an OpenAI completions endpoint,
+// matched by its ending as inference-parser matches it.
+func isOpenAIDialect(path string) bool {
+	return strings.HasSuffix(path, "/completions")
+}
+
+// jsonEqual reports whether a and b encode to the same JSON. Values decoded
+// from MessagePack and from JSON differ in Go type (int64 against float64)
+// while meaning the same thing; nil and empty slices compare equal.
+func jsonEqual(a, b any) bool {
+	ja, errA := json.Marshal(normalizeEmpty(a))
+	jb, errB := json.Marshal(normalizeEmpty(b))
+	return errA == nil && errB == nil && string(ja) == string(jb)
+}
+
+func normalizeEmpty(v any) any {
+	switch x := v.(type) {
+	case []string:
+		if len(x) == 0 {
+			return nil
+		}
+	case []any:
+		if len(x) == 0 {
+			return nil
+		}
+	}
+	return v
 }

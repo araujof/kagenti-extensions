@@ -204,3 +204,111 @@ func TestInferProvider(t *testing.T) {
 		}
 	}
 }
+
+// --- tool results on the request ---
+
+func TestInferenceToCMFParts_AnthropicToolResults(t *testing.T) {
+	inf := &pipeline.InferenceExtension{
+		Messages: []pipeline.InferenceMessage{{Role: "user", Content: "read .env"}},
+		ToolResults: []pipeline.InferenceToolResult{
+			{ToolUseID: "toolu_1", Content: "AWS_SECRET_ACCESS_KEY=abc", IsError: true},
+			{ToolUseID: "toolu_2"}, // image block only
+		},
+	}
+	parts := inferenceToCMFParts(inf, false, nil)
+	want := []cmfPart{
+		{Kind: cmfPartText, Text: "read .env"},
+		{Kind: cmfPartToolResult, CorrelationID: "toolu_1", Content: "AWS_SECRET_ACCESS_KEY=abc", IsError: true},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts = %+v, want %+v", parts, want)
+	}
+}
+
+func TestInferenceToCMFParts_OpenAIToolRole(t *testing.T) {
+	inf := &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
+		{Role: "user", Content: "read .env"},
+		{Role: "tool", Content: "TOKEN=xyz"},
+	}}
+	parts := inferenceToCMFParts(inf, false, nil)
+	want := []cmfPart{
+		{Kind: cmfPartText, Text: "read .env"},
+		{Kind: cmfPartToolResult, Content: "TOKEN=xyz"},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts = %+v, want %+v", parts, want)
+	}
+}
+
+func TestInferenceRequestBodyMod_SkipsToolMessages(t *testing.T) {
+	pctx := &pipeline.Context{
+		Body: []byte(`{"messages":[{"role":"user","content":"a"},{"role":"tool","content":"t"},{"role":"user","content":"b"}]}`),
+	}
+	mutated, err := applyInferenceRequestBodyMod(pctx, []string{"a", "[REDACTED]"})
+	if err != nil || !mutated {
+		t.Fatalf("mutated=%v err=%v", mutated, err)
+	}
+	var decoded struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal(pctx.Body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Messages[1].Content != "t" || decoded.Messages[2].Content != "[REDACTED]" {
+		t.Fatalf("messages = %+v", decoded.Messages)
+	}
+}
+
+func inferencePctx(path string, body string, inf *pipeline.InferenceExtension) *pipeline.Context {
+	return &pipeline.Context{Path: path, Body: []byte(body), Extensions: pipeline.Extensions{Inference: inf}}
+}
+
+func TestApplyInferenceRequestMod(t *testing.T) {
+	anthropic := func() *pipeline.Context {
+		return inferencePctx("/v1/messages",
+			`{"messages":[{"role":"user","content":"hi"}]}`,
+			&pipeline.InferenceExtension{
+				Messages:    []pipeline.InferenceMessage{{Role: "user", Content: "hi"}},
+				ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "secret"}},
+			})
+	}
+	openai := func() *pipeline.Context {
+		return inferencePctx("/v1/chat/completions",
+			`{"messages":[{"role":"user","content":"hi"},{"role":"tool","content":"secret"}]}`,
+			&pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
+				{Role: "user", Content: "hi"}, {Role: "tool", Content: "secret"},
+			}})
+	}
+
+	t.Run("unchanged anthropic payload is a no-op", func(t *testing.T) {
+		pctx := anthropic()
+		mutated, err := applyInferenceRequestMod(pctx, []string{"hi"}, []any{"secret"})
+		if err != nil || mutated || pctx.BodyMutated() {
+			t.Fatalf("mutated=%v err=%v", mutated, err)
+		}
+	})
+	t.Run("text change on anthropic is an error", func(t *testing.T) {
+		pctx := anthropic()
+		if _, err := applyInferenceRequestMod(pctx, []string{"[REDACTED]"}, []any{"secret"}); err == nil {
+			t.Fatal("want error")
+		}
+		if pctx.BodyMutated() {
+			t.Fatal("body rewritten")
+		}
+	})
+	t.Run("tool result change is an error", func(t *testing.T) {
+		if _, err := applyInferenceRequestMod(openai(), []string{"hi"}, []any{"[REDACTED]"}); err == nil {
+			t.Fatal("want error")
+		}
+	})
+	t.Run("text change on openai chat is written back", func(t *testing.T) {
+		pctx := openai()
+		mutated, err := applyInferenceRequestMod(pctx, []string{"[REDACTED]"}, []any{"secret"})
+		if err != nil || !mutated {
+			t.Fatalf("mutated=%v err=%v", mutated, err)
+		}
+		if string(pctx.Body) != `{"messages":[{"content":"[REDACTED]","role":"user"},{"content":"secret","role":"tool"}]}` {
+			t.Fatalf("body = %s", pctx.Body)
+		}
+	})
+}

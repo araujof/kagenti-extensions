@@ -30,10 +30,11 @@ func TestUnchangedPayloadIsNotApplied(t *testing.T) {
 		ContinueProcessing: true,
 		ModifiedPayload:    []byte("not a MessagePack payload"),
 	}
-	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err != nil {
+	changed, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil)
+	if err != nil {
 		t.Fatalf("unchanged payload was decoded: %v", err)
 	}
-	if got := mapResult(pres).Decision; got != DecisionAllow {
+	if got := mapResult(pres, changed).Decision; got != DecisionAllow {
 		t.Fatalf("decision = %v, want allow", got)
 	}
 }
@@ -43,11 +44,8 @@ func TestModifiedPayloadRequiresBytes(t *testing.T) {
 		ContinueProcessing: true,
 		PayloadModified:    true,
 	}
-	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err == nil || !strings.Contains(err.Error(), "no payload") {
+	if _, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err == nil || !strings.Contains(err.Error(), "no payload") {
 		t.Fatalf("missing modified payload error = %v", err)
-	}
-	if got := mapResult(pres).Decision; got != DecisionModify {
-		t.Fatalf("decision = %v, want modify", got)
 	}
 }
 
@@ -56,7 +54,7 @@ func TestModifiedPayloadRequiresBytes(t *testing.T) {
 func TestPluginPanicIsAPlainDeny(t *testing.T) {
 	res := mapResult(&rcpex.PipelineResult{
 		Violation: &rcpex.PluginViolation{Code: "plugin_panic", Reason: "plugin panicked", PluginName: "boom"},
-	})
+	}, false)
 	if res.Decision != DecisionDeny || res.Code != "plugin_panic" {
 		t.Fatalf("result = %+v, want deny plugin_panic", res)
 	}

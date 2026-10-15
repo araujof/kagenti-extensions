@@ -190,8 +190,10 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	// Apply modifications only when the policy will allow the request
 	// through. On deny, the modifications are moot — nothing of the
 	// modified request is forwarded — so skip the work.
+	changed := false
 	if pres.ContinueProcessing {
-		if applyErr := applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext)); applyErr != nil {
+		var applyErr error
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext)); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -207,7 +209,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		}
 	}
 
-	return mapResult(pres), nil
+	return mapResult(pres, changed), nil
 }
 
 // codeDelegationUnavailable is the violation code for an allowed result
@@ -353,33 +355,40 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 //   - SecurityExtension.Labels → pctx.Extensions.Security.Labels
 //     Merge-add (no duplicates). Existing labels stay; new ones
 //     append. Operators reading session events see the union.
-func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string) error {
+//
+// changed reports whether the forwarded message changed: a header written
+// or a body rewritten. Labels do not count, and neither does a returned
+// header map or payload equal to what was sent, which CPEX 0.3.0 hands
+// back on every allowed call.
+func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string) (changed bool, err error) {
 	if len(pres.ModifiedExtensions) > 0 {
 		ext, err := pres.DeserializeExtensions()
 		if err != nil {
-			return fmt.Errorf("decode modified extensions: %w", err)
+			return false, fmt.Errorf("decode modified extensions: %w", err)
 		}
 		if ext != nil {
-			applyExtensionChanges(pctx, ext, sent)
+			changed = applyExtensionChanges(pctx, ext, sent)
 		}
 	}
 
 	if pres.PayloadModified {
 		if len(pres.ModifiedPayload) == 0 {
-			return fmt.Errorf("CPEX marked payload modified but returned no payload")
+			return changed, fmt.Errorf("CPEX marked payload modified but returned no payload")
 		}
 		payload, err := rcpex.DeserializePayload[rcpex.MessagePayload](pres)
 		if err != nil {
-			return fmt.Errorf("decode modified payload: %w", err)
+			return changed, fmt.Errorf("decode modified payload: %w", err)
 		}
 		if payload != nil {
-			if err := applyBodyModFromCMF(pctx, &payload.Message, isResponse); err != nil {
-				return fmt.Errorf("apply body mod: %w", err)
+			mutated, err := applyBodyModFromCMF(pctx, &payload.Message, isResponse)
+			if err != nil {
+				return changed, fmt.Errorf("apply body mod: %w", err)
 			}
+			changed = changed || mutated
 		}
 	}
 
-	return nil
+	return changed, nil
 }
 
 // applyBodyModFromCMF dispatches the body-rewriting logic per format
@@ -397,8 +406,9 @@ func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult
 // as a DecisionError that fail_open governs, so an unappliable redaction
 // blocks (fail_open=false) instead of leaking the unredacted body
 // downstream. A re-serializer reporting mutated=false with no error is a
-// legitimate no-op (nothing matched the redaction target) and proceeds.
-func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) error {
+// legitimate no-op (nothing matched the redaction target, or the payload
+// came back as it was sent) and proceeds.
+func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) (mutated bool, err error) {
 	switch {
 	case pctx.Extensions.MCP != nil:
 		return applyMCPBodyModFromCMF(pctx, msg, isResponse)
@@ -408,20 +418,16 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 		if isResponse {
 			// Single completion: rewrite choices[].message.content from the
 			// first (and normally only) redacted text part.
-			_, err := applyInferenceResponseBodyMod(pctx, firstText(texts))
-			return err
+			return applyInferenceResponseBodyMod(pctx, firstText(texts))
 		}
-		_, err := applyInferenceRequestBodyMod(pctx, texts)
-		return err
+		return applyInferenceRequestMod(pctx, texts, toolResultContents(msg))
 
 	case pctx.Extensions.A2A != nil:
 		texts := textParts(msg)
 		if isResponse {
-			_, err := applyA2AResponseBodyMod(pctx, firstText(texts))
-			return err
+			return applyA2AResponseBodyMod(pctx, firstText(texts))
 		}
-		_, err := applyA2ARequestBodyMod(pctx, texts)
-		return err
+		return applyA2ARequestBodyMod(pctx, texts)
 
 	default:
 		// No protocol parser claimed this traffic, so we have no
@@ -430,8 +436,20 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 		// dropped silently.
 		slog.Warn("cpex: body modification requested but no protocol extension present — failing closed",
 			"path", pctx.Path)
-		return fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
+		return false, fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
 	}
+}
+
+// toolResultContents collects the Content of every tool-result part in a
+// CMF Message, in document order.
+func toolResultContents(msg *rcpex.Message) []any {
+	var out []any
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolResult && p.ToolResultContent != nil {
+			out = append(out, p.ToolResultContent.Content)
+		}
+	}
+	return out
 }
 
 // textParts collects the Text of every text-kind content part in a CMF
@@ -474,7 +492,7 @@ func firstText(texts []string) string {
 // path), NOT pctx.Direction (a reverse-proxy pctx stays Direction=Inbound
 // for both phases), and NOT mcp.Result (mcp-parser runs AFTER cpex on the
 // response, so Result isn't populated yet when we apply).
-func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) error {
+func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) (bool, error) {
 	method := pctx.Extensions.MCP.Method
 	if !isResponse {
 		mod := MCPRequestBodyMod{}
@@ -503,21 +521,15 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 			}
 			break
 		}
-		if _, err := applyMCPRequestBodyMod(pctx, method, mod); err != nil {
-			return err
-		}
-		return nil
+		return applyMCPRequestBodyMod(pctx, method, mod)
 	}
 	// Response side.
 	for _, part := range msg.Content {
 		if part.ContentType == "tool_result" && part.ToolResultContent != nil {
-			if _, err := applyMCPResponseBodyMod(pctx, method, part.ToolResultContent.Content); err != nil {
-				return err
-			}
-			break
+			return applyMCPResponseBodyMod(pctx, method, part.ToolResultContent.Content)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // applyExtensionChanges mutates pctx based on a CPEX-modified
@@ -532,12 +544,16 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 //
 //   - Labels: merge-add. CPEX labels join the pctx label set; we
 //     don't remove labels other plugins set.
-func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string) {
+//
+// It reports whether a header was written.
+func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string) (headersChanged bool) {
 	if ext.Http != nil && len(ext.Http.RequestHeaders) > 0 {
 		if pctx.Headers == nil {
 			pctx.Headers = http.Header{}
 		}
-		if dropped := applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders); len(dropped) > 0 {
+		var dropped []string
+		headersChanged, dropped = applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders)
+		if len(dropped) > 0 {
 			slog.Warn("cpex: dropped header write-back to protected headers", "headers", dropped)
 		}
 	}
@@ -557,6 +573,7 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent m
 			}
 		}
 	}
+	return headersChanged
 }
 
 // buildCMF builds a CMF MessagePayload + Extensions from a
@@ -885,10 +902,11 @@ func cmfPartToContentParts(part cmfPart) []rcpex.ContentPart {
 // CGO_ENABLED=0 build.)
 
 // mapResult collapses a CPEX PipelineResult into our aggregate
-// Decision/Result. Order matters: deny first, then modify, then allow
-// — a single result can carry a violation AND modifications, and the
-// violation wins.
-func mapResult(p *rcpex.PipelineResult) Result {
+// Decision/Result. A violation is a deny. An allowed result is a modify
+// only when changed says the forwarded message changed (applyModificationsToPctx);
+// a result that only added labels, ran a delegate step or returned the
+// headers and payload as sent is an allow.
+func mapResult(p *rcpex.PipelineResult, changed bool) Result {
 	res := Result{}
 
 	for _, e := range p.Errors {
@@ -916,20 +934,9 @@ func mapResult(p *rcpex.PipelineResult) Result {
 		return res
 	}
 
-	if p.PayloadModified || len(p.ModifiedExtensions) > 0 {
-		// Extension changes (headers, labels) and MCP body changes have
-		// already been applied to pctx by applyModificationsToPctx
-		// before mapResult runs. Report modify so the Invocation
-		// reflects that policy touched the message.
+	if changed {
 		res.Decision = DecisionModify
-		switch {
-		case p.PayloadModified && len(p.ModifiedExtensions) > 0:
-			res.Reason = "policy modified headers/labels and body"
-		case p.PayloadModified:
-			res.Reason = "policy modified body"
-		default:
-			res.Reason = "policy modified headers/labels"
-		}
+		res.Reason = "policy modified the message"
 		return res
 	}
 
