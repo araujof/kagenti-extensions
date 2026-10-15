@@ -181,11 +181,11 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 			"header is attacker-controlled", "bypass_hosts", c.BypassHosts)
 	}
 
-	// A missing token file does not fail the boot: tool calls that need
+	// A missing token file does not fail the boot: requests that need
 	// the principal are denied until it can be read.
 	principal, err := newPrincipalSource(c.Principal)
 	if err != nil {
-		slog.Warn("cpex: principal token unavailable; tool calls that resolve identity will be denied",
+		slog.Warn("cpex: principal token unavailable; tool calls and inference requests that resolve identity will be denied",
 			"token_file", c.Principal.TokenFile, "error", err)
 	}
 

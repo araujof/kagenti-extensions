@@ -75,10 +75,14 @@ var errPrincipalUnavailable = errors.New("principal token unavailable")
 
 // injectsPrincipal reports whether a request identified as entityType gets
 // the Cortex-held principal: only an outbound request, which the monitored
-// agent sends, presented as a tool call. An inbound caller is never
-// asserted as the principal.
+// agent sends, presented as a tool call or an inference request, so a
+// taint on an llm route has a subject. An inbound caller is never asserted
+// as the principal.
 func injectsPrincipal(pctx *pipeline.Context, entityType string) bool {
-	return pctx.Direction == pipeline.Outbound && entityType == "tool"
+	if pctx.Direction != pipeline.Outbound {
+		return false
+	}
+	return entityType == "tool" || entityType == entityTypeLLM
 }
 
 // identityHeaders builds the header map handed to CPEX identity

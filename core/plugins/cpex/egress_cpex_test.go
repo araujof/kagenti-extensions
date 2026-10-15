@@ -128,12 +128,12 @@ routes:
   - llm: claude-test
     authentication: [idp]
     authorization:
-      pre_invocation: ["require(authenticated)"]
+      pre_invocation: ["require(subject.id == 'alice')"]
 `
 }
 
-// The policy sees the Cortex-held principal on a tool call; the forwarded
-// request never carries it, and inference never gets it.
+// The policy sees the Cortex-held principal on a tool call and on an
+// inference request; the forwarded request never carries it.
 func TestEnginePrincipalInjection(t *testing.T) {
 	p := configuredEngine(t, map[string]any{
 		"config":           principalPolicy(),
@@ -151,13 +151,20 @@ func TestEnginePrincipalInjection(t *testing.T) {
 		t.Fatal("principal written to Authorization")
 	}
 
-	// The caller's own token is not used for inference, and no principal is
-	// added there, so the llm route sees no subject.
+	// Inference gets the principal too, in place of the caller's own token,
+	// so the llm route sees the subject; the forwarded request does not.
 	llm := anthropicToolResultRequest("s1")
 	llm.Identity = nil
-	llm.Headers.Set("X-User-Token", spikeJWT("alice", nil))
-	if a := p.OnRequest(ctx, llm); a.Type != pipeline.Reject {
-		t.Fatalf("inference: action = %v, want reject (no principal)", a.Type)
+	llm.Headers.Set("X-User-Token", spikeJWT("mallory", nil))
+	wantContinue(t, "inference", p.OnRequest(ctx, llm))
+	if got := llm.Headers.Values("X-User-Token"); len(got) != 1 || got[0] != spikeJWT("mallory", nil) {
+		t.Fatalf("forwarded inference X-User-Token = %v, want the caller's own value only", got)
+	}
+	bare := anthropicToolResultRequest("s1")
+	bare.Identity = nil
+	wantContinue(t, "inference without caller headers", p.OnRequest(ctx, bare))
+	if _, ok := bare.Headers["X-User-Token"]; ok {
+		t.Fatal("principal written to the forwarded inference request")
 	}
 }
 

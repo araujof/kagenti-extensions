@@ -72,7 +72,7 @@ type ManagerOptions struct {
 	SyntheticEgress        bool
 
 	// Principal is the Cortex-held caller token for identity resolution on
-	// tool calls, or nil when principal injection is off.
+	// outbound tool calls and inference requests, or nil when principal injection is off.
 	Principal *principalSource
 }
 

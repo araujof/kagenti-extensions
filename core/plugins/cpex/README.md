@@ -267,7 +267,7 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
 | `synthetic_egress` | `false` | present requests no parser claimed as calls to the tool `http_egress` (see below) |
-| `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on tool calls; empty turns it off |
+| `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on outbound tool calls and inference requests; empty turns it off |
 | `principal.header` | `x-user-token` | identity header the token is presented under; must not be `Authorization` |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
@@ -341,13 +341,14 @@ policy that inspects bodies should deny when `truncated` is true or
 
 `principal.token_file` lets Cortex assert who the caller is, for an agent that
 must not hold the credential. For requests presented as tool calls (MCP tools
-and `http_egress`) the token is added under `principal.header` to the headers
-CPEX identity resolution reads, so an `identity/jwt` plugin configured with that
-`header:` resolves the subject. Only outbound requests get it: an inbound caller
-is never asserted as the principal. The token is never written to the forwarded
-request and never added to inference traffic, and a caller's own copy of the
-header reaches neither identity resolution nor the `http` extension. When the file cannot be read, Cortex
-logs a warning at startup and denies those tool calls with
+and `http_egress`) and for inference requests, the token is added under
+`principal.header` to the headers CPEX identity resolution reads, so an
+`identity/jwt` plugin configured with that `header:` resolves the subject, and a
+`taint` on an `llm:` route has one. Only outbound requests get it: an inbound
+caller is never asserted as the principal. The token is never written to the
+forwarded request, and a caller's own copy of the header reaches neither
+identity resolution nor the `http` extension. When the file cannot be read,
+Cortex logs a warning at startup and denies those requests with
 `cpex.principal_unavailable` until it can.
 
 ## Decisions and denials

@@ -123,10 +123,10 @@ type cpexConfig struct {
 
 	// Principal makes Cortex assert the caller: the token in token_file is
 	// handed to CPEX identity resolution under header for outbound requests
-	// presented as tool calls (MCP tools and http_egress). It is never written to the
-	// forwarded request and never added for inference, and a caller's own
-	// copy of header never reaches identity resolution.
-	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on tool calls; never forwarded."`
+	// presented as tool calls (MCP tools and http_egress) or inference
+	// requests. It is never written to the forwarded request, and a caller's
+	// own copy of header never reaches identity resolution.
+	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on outbound tool calls and inference requests; never forwarded."`
 }
 
 // principalConfig configures principal injection. An empty TokenFile turns

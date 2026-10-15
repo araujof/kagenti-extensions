@@ -168,7 +168,7 @@ func TestIdentityHeaders(t *testing.T) {
 	}
 	got, err = identityHeaders(caller, false, p)
 	if _, has := got["x-user-token"]; err != nil || has {
-		t.Fatalf("inference: %v %v, want no principal header", got, err)
+		t.Fatalf("no injection: %v %v, want no principal header", got, err)
 	}
 	if caller.Get("X-User-Token") != "spoofed" {
 		t.Fatal("caller headers mutated")
@@ -188,7 +188,7 @@ func TestPrincipalSourceMissingFile(t *testing.T) {
 		t.Fatalf("tool call err = %v, want errPrincipalUnavailable", err)
 	}
 	if _, err := identityHeaders(nil, false, p); err != nil {
-		t.Fatalf("inference err = %v, want nil", err)
+		t.Fatalf("no injection err = %v, want nil", err)
 	}
 	if err := os.WriteFile(path, []byte("late"), 0o600); err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestConfigure_EgressAndPrincipal(t *testing.T) {
 }
 
 // The principal is asserted only on outbound requests Cortex presents as
-// a tool call; an inbound caller never gets it.
+// a tool call or an inference request; an inbound caller never gets it.
 func TestInjectsPrincipal(t *testing.T) {
 	cases := []struct {
 		dir        pipeline.Direction
@@ -234,7 +234,7 @@ func TestInjectsPrincipal(t *testing.T) {
 		want       bool
 	}{
 		{pipeline.Outbound, "tool", true},
-		{pipeline.Outbound, entityTypeLLM, false},
+		{pipeline.Outbound, entityTypeLLM, true},
 		{pipeline.Outbound, globalEntityType, false},
 		{pipeline.Outbound, "prompt", false},
 		{pipeline.Outbound, "", false},
