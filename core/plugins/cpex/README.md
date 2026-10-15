@@ -368,8 +368,10 @@ vocabulary:
   the request, so it goes to the debug log.
 - **modify**: policy changed the forwarded body or headers. Changes are
   applied, the request continues. A body rewrite of an inference request is
-  supported on OpenAI chat requests only; one on any other dialect, or a
-  changed tool result, is an error that `fail_open` governs. Request headers are written back as a diff against
+  supported on OpenAI chat requests with a `messages` array only, and of an
+  inference response on a single non-streaming completion's text only; one on
+  any other dialect or shape, a changed tool result or tool call, or a removed
+  part is an error that `fail_open` governs. Request headers are written back as a diff against
   those sent to CPEX, so an assertion can strip or replace a header. Headers
   never sent (Cookie, API keys), the hop-by-hop and framing headers (`host`,
   `content-length`, `transfer-encoding`, `connection`, `keep-alive`, `te`,

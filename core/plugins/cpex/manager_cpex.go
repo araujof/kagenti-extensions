@@ -421,13 +421,12 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 		return applyMCPBodyModFromCMF(pctx, msg, isResponse)
 
 	case pctx.Extensions.Inference != nil:
-		texts := textParts(msg)
 		if isResponse {
-			// Single completion: rewrite choices[].message.content from the
-			// first (and normally only) redacted text part.
-			return applyInferenceResponseBodyMod(pctx, firstText(texts))
+			// A single completion's text is rewritable; any other change
+			// is refused.
+			return applyInferenceResponseMod(pctx, responseCMFParts(msg))
 		}
-		return applyInferenceRequestMod(pctx, texts, toolResultContents(msg))
+		return applyInferenceRequestMod(pctx, textParts(msg), toolResultContents(msg))
 
 	case pctx.Extensions.A2A != nil:
 		texts := textParts(msg)
@@ -459,6 +458,26 @@ func checkEgressUnmodified(pctx *pipeline.Context, msg *rcpex.Message) error {
 		}
 	}
 	return fmt.Errorf("body modification requested on %s, which has no re-serializer", egressToolName)
+}
+
+// responseCMFParts converts a returned message's text and tool-call parts
+// back into cmfParts for applyInferenceResponseMod.
+func responseCMFParts(msg *rcpex.Message) []cmfPart {
+	var out []cmfPart
+	for _, p := range msg.Content {
+		switch {
+		case p.ContentType == rcpex.ContentTypeText:
+			out = append(out, cmfPart{Kind: cmfPartText, Text: p.Text})
+		case p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil:
+			out = append(out, cmfPart{
+				Kind:          cmfPartToolCall,
+				Name:          p.ToolCallContent.Name,
+				Arguments:     p.ToolCallContent.Arguments,
+				CorrelationID: p.ToolCallContent.ToolCallID,
+			})
+		}
+	}
+	return out
 }
 
 // toolResultContents collects the Content of every tool-result part in a

@@ -97,19 +97,18 @@ func inferenceResponseParts(body []byte) []cmfPart {
 // SetBody call), matching the MCP re-serializers' no-op contract.
 func applyInferenceRequestBodyMod(pctx *pipeline.Context, newContents []string) (mutated bool, err error) {
 	if len(pctx.Body) == 0 {
+		if len(newContents) > 0 {
+			return false, fmt.Errorf("inference request has no body to apply %d text parts to", len(newContents))
+		}
 		return false, nil
 	}
 	var envelope map[string]any
 	if err := json.Unmarshal(pctx.Body, &envelope); err != nil {
 		return false, fmt.Errorf("decode inference request body as JSON: %w", err)
 	}
-	rawMsgs, ok := envelope["messages"].([]any)
-	if !ok {
-		// No messages array — nothing we know how to rewrite. Not an
-		// error: a request without messages simply has no redaction
-		// target (mirrors MCP's "no params" no-op).
-		return false, nil
-	}
+	// Without a messages array (a legacy completions prompt) there is no
+	// target, which the count check below refuses unless nothing came back.
+	rawMsgs, _ := envelope["messages"].([]any)
 
 	// Collect the string-content messages in order, so the count check
 	// and the assignment loop see exactly the same set.
@@ -168,10 +167,11 @@ func applyInferenceRequestBodyMod(pctx *pipeline.Context, newContents []string) 
 // return an error and let the caller fail closed rather than forward an
 // unredacted stream.
 //
-// Returns mutated=false (no error) when there's nothing to change:
-// newCompletion empty, no choices, or no string content to replace.
+// Returns mutated=false (no error) when there's nothing to change: no
+// choices, no string content to replace, or newCompletion equal to it. An
+// empty newCompletion is a redaction like any other.
 func applyInferenceResponseBodyMod(pctx *pipeline.Context, newCompletion string) (mutated bool, err error) {
-	if len(pctx.ResponseBody) == 0 || newCompletion == "" {
+	if len(pctx.ResponseBody) == 0 {
 		return false, nil
 	}
 	var envelope map[string]any
@@ -253,6 +253,42 @@ func applyInferenceRequestMod(pctx *pipeline.Context, texts []string, toolResult
 		return false, fmt.Errorf("body modification is supported on OpenAI chat requests only, not %q", pctx.Path)
 	}
 	return applyInferenceRequestBodyMod(pctx, texts)
+}
+
+// applyInferenceResponseMod applies the content parts CPEX returned for an
+// inference response, compared with what inferenceResponseParts sent. No
+// change is a no-op. A changed completion text is rewritten; any other
+// change (a tool call altered, added or removed, a text part removed) has
+// no re-serializer and is an error the caller fails closed on.
+func applyInferenceResponseMod(pctx *pipeline.Context, returned []cmfPart) (mutated bool, err error) {
+	sentTexts, sentCalls := splitResponseParts(inferenceResponseParts(pctx.ResponseBody))
+	texts, calls := splitResponseParts(returned)
+	callsChanged := !jsonEqual(sentCalls, calls)
+	if !callsChanged && jsonEqual(sentTexts, texts) {
+		return false, nil
+	}
+	if callsChanged {
+		return false, fmt.Errorf("tool call rewrite on an inference response is not supported")
+	}
+	if len(texts) != len(sentTexts) || len(texts) != 1 {
+		return false, fmt.Errorf("inference response sent %d text parts, CPEX returned %d; only a single completion is rewritable",
+			len(sentTexts), len(texts))
+	}
+	return applyInferenceResponseBodyMod(pctx, texts[0])
+}
+
+// splitResponseParts separates response parts into completion texts and
+// comparable tool calls.
+func splitResponseParts(parts []cmfPart) (texts []string, calls []any) {
+	for _, p := range parts {
+		switch p.Kind {
+		case cmfPartText:
+			texts = append(texts, p.Text)
+		case cmfPartToolCall:
+			calls = append(calls, map[string]any{"id": p.CorrelationID, "name": p.Name, "arguments": p.Arguments})
+		}
+	}
+	return texts, calls
 }
 
 // isOpenAIDialect reports whether path is an OpenAI completions endpoint,

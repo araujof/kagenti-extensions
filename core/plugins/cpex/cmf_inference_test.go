@@ -348,3 +348,62 @@ func TestInferenceToolResultsCustom(t *testing.T) {
 		t.Fatalf("no tool results: %d %v", count, results)
 	}
 }
+
+// A response modification is applied or refused, never dropped: a changed
+// tool call has no re-serializer, and a completion redacted to nothing, or
+// with its text part removed, is still a change.
+func TestApplyInferenceResponseMod(t *testing.T) {
+	const body = `{"choices":[{"message":{"role":"assistant","content":"key AKIAABCDEFGHIJKLMNOP",` +
+		`"tool_calls":[{"id":"call_1","type":"function","function":{"name":"send","arguments":"{\"to\":\"evil\"}"}}]}}]}`
+	resp := func() *pipeline.Context { return &pipeline.Context{ResponseBody: []byte(body)} }
+	sent := inferenceResponseParts([]byte(body))
+
+	if mutated, err := applyInferenceResponseMod(resp(), sent); err != nil || mutated {
+		t.Fatalf("unchanged: mutated=%v err=%v", mutated, err)
+	}
+
+	redactedCall := append([]cmfPart(nil), sent...)
+	redactedCall[1].Arguments = map[string]any{"to": "[REDACTED]"}
+	if _, err := applyInferenceResponseMod(resp(), redactedCall); err == nil {
+		t.Fatal("changed tool call dropped")
+	}
+	if _, err := applyInferenceResponseMod(resp(), sent[:1]); err == nil {
+		t.Fatal("removed tool call dropped")
+	}
+
+	pctx := resp()
+	blank := append([]cmfPart(nil), sent...)
+	blank[0].Text = ""
+	if mutated, err := applyInferenceResponseMod(pctx, blank); err != nil || !mutated || strings.Contains(string(pctx.ResponseBody), "AKIA") {
+		t.Fatalf("blanked completion: mutated=%v err=%v body=%s", mutated, err, pctx.ResponseBody)
+	}
+	if _, err := applyInferenceResponseMod(resp(), sent[1:]); err == nil {
+		t.Fatal("removed completion text dropped")
+	}
+
+	pctx = resp()
+	redacted := append([]cmfPart(nil), sent...)
+	redacted[0].Text = "key [REDACTED]"
+	if mutated, err := applyInferenceResponseMod(pctx, redacted); err != nil || !mutated || strings.Contains(string(pctx.ResponseBody), "AKIA") {
+		t.Fatalf("redacted completion: mutated=%v err=%v body=%s", mutated, err, pctx.ResponseBody)
+	}
+}
+
+// A redaction requested on a request with no messages array (a legacy
+// /v1/completions prompt) cannot be applied, so it is an error.
+func TestApplyInferenceRequestMod_NoMessagesFailsClosed(t *testing.T) {
+	pctx := &pipeline.Context{
+		Path: "/v1/completions",
+		Body: []byte(`{"model":"m","prompt":"key AKIAABCDEFGHIJKLMNOP"}`),
+		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{
+			Model:    "m",
+			Messages: []pipeline.InferenceMessage{{Role: "user", Content: "key AKIAABCDEFGHIJKLMNOP"}},
+		}},
+	}
+	if mutated, err := applyInferenceRequestMod(pctx, []string{"key [REDACTED]"}, nil); err == nil {
+		t.Fatalf("redaction dropped: mutated=%v body=%s", mutated, pctx.Body)
+	}
+	if mutated, err := applyInferenceRequestMod(pctx, []string{"key AKIAABCDEFGHIJKLMNOP"}, nil); err != nil || mutated {
+		t.Fatalf("unchanged: mutated=%v err=%v", mutated, err)
+	}
+}
