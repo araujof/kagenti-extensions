@@ -227,8 +227,18 @@ func TestParseUserAgent_Codex(t *testing.T) {
 		// The interactive TUI, and the default originator for anything Codex sends
 		// before its app-server initialize completes. Both are what `configure codex
 		// enable` actually sends people to, so both must fold to the same row as exec.
-		{"codex-tui/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
-		{"codex_cli_rs/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
+		// Captured from a real TUI session driven through the proxy over a pty — the
+		// TUI's own inference requests to /backend-api/codex/responses carry the first
+		// of these. Note the third field is the TERM value, "unknown" under `codex
+		// exec` and the terminal's name here, which is why the parse must key on the
+		// product token alone.
+		{"codex-tui/0.160.1 (Mac OS 26.3.0; arm64) xterm-256color (codex-tui; 0.160.1)", "codex", "0.160.1"},
+		{"codex_cli_rs/0.160.1 (Mac OS 26.3.0; arm64) xterm-256color", "codex", "0.160.1"},
+		// The same capture also carried 0.162.1, mid-auto-update, which is the only
+		// evidence in this suite that the UA SHAPE is stable across Codex releases
+		// rather than pinned to the one build everything else here was read from.
+		{"codex-tui/0.162.1 (Mac OS 26.3.0; arm64) xterm-256color (codex-tui; 0.162.1)", "codex", "0.162.1"},
+		{"codex_cli_rs/0.162.1 (Mac OS 26.3.0; arm64) xterm-256color", "codex", "0.162.1"},
 		// Originator names the same binary carries but that nothing has tied to live
 		// Codex traffic. Deliberately unclaimed; see knownClients.
 		{"codex_vscode/0.160.1", "", ""},

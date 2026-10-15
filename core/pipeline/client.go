@@ -344,8 +344,12 @@ var knownClients = map[string]string{
 	// passes "codex-tui", while anything sent BEFORE that initialize completes uses the
 	// built-in default "codex_cli_rs". Both are Codex, so both fold here. Read off
 	// Codex's source at rust-v0.160.1 (tui/src/lib.rs, app-server's
-	// initialize_processor.rs, login/src/auth/default_client.rs) and both tokens
-	// confirmed present in the shipped 0.160.1 binary.
+	// initialize_processor.rs, login/src/auth/default_client.rs), then CAPTURED
+	// from a real TUI session driven through the proxy over a pty — including on
+	// the TUI's own /backend-api/codex/responses inference requests, so this is
+	// not inferred from source alone. That capture also carried 0.162.1 mid-
+	// auto-update, which is the only evidence here that the shape holds across
+	// releases rather than only on the build everything else was read from.
 	"codex-tui":    "codex",
 	"codex_cli_rs": "codex",
 	// NOT CLAIMED, though the same binary carries them as originator names:
