@@ -30,7 +30,7 @@ func TestUnchangedPayloadIsNotApplied(t *testing.T) {
 		ContinueProcessing: true,
 		ModifiedPayload:    []byte("not a MessagePack payload"),
 	}
-	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false); err != nil {
+	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err != nil {
 		t.Fatalf("unchanged payload was decoded: %v", err)
 	}
 	if got := mapResult(pres).Decision; got != DecisionAllow {
@@ -43,7 +43,7 @@ func TestModifiedPayloadRequiresBytes(t *testing.T) {
 		ContinueProcessing: true,
 		PayloadModified:    true,
 	}
-	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false); err == nil || !strings.Contains(err.Error(), "no payload") {
+	if err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err == nil || !strings.Contains(err.Error(), "no payload") {
 		t.Fatalf("missing modified payload error = %v", err)
 	}
 	if got := mapResult(pres).Decision; got != DecisionModify {

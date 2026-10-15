@@ -42,7 +42,11 @@ func NewManager(opts ManagerOptions) (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cpex new manager: %w", err)
 	}
-	if err := mgr.EnableAPL(); err != nil {
+	var aplOpts []rcpex.APLOption
+	if opts.PrivateDestinations {
+		aplOpts = append(aplOpts, rcpex.WithPrivateDestinations())
+	}
+	if err := mgr.EnableAPL(aplOpts...); err != nil {
 		mgr.Shutdown()
 		return nil, fmt.Errorf("cpex enable APL: %w", err)
 	}
@@ -187,7 +191,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	// through. On deny, the modifications are moot — nothing of the
 	// modified request is forwarded — so skip the work.
 	if pres.ContinueProcessing {
-		if applyErr := applyModificationsToPctx(pctx, pres, isResponse); applyErr != nil {
+		if applyErr := applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext)); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -344,20 +348,19 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 //
 // Extension changes applied:
 //
-//   - HttpExtension.RequestHeaders → pctx.Headers
-//     Set the headers CPEX listed; preserve any pctx headers CPEX
-//     didn't model (multi-value, e.g. Set-Cookie).
+//   - HttpExtension.RequestHeaders → pctx.Headers, diffed against the
+//     headers sent (see applyHeaderWriteBack).
 //   - SecurityExtension.Labels → pctx.Extensions.Security.Labels
 //     Merge-add (no duplicates). Existing labels stay; new ones
 //     append. Operators reading session events see the union.
-func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool) error {
+func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string) error {
 	if len(pres.ModifiedExtensions) > 0 {
 		ext, err := pres.DeserializeExtensions()
 		if err != nil {
 			return fmt.Errorf("decode modified extensions: %w", err)
 		}
 		if ext != nil {
-			applyExtensionChanges(pctx, ext)
+			applyExtensionChanges(pctx, ext, sent)
 		}
 	}
 
@@ -520,21 +523,22 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 // applyExtensionChanges mutates pctx based on a CPEX-modified
 // Extensions struct. Field-by-field, with deliberate ownership notes:
 //
-//   - Headers: replace each modified key in pctx.Headers. Keys CPEX
-//     didn't include stay untouched — this is merge-replace, not
-//     wholesale-replace, because CPEX doesn't see (and can't reason
-//     about) headers the operator explicitly hid via flattenHeaders
-//     (Authorization, Cookie). A wholesale replace would strip those.
+//   - Headers: CPEX 0.3.0 returns the full request header map on every
+//     invocation, so the write-back is a diff against the map sent: a
+//     header CPEX removed (an assertion strip) is deleted and one it set
+//     (an asserted identity header) is replaced. Headers never sent
+//     (Cookie, API keys) and protected framing/internal headers are left
+//     alone; see applyHeaderWriteBack.
 //
 //   - Labels: merge-add. CPEX labels join the pctx label set; we
 //     don't remove labels other plugins set.
-func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
+func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string) {
 	if ext.Http != nil && len(ext.Http.RequestHeaders) > 0 {
 		if pctx.Headers == nil {
 			pctx.Headers = http.Header{}
 		}
-		for k, v := range ext.Http.RequestHeaders {
-			pctx.Headers.Set(k, v)
+		if dropped := applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders); len(dropped) > 0 {
+			slog.Warn("cpex: dropped header write-back to protected headers", "headers", dropped)
 		}
 	}
 
@@ -690,14 +694,11 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 		}
 	}
 
-	// Session id for cross-request CPEX state (taint/label persistence).
-	// A2A carries it natively (above); other protocols (MCP, inference)
-	// can supply it via X-Session-Id, which CPEX's session resolver reads
-	// off Agent.SessionID (tier-0). A2A keeps precedence — only fill from
-	// the header when no session id is set yet.
-	if sid := sessionIDFromHeaders(pctx.Headers); sid != "" {
+	// Session id for cross-request CPEX state (taint/label persistence);
+	// see cpexSessionID for which source session_source selects.
+	if sid, replaces := cpexSessionID(pctx, opts.SessionSource); sid != "" || (replaces && ext.Agent != nil) {
 		ext.Agent = ensureAgentExt(ext.Agent)
-		if ext.Agent.SessionID == "" {
+		if replaces || ext.Agent.SessionID == "" {
 			ext.Agent.SessionID = sid
 		}
 	}
@@ -740,6 +741,14 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 	}
 
 	return payload, ext
+}
+
+// sentHeaders returns the request headers buildCMF sent to CPEX.
+func sentHeaders(ext *rcpex.Extensions) map[string]string {
+	if ext == nil || ext.Http == nil {
+		return nil
+	}
+	return ext.Http.RequestHeaders
 }
 
 // ensureAgentExt returns a usable *AgentExtension — the existing one or a

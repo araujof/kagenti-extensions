@@ -182,7 +182,7 @@ typed extensions that CPEX policies read.
 | Agent workload identity | `SecurityExtension.ThisWorkload.{SpiffeID, TrustDomain, ClientID}` | the agent's own identity, distinct from the caller |
 | Delegation chain | `DelegationExtension.{Chain, Depth, OriginSubjectID, ActorSubjectID}` | populated by token exchange |
 | Request id / trace headers | `RequestExtension.{RequestID, TraceID, SpanID}` | from `X-Request-Id` / B3 / traceparent |
-| Session id | `AgentExtension.SessionID` | from A2A natively or `X-Session-Id` |
+| Session id | `AgentExtension.SessionID` | from A2A natively or `X-Session-Id`; with `session_source: resolved`, the listener's session when an agent session header or the process chain named it |
 | HTTP headers | `HttpExtension.RequestHeaders` | Authorization and Cookie stripped |
 | `pctx.Extensions.Custom["cpex/<key>"]` | `Extensions.Custom["<key>"]` | only the `cpex/`-prefixed entries cross |
 
@@ -244,6 +244,8 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
+| `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it) |
+| `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
 inert. Configure succeeds and both phases return continue. `config` and
@@ -268,7 +270,11 @@ vocabulary:
   emits a `Reject`; how it appears on the wire is the listener's call, not the
   plugin's (see below).
 - **modify**: policy rewrote the body, headers, or labels. Changes are applied,
-  the request continues.
+  the request continues. Request headers are written back as a diff against
+  those sent to CPEX, so an assertion can strip or replace a header. Headers
+  never sent (Cookie, API keys) and `host`, `content-length`,
+  `transfer-encoding`, `connection`, `proxy-*` and `x-authbridge-*` are never
+  written; such writes are dropped and logged by name.
 - **observe**: audit-only outcome, recorded, request continues.
 
 **How a rejection is rendered.** The plugin sets the decision and a status

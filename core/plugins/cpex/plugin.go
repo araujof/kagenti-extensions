@@ -188,6 +188,8 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	mgr, err := factory(ManagerOptions{
 		WorkerThreads:          c.WorkerThreads,
 		FallbackIdentification: c.FallbackIdentification,
+		SessionSource:          c.SessionSource,
+		PrivateDestinations:    c.PrivateDestinations,
 	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces

@@ -89,6 +89,28 @@ type cpexConfig struct {
 	//                      unidentified_request when the config declares
 	//                      any policy.
 	FallbackIdentification string `json:"fallback_identification" default:"global" description:"Identification for requests with no named entity: global (CPEX's http/* entity) or none (CPEX denies them as unidentified)."`
+
+	// SessionSource picks the session id CPEX keys session state (taint
+	// labels) on.
+	//
+	//   header (default) — the caller's X-Session-Id header, or the A2A
+	//                      context id.
+	//   resolved         — the session the listener resolved, but only
+	//                      when a dedicated agent session header or the
+	//                      process chain named it. A guess (most recent
+	//                      session, User-Agent affinity, a pending or
+	//                      default bucket) and the generic X-Session-Id and
+	//                      Session-Id headers give no session id, and the
+	//                      caller's X-Session-Id and A2A context id are
+	//                      ignored.
+	SessionSource string `json:"session_source" default:"header" description:"Session id for CPEX session state: header (X-Session-Id / A2A context id) or resolved (the listener's session, when a dedicated agent header or the process chain named it)."`
+
+	// PrivateDestinations lets every CPEX builtin of this instance (JWKS
+	// fetches, token exchange, CIBA, Vault) reach loopback, private,
+	// link-local and CGNAT addresses, cloud metadata endpoints included.
+	// Off by default; turn it on only for trusted policies on a trusted
+	// network, such as a local IdP in development.
+	PrivateDestinations bool `json:"private_destinations" default:"false" description:"Allow CPEX builtins to call loopback, private and link-local addresses (cloud metadata included). Default false."`
 }
 
 // hooksConfig declares which CPEX hooks the AuthBridge plugin
@@ -131,6 +153,9 @@ func (c *cpexConfig) applyDefaults() {
 	if c.FallbackIdentification == "" {
 		c.FallbackIdentification = fallbackGlobal
 	}
+	if c.SessionSource == "" {
+		c.SessionSource = sessionSourceHeader
+	}
 	if c.BypassHosts == nil {
 		c.BypassHosts = append([]string(nil), defaultBypassHosts...)
 	}
@@ -155,6 +180,12 @@ func (c *cpexConfig) validate() error {
 	default:
 		return fmt.Errorf("fallback_identification must be %q or %q, got %q",
 			fallbackGlobal, fallbackNone, c.FallbackIdentification)
+	}
+	switch c.SessionSource {
+	case sessionSourceHeader, sessionSourceResolved:
+	default:
+		return fmt.Errorf("session_source must be %q or %q, got %q",
+			sessionSourceHeader, sessionSourceResolved, c.SessionSource)
 	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must be >= 0, got %d", c.WorkerThreads)

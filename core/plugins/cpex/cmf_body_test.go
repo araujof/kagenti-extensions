@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // --- applyMCPRequestBodyMod ---
@@ -653,14 +654,54 @@ func TestInferenceHistory_RoleTagged(t *testing.T) {
 	}
 }
 
-func TestSessionIDFromHeaders(t *testing.T) {
-	h := http.Header{}
-	if got := sessionIDFromHeaders(h); got != "" {
-		t.Fatalf("absent header should yield empty, got %q", got)
+func TestCPEXSessionID(t *testing.T) {
+	resolved := func(id string, src pipeline.SessionSource, header string) *pipeline.Context {
+		return &pipeline.Context{
+			Headers:       http.Header{"X-Session-Id": {"caller-chosen"}},
+			Session:       &pipeline.SessionView{ID: id},
+			SessionSource: src,
+			SessionHeader: header,
+		}
 	}
-	h.Set("X-Session-Id", "taint-demo-42")
-	if got := sessionIDFromHeaders(h); got != "taint-demo-42" {
-		t.Fatalf("got %q, want taint-demo-42", got)
+	cases := []struct {
+		name         string
+		pctx         *pipeline.Context
+		source       string
+		wantID       string
+		wantReplaces bool
+	}{
+		{"header, absent", &pipeline.Context{Headers: http.Header{}}, sessionSourceHeader, "", false},
+		{"header, present", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"taint-demo-42"}}},
+			sessionSourceHeader, "taint-demo-42", false},
+		{"header ignores the resolved session",
+			&pipeline.Context{Headers: http.Header{}, Session: &pipeline.SessionView{ID: "s1"}, SessionSource: pipeline.SessionSourceProcess},
+			sessionSourceHeader, "", false},
+		{"resolved from the Claude Code header",
+			resolved("s1", pipeline.SessionSourceHeader, session.ClaudeCodeSessionHeader), sessionSourceResolved, "s1", true},
+		{"resolved from the process chain",
+			resolved("s1", pipeline.SessionSourceProcess, ""), sessionSourceResolved, "s1", true},
+		{"resolved from X-Session-Id",
+			resolved("s1", pipeline.SessionSourceHeader, "x-session-id"), sessionSourceResolved, "", true},
+		{"resolved from Session-Id",
+			resolved("s1", pipeline.SessionSourceHeader, session.CodexSessionHeader), sessionSourceResolved, "", true},
+		{"resolved from the active session",
+			resolved("s1", pipeline.SessionSourceActive, ""), sessionSourceResolved, "", true},
+		{"resolved from affinity",
+			resolved("s1", pipeline.SessionSourceAffinity, ""), sessionSourceResolved, "", true},
+		{"resolved from a pending bucket",
+			resolved(session.PendingSessionID("claude-code"), pipeline.SessionSourcePending, ""), sessionSourceResolved, "", true},
+		{"resolved, source not recorded",
+			resolved("s1", "", ""), sessionSourceResolved, "", true},
+		{"resolved, no session", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"x"}}},
+			sessionSourceResolved, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, replaces := cpexSessionID(tc.pctx, tc.source)
+			if id != tc.wantID || replaces != tc.wantReplaces {
+				t.Errorf("cpexSessionID = (%q, %v), want (%q, %v)", id, replaces, tc.wantID, tc.wantReplaces)
+			}
+		})
 	}
 }
 

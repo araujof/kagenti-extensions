@@ -189,6 +189,34 @@ func TestConfigure_FallbackIdentification(t *testing.T) {
 	}
 }
 
+func TestConfigure_SessionSourceAndPrivateDestinations(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantSource  string
+		wantPrivate bool
+	}{
+		{`{}`, sessionSourceHeader, false},
+		{`{"session_source":"resolved","private_destinations":true}`, sessionSourceResolved, true},
+	}
+	for _, tc := range cases {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(tc.raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", tc.raw, err)
+		}
+		if seen.SessionSource != tc.wantSource || seen.PrivateDestinations != tc.wantPrivate {
+			t.Errorf("Configure(%s): options = %+v", tc.raw, seen)
+		}
+	}
+	if err := setupFake(&FakeManager{}).Configure([]byte(`{"session_source":"active"}`)); err == nil {
+		t.Fatal("Configure: expected error for unknown session_source")
+	}
+}
+
 func TestConfigure_RejectsWildcardBypassHost(t *testing.T) {
 	p := setupFake(&FakeManager{})
 	err := p.Configure([]byte(`{"bypass_hosts":["*"]}`))
@@ -310,7 +338,7 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"hooks", "config", "config_file",
 		"fail_open", "worker_threads",
 		"bypass_hosts", "bypass_paths",
-		"fallback_identification",
+		"fallback_identification", "session_source", "private_destinations",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)

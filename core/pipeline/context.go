@@ -177,6 +177,14 @@ type Context struct {
 	//     is an observability and correlation key, not an authorization subject.
 	Session *SessionView
 
+	// SessionSource says how the listener resolved Session, so a plugin that
+	// keys security state on it can tell a session the request named from one
+	// the listener guessed. Empty when the listener does not record it; treat
+	// that as a guess. SessionHeader is the header that named the session when
+	// SessionSource is SessionSourceHeader.
+	SessionSource SessionSource
+	SessionHeader string
+
 	// OutboundSessionID pins the session bucket the outbound REQUEST event was
 	// recorded under, so the paired RESPONSE event lands in the same session.
 	// recordOutboundResponseEvent reuses it instead of re-resolving

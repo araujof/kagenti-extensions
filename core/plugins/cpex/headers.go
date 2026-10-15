@@ -2,6 +2,7 @@ package cpex
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -123,4 +124,77 @@ func isSensitive(name string) bool {
 		}
 	}
 	return false
+}
+
+// protectedHeaderExact and protectedHeaderPrefixes name headers CPEX
+// write-back may never set or delete: framing and hop-by-hop headers the
+// listener owns, and Cortex's own internal headers.
+var protectedHeaderExact = map[string]struct{}{
+	"host":              {},
+	"content-length":    {},
+	"transfer-encoding": {},
+	"connection":        {},
+}
+
+var protectedHeaderPrefixes = []string{"proxy-", "x-authbridge-"}
+
+// isProtected reports whether write-back must leave name alone. Headers
+// flattenHeaders never sends are protected too: CPEX never saw them, so
+// it cannot have meant to change them.
+func isProtected(name string) bool {
+	lower := strings.ToLower(name)
+	if _, ok := protectedHeaderExact[lower]; ok {
+		return true
+	}
+	for _, prefix := range protectedHeaderPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return isSensitive(name)
+}
+
+// applyHeaderWriteBack makes h match the request headers CPEX returned,
+// diffing against the headers sent to it: a header CPEX dropped is
+// deleted, one it added or changed is set, and one it returned unchanged
+// keeps its original (possibly multi-value) form. A nil or empty returned
+// map, or one equal to sent, changes nothing. Protected headers are never written;
+// their names come back in dropped so the caller can log them.
+func applyHeaderWriteBack(h http.Header, sent, returned map[string]string) (dropped []string) {
+	if len(returned) == 0 {
+		return nil
+	}
+	before := canonicalMap(sent)
+	after := canonicalMap(returned)
+	for name := range before {
+		if _, kept := after[name]; kept {
+			continue
+		}
+		if isProtected(name) {
+			dropped = append(dropped, name)
+			continue
+		}
+		h.Del(name)
+	}
+	for name, v := range after {
+		if old, ok := before[name]; ok && old == v {
+			continue
+		}
+		if isProtected(name) {
+			dropped = append(dropped, name)
+			continue
+		}
+		h.Set(name, v)
+	}
+	sort.Strings(dropped)
+	return dropped
+}
+
+// canonicalMap re-keys m by canonical header name.
+func canonicalMap(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
 }

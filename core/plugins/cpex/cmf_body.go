@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // isStreamingResponseGap reports whether a response-phase invocation has a
@@ -22,16 +23,53 @@ func isStreamingResponseGap(pctx *pipeline.Context, isResponse bool, cmfPartCoun
 	return pctx.Extensions.MCP != nil || pctx.Extensions.Inference != nil || pctx.Extensions.A2A != nil
 }
 
-// sessionIDFromHeaders returns the X-Session-Id request header, the
-// session-correlation key AuthBridge threads into CPEX's session resolver
-// (tier-0 Agent.SessionID) for non-A2A traffic. MCP and inference requests
-// carry no native session id, so an upstream supplies one here to let
-// session-scoped CPEX state — e.g. taint labels — persist across the
-// separate request/response cycles of one logical session. Returns "" when
-// absent. Tag-free so it's unit-tested without cgo (buildCMF, which uses
-// it, is cgo-gated).
-func sessionIDFromHeaders(h http.Header) string {
-	return h.Get("X-Session-Id")
+// Values of the session_source config key.
+const (
+	sessionSourceHeader   = "header"
+	sessionSourceResolved = "resolved"
+)
+
+// cpexSessionID returns the session id CPEX keys session state (taint
+// labels) on, read by CPEX's session resolver from Agent.SessionID, and
+// whether it replaces the A2A context id. Tag-free so it is unit-tested
+// without cgo.
+//
+// Under "header" it is the X-Session-Id request header, which an upstream
+// sets so session-scoped state persists across the separate requests of
+// one logical session; the A2A context id takes precedence. Under
+// "resolved" it is trustedSessionID, which replaces any A2A context id:
+// both that and X-Session-Id are chosen by the caller.
+func cpexSessionID(pctx *pipeline.Context, source string) (id string, replaces bool) {
+	if source == sessionSourceResolved {
+		return trustedSessionID(pctx), true
+	}
+	return pctx.Headers.Get(session.SessionIDHeader), false
+}
+
+// trustedSessionID returns the listener's session id when a dedicated
+// agent session header or the process chain named it, else "". A guess
+// (the most recent session, User-Agent affinity, a pending or the default
+// bucket) is not an identity a caller can be held to, and the generic
+// X-Session-Id and Session-Id headers let any caller name a fresh session.
+func trustedSessionID(pctx *pipeline.Context) string {
+	if pctx.Session == nil {
+		return ""
+	}
+	id := pctx.Session.ID
+	if id == "" || id == session.DefaultSessionID || strings.HasPrefix(id, session.PendingPrefix) {
+		return ""
+	}
+	switch pctx.SessionSource {
+	case pipeline.SessionSourceProcess:
+		return id
+	case pipeline.SessionSourceHeader:
+		switch http.CanonicalHeaderKey(pctx.SessionHeader) {
+		case "", session.SessionIDHeader, http.CanonicalHeaderKey(session.CodexSessionHeader):
+			return ""
+		}
+		return id
+	}
+	return ""
 }
 
 // cmfPartKind enumerates the structured CMF content part buildCMF emits

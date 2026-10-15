@@ -63,9 +63,11 @@ type ManagerOptions struct {
 	// (CPEX picks based on CPU count).
 	WorkerThreads int
 
-	// FallbackIdentification is the validated fallback_identification
-	// config value; see cpexConfig.
+	// FallbackIdentification, SessionSource and PrivateDestinations are
+	// the validated config values of the same names; see cpexConfig.
 	FallbackIdentification string
+	SessionSource          string
+	PrivateDestinations    bool
 }
 
 // NewManager is defined in one of two build-tag-gated files:

@@ -412,9 +412,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// assigned from this local after the pipeline has run.
 	var sessionID string
 	if !skipped && s.Sessions != nil {
-		if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
-			pctx.Session = s.sessionViewFor(sessionID)
-		}
+		sessionID = s.hydrateSession(pctx, r.Header, chain)
 	}
 
 	if !skipped {
@@ -1247,10 +1245,36 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // session.Store.SessionForProcess first; client affinity and ActiveSession() answer only
 // what it leaves open.
 func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []session.Proc) string {
+	sid, _ := s.resolvePluginSession(clientHeaders, chain)
+	return sid
+}
+
+// pluginSession is the session handed to plugins and how it was resolved.
+type pluginSession struct {
+	source pipeline.SessionSource
+	header string
+}
+
+// hydrateSession resolves the plugin session for a request and, when there is one,
+// sets pctx.Session and how it was resolved. It returns the id for the caller's
+// local, which recording reads instead of pctx.
+func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Header, chain []session.Proc) string {
+	sid, how := s.resolvePluginSession(clientHeaders, chain)
+	if sid != "" {
+		pctx.Session = s.sessionViewFor(sid)
+		pctx.SessionSource = how.source
+		pctx.SessionHeader = how.header
+	}
+	return sid
+}
+
+// resolvePluginSession is resolvePluginSessionID that also says how the id was
+// resolved.
+func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session.Proc) (string, pluginSession) {
 	affinity := s.affinityOn()
 	procs := chain != nil && s.processesOn()
 	agent := affinityClient(clientHeaders)
-	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
+	if sid, header := session.IDHeaderFrom(clientHeaders, s.SessionIDHeaders); sid != "" {
 		// The process's claim first: it adopts the process's own pending bucket, which is
 		// certainly its calls, before the agent-wide guess can take the session.
 		if procs {
@@ -1259,37 +1283,41 @@ func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []sessi
 		if affinity {
 			s.Sessions.Claim(sid, agent)
 		}
-		return sid
+		return sid, pluginSession{source: pipeline.SessionSourceHeader, header: header}
 	}
 	if procs {
 		// The default bucket is SessionForProcess's answer for a process of no agent while
 		// an agent is active, and plugins hear it as "", as they do affinity's below.
-		switch sid := s.Sessions.SessionForProcess(chain, agent); sid {
-		case "":
-		case session.DefaultSessionID:
-			return ""
+		switch sid := s.Sessions.SessionForProcess(chain, agent); {
+		case sid == "":
+		case sid == session.DefaultSessionID:
+			return "", pluginSession{}
+		case strings.HasPrefix(sid, session.PendingPrefix):
+			return sid, pluginSession{source: pipeline.SessionSourcePending}
 		default:
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceProcess}
 		}
 	}
 	if affinity {
 		// See session.Store.SessionForClient for the order. The default bucket is its
 		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
 		// function exists to give them — while recording files it under default.
-		switch sid := s.Sessions.SessionForClient(agent); sid {
-		case "":
-		case session.DefaultSessionID:
-			return ""
+		switch sid := s.Sessions.SessionForClient(agent); {
+		case sid == "":
+		case sid == session.DefaultSessionID:
+			return "", pluginSession{}
+		case strings.HasPrefix(sid, session.PendingPrefix):
+			return sid, pluginSession{source: pipeline.SessionSourcePending}
 		default:
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceAffinity}
 		}
 	}
 	if s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceActive}
 		}
 	}
-	return ""
+	return "", pluginSession{}
 }
 
 // affinityOn reports whether header-less requests are filed by coding agent. It needs
@@ -1839,9 +1867,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// fall through to ActiveSession() exactly as before.
 		chain = s.clientChain(r)
 		if s.Sessions != nil {
-			if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
-				pctx.Session = s.sessionViewFor(sessionID)
-			}
+			sessionID = s.hydrateSession(pctx, r.Header, chain)
 		}
 
 		// Run the outbound pipeline. Plugins that policy on host/identity
