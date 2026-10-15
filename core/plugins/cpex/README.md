@@ -260,14 +260,31 @@ boot.
 `bypass_hosts` is honored on the outbound phase only. On the inbound
 reverse-proxy phase the Host header is attacker-controlled and identity is
 resolved inside the bypassed chain, so a spoofed Host must not skip CPEX.
-`bypass_paths` applies on both phases. Neither list accepts `*` or empty; to
-disable the plugin, remove it from the pipeline.
+`bypass_paths` applies on both phases, except that with `synthetic_egress` it
+applies inbound only: the outbound path is the caller's choice for any host. For
+the same reason `synthetic_egress` drops the default `bypass_hosts`, whose
+wildcards a caller can match with a host of its own (`keycloak.evil.example`);
+an explicit list is kept. Neither list accepts `*` or empty; to disable the
+plugin, remove it from the pipeline.
+
+A request a parser claimed is denied before CPEX sees it when its JSON body has
+an object with a repeated key or two keys equal under case folding
+(`cpex.ambiguous_request`): the parsers match keys case-insensitively and keep
+the last repeat, a server may not, and policy would judge a different request
+from the one the server runs. Inside tool arguments and schemas only exact
+repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
+`resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
+taking the global identification. Neither denial is subject to `fail_open`.
 
 ### Plain egress as a tool call
 
-With `synthetic_egress: true`, a request no parser claimed (plaintext HTTP or a
-bridged HTTPS request) is presented to CPEX as a call to the tool `http_egress`,
-on the request phase. Its arguments:
+With `synthetic_egress: true`, an outbound request that names no tool, prompt,
+resource or model (plaintext HTTP or a bridged HTTPS request) is presented to
+CPEX as a call to the tool `http_egress`, on the request phase. That includes
+bodies a parser claimed as an MCP protocol method (`tools/list`, `initialize`)
+or an A2A message, so shaping a body as one does not route around the egress
+policy; a changed `http_egress` payload has no re-serializer and is an error
+that `fail_open` governs. Inbound requests are never egress. Its arguments:
 
 | Argument | Value |
 |---|---|

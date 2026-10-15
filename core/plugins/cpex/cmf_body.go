@@ -1,12 +1,15 @@
 package cpex
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -233,6 +236,164 @@ func identification(entityType, entityName, fallback string) (string, string) {
 	return globalEntityType, globalEntityName
 }
 
+// Violation codes for requests the plugin refuses to present to CPEX.
+const (
+	// codeUnnamedEntity: an MCP tool call, prompt or resource read that
+	// names no tool, prompt or URI, so no route can be chosen for it.
+	codeUnnamedEntity = "unnamed_entity"
+	// codeAmbiguousRequest: a parsed JSON body with keys that collide under
+	// case folding or repeat. The parsers match keys case-insensitively and
+	// keep the last duplicate; a server may not, so policy could judge a
+	// different request from the one the server runs.
+	codeAmbiguousRequest = "ambiguous_request"
+)
+
+// unpresentableRequest returns the violation code for a request that must
+// be denied before CPEX sees it, or "". Call it on the request phase only.
+func unpresentableRequest(pctx *pipeline.Context) string {
+	if m := pctx.Extensions.MCP; m != nil {
+		switch m.Method {
+		case "tools/call", "prompts/get":
+			if mcpParamName(m.Params) == "" {
+				return codeUnnamedEntity
+			}
+		case "resources/read":
+			if mcpParamURI(m.Params) == "" {
+				return codeUnnamedEntity
+			}
+		}
+	}
+	parsed := pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil || pctx.Extensions.Inference != nil
+	if parsed && len(pctx.Body) > 0 && ambiguousJSON(pctx.Body) {
+		return codeAmbiguousRequest
+	}
+	return ""
+}
+
+// ambiguousJSON reports whether body is not valid JSON, or has an object
+// with a repeated key or two keys equal under Unicode case folding. Inside
+// free-form values (tool schemas and arguments, which every side decodes
+// as a map) only exact repeats count.
+func ambiguousJSON(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	type frame struct {
+		keys      map[string]struct{} // nil for an array
+		expectKey bool
+		lastKey   string
+		freeForm  bool
+	}
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return len(stack) != 0
+		}
+		if err != nil {
+			return true
+		}
+		var top *frame
+		if n := len(stack); n > 0 {
+			top = stack[n-1]
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				f := &frame{expectKey: d == '{'}
+				if d == '{' {
+					f.keys = map[string]struct{}{}
+				}
+				if top != nil {
+					f.freeForm = top.freeForm
+					if top.keys != nil {
+						_, free := freeFormKeys[strings.ToLower(top.lastKey)]
+						f.freeForm = f.freeForm || free
+						top.expectKey = false
+					}
+				}
+				stack = append(stack, f)
+			default:
+				stack = stack[:len(stack)-1]
+				if n := len(stack); n > 0 && stack[n-1].keys != nil {
+					stack[n-1].expectKey = true
+				}
+			}
+			continue
+		}
+		if top == nil || top.keys == nil {
+			continue
+		}
+		if !top.expectKey {
+			top.expectKey = true
+			continue
+		}
+		key, _ := tok.(string)
+		k := key
+		if !top.freeForm {
+			k = foldKey(key)
+		}
+		if _, dup := top.keys[k]; dup {
+			return true
+		}
+		top.keys[k] = struct{}{}
+		top.lastKey = key
+		top.expectKey = false
+	}
+}
+
+// freeFormKeys name values whose object keys are data rather than fields:
+// tool schemas and arguments.
+var freeFormKeys = map[string]struct{}{
+	"arguments":         {},
+	"input":             {},
+	"input_schema":      {},
+	"inputschema":       {},
+	"parameters":        {},
+	"structuredcontent": {},
+}
+
+// foldKey maps s to a key equal for exactly the strings strings.EqualFold
+// treats as equal: each rune becomes the smallest rune of its case-folding
+// orbit.
+func foldKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < m {
+				m = f
+			}
+		}
+		b.WriteRune(m)
+	}
+	return b.String()
+}
+
+// requestEntity is the entity a request names on the request phase: an MCP
+// tool, prompt or resource, or an inference model. ("", "") when it names
+// none.
+func requestEntity(pctx *pipeline.Context) (entityType, entityName string) {
+	switch {
+	case pctx.Extensions.MCP != nil:
+		return cmfEntity(mcpToCMFPart(pctx.Extensions.MCP, false, nil, nil))
+	case pctx.Extensions.Inference != nil:
+		return entityTypeLLM, pctx.Extensions.Inference.Model
+	}
+	return "", ""
+}
+
+// presentsAsEgress reports whether a request is presented as a call to
+// http_egress: with synthetic egress on, an outbound request on the
+// request phase that names no entity, whichever parser claimed it. A body
+// shaped as an MCP protocol method or an A2A message is egress like any
+// other, so it cannot route around the egress policy.
+func presentsAsEgress(pctx *pipeline.Context, isResponse, egress bool) bool {
+	if !egress || isResponse || pctx.Direction != pipeline.Outbound {
+		return false
+	}
+	et, en := requestEntity(pctx)
+	return et == "" || en == ""
+}
+
 // pctxToCMFParts is the top-level protocol selector: it turns whichever
 // protocol extension is populated into ordered CMF content parts plus the
 // (entity_type, entity_name) routing coordinates. Precedence MCP →
@@ -243,14 +404,19 @@ func identification(entityType, entityName, fallback string) (string, string) {
 // Only MCP tool/prompt/resource calls and inference name an entity; A2A,
 // MCP protocol mechanics and unparsed traffic return ("", "") and take the
 // fallback identification (see identification). With egress set, an
-// unparsed request is presented as a call to the tool http_egress instead
-// (see egressPart); its response keeps the opaque-text fallback.
+// outbound request that names no entity is presented as a call to the tool
+// http_egress instead (see presentsAsEgress, egressPart); its response
+// keeps the protocol mapping.
 //
 // Splitting this from the cgo adapter keeps the MCP/inference/A2A → CMF
 // decision unit-testable under CGO_ENABLED=0; manager_cpex.go converts the
 // returned cmfParts into rcpex ContentParts and stamps the entity coords
 // onto Extensions.Meta.
 func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cmfPart, entityType, entityName string) {
+	if presentsAsEgress(pctx, isResponse, egress) {
+		part := egressPart(pctx)
+		return []cmfPart{part}, "tool", part.Name
+	}
 	switch {
 	case pctx.Extensions.MCP != nil:
 		part := mcpToCMFPart(pctx.Extensions.MCP, isResponse, pctx.Body, pctx.ResponseBody)
@@ -266,10 +432,6 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cm
 
 	case pctx.Extensions.A2A != nil:
 		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody), "", ""
-
-	case egress && !isResponse:
-		part := egressPart(pctx)
-		return []cmfPart{part}, "tool", part.Name
 
 	default:
 		body := pctx.Body

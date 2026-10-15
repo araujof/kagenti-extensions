@@ -313,7 +313,10 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	// liveness probes) shouldn't pay the FFI round-trip. Check paths
 	// first since most bypass traffic is health/discovery rather
 	// than hostname-based.
-	if p.bypassPaths != nil && p.bypassPaths.Match(pctx.Path) {
+	// With synthetic egress the outbound path is the caller's choice for
+	// any host, so path bypass applies inbound only.
+	pathBypass := pctx.Direction != pipeline.Outbound || !p.cfg.SyntheticEgress
+	if pathBypass && p.bypassPaths != nil && p.bypassPaths.Match(pctx.Path) {
 		pctx.Skip("path_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -325,6 +328,13 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	if pctx.Direction == pipeline.Outbound && matchesAnyHost(p.bypassHosts, pctx.Host) {
 		pctx.Skip("host_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
+	}
+
+	if pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
+		if code := unpresentableRequest(pctx); code != "" {
+			code = "cpex." + code
+			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
+		}
 	}
 
 	for _, hook := range hooks {

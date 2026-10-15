@@ -205,7 +205,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	changed := false
 	if pres.ContinueProcessing {
 		var applyErr error
-		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext), c.opts.Principal.headerName()); applyErr != nil {
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), c.opts.Principal.headerName()); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -361,7 +361,7 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 // or a body rewritten. Labels do not count, and neither does a returned
 // header map or payload equal to what was sent, which CPEX 0.3.0 hands
 // back on every allowed call.
-func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string, protect ...string) (changed bool, err error) {
+func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse, egress bool, sent map[string]string, protect ...string) (changed bool, err error) {
 	if len(pres.ModifiedExtensions) > 0 {
 		ext, err := pres.DeserializeExtensions()
 		if err != nil {
@@ -382,7 +382,11 @@ func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult
 		if err != nil {
 			return changed, fmt.Errorf("decode modified payload: %w", err)
 		}
-		if payload != nil {
+		if payload != nil && egress {
+			if err := checkEgressUnmodified(pctx, &payload.Message); err != nil {
+				return changed, err
+			}
+		} else if payload != nil {
 			mutated, err := applyBodyModFromCMF(pctx, &payload.Message, isResponse)
 			if err != nil {
 				return changed, fmt.Errorf("apply body mod: %w", err)
@@ -441,6 +445,20 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 			"path", pctx.Path)
 		return false, fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
 	}
+}
+
+// checkEgressUnmodified accepts a payload returned for a request presented
+// as http_egress only when its arguments are the ones sent: there is no
+// re-serializer from them to the body, whichever parser claimed it.
+func checkEgressUnmodified(pctx *pipeline.Context, msg *rcpex.Message) error {
+	sent := egressPart(pctx).Arguments
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil &&
+			jsonEqual(p.ToolCallContent.Arguments, sent) {
+			return nil
+		}
+	}
+	return fmt.Errorf("body modification requested on %s, which has no re-serializer", egressToolName)
 }
 
 // toolResultContents collects the Content of every tool-result part in a

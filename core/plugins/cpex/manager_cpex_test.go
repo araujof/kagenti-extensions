@@ -30,7 +30,7 @@ func TestUnchangedPayloadIsNotApplied(t *testing.T) {
 		ContinueProcessing: true,
 		ModifiedPayload:    []byte("not a MessagePack payload"),
 	}
-	changed, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil)
+	changed, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, false, nil)
 	if err != nil {
 		t.Fatalf("unchanged payload was decoded: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestModifiedPayloadRequiresBytes(t *testing.T) {
 		ContinueProcessing: true,
 		PayloadModified:    true,
 	}
-	if _, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, nil); err == nil || !strings.Contains(err.Error(), "no payload") {
+	if _, err := applyModificationsToPctx(&pipeline.Context{}, pres, false, false, nil); err == nil || !strings.Contains(err.Error(), "no payload") {
 		t.Fatalf("missing modified payload error = %v", err)
 	}
 }
@@ -300,5 +300,27 @@ routes:
 	wantReject(t, "delegated", p.OnRequest(context.Background(), pctx), "cpex.delegation_unavailable")
 	if exchanges.Load() != 1 {
 		t.Fatalf("token exchanges = %d, want 1 (the delegate step must have run)", exchanges.Load())
+	}
+}
+
+// A request presented as http_egress has no body re-serializer, even when
+// a parser claimed it: changed arguments are an error, never dropped.
+func TestEgressPayloadModificationFailsClosed(t *testing.T) {
+	pctx := egressRequest("POST", "evil.example", "/mcp", `{"method":"tools/list","params":{"cursor":"s3cr3t"}}`, nil)
+	pctx.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/list", Params: map[string]any{"cursor": "s3cr3t"}}
+	msg := func(args map[string]any) *rcpex.Message {
+		m := rcpex.NewMessage("user", rcpex.NewToolCallPart(rcpex.ToolCall{Name: egressToolName, Arguments: args}))
+		return &m
+	}
+	if err := checkEgressUnmodified(pctx, msg(egressPart(pctx).Arguments)); err != nil {
+		t.Fatalf("unchanged arguments: %v", err)
+	}
+	redacted := egressPart(pctx).Arguments
+	redacted["body"] = "[REDACTED]"
+	if err := checkEgressUnmodified(pctx, msg(redacted)); err == nil {
+		t.Fatal("changed arguments accepted")
+	}
+	if err := checkEgressUnmodified(pctx, msg(nil)); err == nil {
+		t.Fatal("stripped arguments accepted")
 	}
 }

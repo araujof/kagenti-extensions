@@ -112,13 +112,14 @@ type cpexConfig struct {
 	// network, such as a local IdP in development.
 	PrivateDestinations bool `json:"private_destinations" default:"false" description:"Allow CPEX builtins to call loopback, private and link-local addresses (cloud metadata included). Default false."`
 
-	// SyntheticEgress presents a request no parser claimed as a call to the
-	// tool http_egress, so `tool: http_egress` routes govern plain HTTP
-	// egress. Its arguments are method, host, path, a bounded body excerpt,
-	// truncated and content_encoding; a CONNECT tunnel carries its host and
-	// method only. Off by default: such requests take the fallback
+	// SyntheticEgress presents an outbound request that names no tool,
+	// prompt, resource or model as a call to the tool http_egress, so
+	// `tool: http_egress` routes govern egress. It also turns off outbound
+	// path bypass and the default bypass hosts. Its arguments are method,
+	// host, path, a bounded body excerpt, truncated and content_encoding; a
+	// CONNECT tunnel carries its host and method only. Off by default: such requests take the fallback
 	// identification instead.
-	SyntheticEgress bool `json:"synthetic_egress" default:"false" description:"Present requests no parser claimed as calls to the tool http_egress. Default false."`
+	SyntheticEgress bool `json:"synthetic_egress" default:"false" description:"Present outbound requests that name no tool, prompt, resource or model as calls to the tool http_egress. Default false."`
 
 	// Principal makes Cortex assert the caller: the token in token_file is
 	// handed to CPEX identity resolution under header for outbound requests
@@ -182,7 +183,10 @@ func (c *cpexConfig) applyDefaults() {
 	if c.SessionSource == "" {
 		c.SessionSource = sessionSourceHeader
 	}
-	if c.BypassHosts == nil {
+	// The default bypass hosts are wildcards a caller can match with a
+	// host of its own (keycloak.attacker.example), so synthetic egress,
+	// which gates the caller's destinations, does not take them.
+	if c.BypassHosts == nil && !c.SyntheticEgress {
 		c.BypassHosts = append([]string(nil), defaultBypassHosts...)
 	}
 	if c.Principal.TokenFile != "" && c.Principal.Header == "" {
