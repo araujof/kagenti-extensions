@@ -455,6 +455,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 
+	// Before the request row is recorded, 20-odd lines below, and NOT down beside
+	// stripForUpstream where the strip itself happens — the row is appended first,
+	// so a field set after it is set on nothing. (It was, and three unit tests
+	// driving this method directly all passed while the feature recorded nothing
+	// end to end.) Reading it here is equivalent: the strip is unconditional, so an
+	// Upgrade present on the inbound request is one that will be removed.
+	pctx.RecordStrippedUpgrade(r.Header)
+
 	if !skipped && s.Sessions != nil {
 		sid := s.recordingSessionID(sessionID, r.Header, chain)
 		// Pin this session so the paired response event records into the
@@ -1132,21 +1140,22 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 	// struct (e.g. token counts assigned in OnResponse).
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
-		At:            time.Now(),
-		Direction:     pipeline.Outbound,
-		Phase:         pipeline.SessionRequest,
-		RequestID:     pctx.RequestID(),
-		BytesUp:       int64(len(pctx.Body)),
-		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:       plugins,
-		Identity:      pipeline.SnapshotIdentity(pctx),
-		Host:          pctx.Host,
-		RequestedHost: pctx.RequestedHost(),
-		HTTPMethod:    pctx.Method,
-		HTTPPath:      pctx.Path,
-		Client:        pctx.ClientInfo(),
+		At:              time.Now(),
+		Direction:       pipeline.Outbound,
+		Phase:           pipeline.SessionRequest,
+		RequestID:       pctx.RequestID(),
+		BytesUp:         int64(len(pctx.Body)),
+		MCP:             pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:       pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations:     pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:         plugins,
+		Identity:        pipeline.SnapshotIdentity(pctx),
+		Host:            pctx.Host,
+		RequestedHost:   pctx.RequestedHost(),
+		HTTPMethod:      pctx.Method,
+		HTTPPath:        pctx.Path,
+		UpgradeStripped: pctx.UpgradeStripped,
+		Client:          pctx.ClientInfo(),
 	}
 	s.appendOutbound(tl, sid, ev)
 }
