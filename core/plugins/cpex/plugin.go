@@ -1,11 +1,11 @@
 // Package cpex bridges AuthBridge requests through the CPEX (Context
 // Plugin Execution) framework so operators can drive policy with
-// CPEX's APL (Attribute Policy Language) DSL — or any of the
-// pre-built CPEX plugins (Cedar PDP, PII scanner, audit logger,
-// JWT identity, OAuth delegation) — without writing Go code.
+// CPEX's APL (Attribute Policy Language) DSL — or any of CPEX's
+// built-in plugins (JWT identity, OAuth delegation, the Cedar, CEL
+// and OPA decision points) — without writing Go code.
 //
 // One AuthBridge plugin instance ("cpex") wraps an entire CPEX
-// PluginManager. Operators declare which CPEX hook names fire on
+// PolicyEngine. Operators declare which CPEX hook names fire on
 // each AuthBridge phase via the cpex config's `hooks` block:
 //
 //	plugins:
@@ -61,9 +61,9 @@ import (
 	"github.com/rossoctl/cortex/core/plugins"
 )
 
-// CPEX is the AuthBridge plugin chassis around a CPEX PluginManager.
+// CPEX is the AuthBridge plugin chassis around a CPEX PolicyEngine.
 // Per-instance state: parsed config, the Manager adapter (Fake in
-// tests, real cpex.PluginManager in the cpex binary), and a ready
+// tests, real cpex.PolicyEngine in the cpex binary), and a ready
 // flag set after Init.
 type CPEX struct {
 	cfg     cpexConfig

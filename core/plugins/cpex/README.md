@@ -24,7 +24,7 @@ That orchestration allows you to see the full scope of your authorization flow (
   never saw before the call fired. The pre-invoke check ran before the result
   existed, so CPEX adds a post-result phase that evaluates the actual response.
 - **Ordered effects beyond allow/deny.** A decision drives concrete actions:
-  redact a response field, call a guardrail, write an audit record, in a defined order.
+  redact a response field, call a guardrail, taint the session, in a defined order.
   A PDP's allow or deny becomes the trigger for these effects through `on_allow` / `on_deny`.
 
 ## How it works
@@ -72,10 +72,10 @@ constants live in `hooks.go`.
 
 | Hook | Fires | APL home |
 |---|---|---|
-| `cmf.tool_pre_invoke` | before an MCP tool call is forwarded | tool-args validation, PDP checks, delegation |
-| `cmf.tool_post_invoke` | after a tool call returns, before it reaches the agent | post-result checks, audit |
-| `cmf.llm_input` | on an LLM request before it leaves the pod | prompt PII redaction |
-| `cmf.llm_output` | on an LLM response before it reaches the agent | output redaction, audit |
+| `cmf.tool_pre_invoke` | before an MCP tool call (or, with `synthetic_egress`, plain egress) is forwarded | tool-args validation, PDP checks, delegation |
+| `cmf.tool_post_invoke` | after a tool call returns, before it reaches the agent | post-result checks, result redaction |
+| `cmf.llm_input` | on an LLM request before it leaves the pod | prompt and tool-result checks, session taint |
+| `cmf.llm_output` | on an LLM response before it reaches the agent | output checks |
 
 CPEX also runs its own `identity.resolve` hook ahead of the entity hooks when
 identity resolvers are wired. AuthBridge calls the fused resolve-then-invoke path
@@ -84,83 +84,132 @@ so resolved credentials reach delegation in CPEX memory.
 ## CPEX plugins
 
 APL routes pull from a toolbox of named CPEX sub-plugins declared in the CPEX
-YAML. Routes invoke them by name through APL steps: `run(pii-scan)`,
-`delegate(workday-oauth, ...)`, `cedar: { ... }`. See the HR demo for examples.
+YAML. Routes invoke them by name: `authentication: [jwt-user]`,
+`run(<name>)`, `delegate(workday-oauth, ...)`. PDPs declared under
+`global.pdp` are called with `cedar:`, `cel:` and `opa:` steps. CPEX 0.3.0
+bundles JWT and API-key identity, the OAuth delegator, CIBA elicitation and
+the Cedar, CEL and OPA PDPs; the 0.2.x `validator/pii-scan` and
+`audit/logger` plugins are gone. See the HR demo for examples.
 
 ## CPEX APL
 
 APL is a per-entity policy that orchestrates ABAC and ReBAC predicates, ordered effects, and
 sequencing, over the common CMF vocabulary. A route binds a policy to one entity
-(a tool, a prompt, a model, an A2A method). From the HR demo:
+(a tool, a prompt, a model, an A2A method). Modelled on the HR demo:
 
 ```yaml
+plugins:
+  - name: jwt-user                          # resolves the caller from X-User-Token
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]            # needed to fetch the JWKS
+    config:
+      role: user
+      header: X-User-Token
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: "https://keycloak.example.com/realms/hr"
+          audiences: ["cpex-gateway"]       # required in 0.3.0
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: jwks_url
+            url: "https://keycloak.example.com/realms/hr/protocol/openid-connect/certs"
+
+  - name: workday-oauth                     # RFC 8693 exchange for the Workday API
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
+    config:
+      token_endpoint: "https://keycloak.example.com/realms/hr/protocol/openid-connect/token"
+      client_id: cpex-gateway
+      client_secret_source: {kind: env_var, name: WORKDAY_CLIENT_SECRET}
+
+global:
+  pdp:
+    - kind: cel
+
 routes:
   - tool: get_compensation
-    authentication:
-      - jwt-user                            # identity plugins that resolve the caller
-      - jwt-client
+    authentication: [jwt-user]
     authorization:
       pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
         - "taint(secret, session)"          # session label persists across calls
-        - "run(audit-log)"
     args:
       ssn: "str | redact(!perm.view_ssn)"   # redact request arg when caller lacks the perm
     result:
       ssn: "str | redact(!perm.view_ssn)"   # redact the response field too
 
   - tool: send_email
-    authentication:
-      - jwt-user
-      - jwt-client
+    authentication: [jwt-user]
     authorization:
       pre_invocation:
         - "require(perm.email_send)"
-        - "run(pii-scan)"
+        - cel:
+            expr: "!has(args.body) || !args.body.matches('[0-9]{3}-[0-9]{2}-[0-9]{4}')"
+            on_deny: ["deny('SSN pattern in body', 'pii.detected')"]
         - "security.labels contains \"secret\": deny('external email blocked', 'session_tainted_secret')"
-        - "run(audit-log)"
 ```
 
 `get_compensation` taints the session with `secret`. The label persists in the
-CPEX session store keyed by the session id, threaded from `X-Session-Id`. A later
-`send_email` in the same session reads that label and denies, blocking the
-exfiltration at the session level rather than with a per-call filter.
+CPEX session store keyed by the subject and the session id, threaded from
+`X-Session-Id` (or, with `session_source: resolved`, the session the forward
+proxy resolved). A later `send_email` in the same session reads that label and
+denies, blocking the exfiltration at the session level rather than with a
+per-call filter. On CPEX 0.3.0 the `delegate(...)` step's token does not reach the host, so
+`get_compensation` is denied with `cpex.delegation_unavailable` once the
+exchange succeeds (see [Decisions and denials](#decisions-and-denials)).
 
 ### External PDPs (BYOP)
 
-APL steps can call out to external policy decision points and act on their
-verdict with the same effect vocabulary:
+APL steps call policy decision points and act on their verdict with the same
+effect vocabulary. Cedar, CEL and OPA run inside CPEX (OPA as embedded Rego, no
+sidecar); `authzen:` and `nemo:` steps need a resolver the host registers,
+and Cortex registers none.
 
 ```yaml
-pre_invocation:
-  - require(authenticated)
-  - opa("http://opa:8181/v1/data/hr/compensation/deny"):
-      on_deny:
-        - deny
-        - taint(compensation_violation, session)
-        - run(audit-log)
-  - cedar:
-      action: "Jans::Action::Read"
-      resource_type: "Jans::CompensationRecord"
-      on_deny: [deny, run(compliance_alert)]
-  - authzen("https://authz.corp.com/access/v1/evaluation"):
-      on_deny: [deny]
+global:
+  pdp:
+    - kind: opa
+      modules:
+        - |
+          package hr.compensation
+
+          default allow := false
+
+          allow if input.args.employee_id == input.subject.id
+    - kind: cedar-direct
+      policy_text: |
+        permit(principal, action == Action::"read", resource is CompensationRecord)
+        when { principal.roles.contains("hr") };
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - opa:
+            query: data.hr.compensation.allow
+            on_deny:
+              - "taint(compensation_violation, session)"
+              - "deny('not your record', 'opa_denied')"
+        - cedar:
+            action: 'Action::"read"'
+            resource:
+              type: CompensationRecord
+              id: ${args.employee_id}
+            on_deny: ["deny('not permitted', 'cedar_denied')"]
 ```
 
-Local structural checks run fast and first; external PDPs run when the local
-checks pass; their decisions feed the same `on_deny` / `on_allow` effect lists.
+Steps run in order, so cheap local checks go first; each PDP's decision feeds
+its own `on_deny` / `on_allow` effect list.
 
 > **OPA in two places.** AuthBridge ships a native `opa` pipeline plugin
 > (standalone, no CPEX dependency) for simple per-request OPA checks.
-> The CPEX `opa(...)` step shown above runs OPA as a CPEX sub-plugin —
-> within APL's effect framework, so its verdict feeds `on_deny`/`on_allow`
-> effects, session tainting, and ordered composition with other PDPs.
-> Use the native `opa` plugin for standalone binary OPA gates; use
-> CPEX's `opa(...)` when OPA participates in a multi-PDP orchestration
-> flow. Note: the CPEX `opa(...)` and `authzen(...)` steps above are
-> doc-level BYOP examples — the hr-cpex demo exercises only the embedded
-> `cedar` PDP, not external OPA/AuthZEN.
+> The CPEX `opa:` step runs OPA inside APL, so its verdict feeds
+> `on_deny`/`on_allow` effects, session tainting, and ordered composition
+> with other PDPs. Use the native plugin for a standalone OPA gate and the
+> CPEX step when OPA is one decision among several.
 
 ## CMF / extension mapping
 
@@ -197,9 +246,16 @@ only, never recorded, and no other plugin can supply them. Guard on the count,
 since `custom.tool_results` is absent when there are none:
 
 ```yaml
-- cel:
-    expr: "custom.tool_result_count == 0 || !custom.tool_results.exists(k, custom.tool_results[k].content.matches('AKIA[0-9A-Z]{16}'))"
-    on_deny: ["taint(secret, session)", "deny('secret in a tool result', 'secret_in_tool_result')"]
+global:
+  pdp:
+    - kind: cel
+routes:
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - cel:
+            expr: "custom.tool_result_count == 0 || !custom.tool_results.exists(k, custom.tool_results[k].content.matches('AKIA[0-9A-Z]{16}'))"
+            on_deny: ["taint(secret, session)", "deny('secret in a tool result', 'secret_in_tool_result')"]
 ```
 
 A CEL step allows when its expression is true and denies when it is false, so
@@ -247,8 +303,8 @@ pipeline:
           fail_open: false
 ```
 
-Identity resolution, policy, delegation, redaction, PII scanning, and session
-taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
+Identity resolution, policy, delegation, redaction, and session taint all run
+inside cpex via its own sub-plugins, so the AuthBridge-side
 `jwt-validation` and `token-exchange` plugins are not needed on this path.
 
 ### Plugin config
@@ -264,7 +320,7 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
-| `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it) |
+| `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
 | `synthetic_egress` | `false` | present requests no parser claimed as calls to the tool `http_egress` (see below) |
 | `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on outbound tool calls and inference requests; empty turns it off |
@@ -381,6 +437,14 @@ vocabulary:
   error that `fail_open` governs, and nothing is written.
 - **observe**: audit-only outcome, recorded, request continues.
 
+Some denials come from the plugin rather than from policy, and `fail_open`
+does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
+(above), `cpex.principal_unavailable` (above), and
+`cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
+step granted a token: CPEX 0.3.0 does not hand the token's value to the host,
+and forwarding would send the caller's own bearer where the policy asked for
+the delegated one.
+
 **How a rejection is rendered.** The plugin sets the decision and a status
 (`403` for a policy deny, `502` for a CPEX-internal error); the HTTP/proxy
 listeners then choose the wire shape (`core/listener/httpx/render.go`):
@@ -415,11 +479,20 @@ allowing traffic in that state is rarely intended.
 # Unit tests (no cgo) cover every CMF mapping and re-serializer via a fake manager
 CGO_ENABLED=0 go -C core test ./plugins/cpex/...
 
-# Build the real backend: links libcpex_ffi.a, -tags cpex, CGO on
+# The same tests plus the real engine: fetch the pinned FFI, then link it
+FFI=$(scripts/fetch-cpex-ffi.sh)
+CGO_ENABLED=1 CGO_LDFLAGS="-L$FFI" go -C core test -tags cpex ./plugins/cpex/...
+
+# Build the image: links libcpex_ffi.a, -tags cpex, CGO on
 podman build -f cmd/cortex-cpex/Dockerfile -t authbridge-cpex:latest .
 ```
 
-The pinned CPEX FFI ABI version lives in `cmd/cortex-cpex/CPEX_FFI_VERSION`.
+The tagged run also loads every CPEX policy in this README and in
+`docs/cpex-plugin.md` on the real engine. The pins live in `cmd/cortex-cpex/`:
+`CPEX_FFI_VERSION` is the CPEX release tag, `CPEX_FFI_ABI` the FFI ABI integer,
+and `CPEX_FFI_SHA256` the digest of each target's tarball. On macOS, set
+`MACOSX_DEPLOYMENT_TARGET` to the version the library was built for if the
+linker warns about it.
 
 ## See also
 

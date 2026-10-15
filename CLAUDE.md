@@ -188,7 +188,9 @@ cortex/
 ├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
-│   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX release tag (e.g. v0.3.0)
+│   ├── CPEX_FFI_ABI                  #   FFI ABI integer that release must report
+│   ├── CPEX_FFI_SHA256               #   pinned digest of each target's FFI tarball
 │   └── entrypoint.sh
 │
 ├── cmd/cortex-praxis/                # proxy-sidecar rendered into a Praxis proxy config.
@@ -218,6 +220,7 @@ cortex/
 │   ├── install.sh                    # Laptop installer: downloads, verifies and stages a
 │   │                                 #   release, then execs `agentop setup --from <stage>`
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
+│   ├── fetch-cpex-ffi.sh             # Download + verify the pinned libcpex_ffi.a
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
 │   │   ├── verify-spire-keycloak.sh  #   Platform preflight for a local dev cluster
@@ -798,7 +801,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
 | `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 

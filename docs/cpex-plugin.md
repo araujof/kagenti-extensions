@@ -6,12 +6,13 @@
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
 runtime inside AuthBridge so operators can drive policy with CPEX's
-APL (Attribute Policy Language) DSL — and any of the pre-built CPEX
-sub-plugins (Cedar PDP, PII scanner, audit logger, JWT identity,
-OAuth delegation) — without writing Go.
+APL (Attribute Policy Language) DSL — and CPEX's built-in plugins (JWT
+and API-key identity, OAuth delegation, CIBA elicitation, and the Cedar,
+CEL and OPA decision points) — without writing Go. The pinned CPEX
+release is 0.3.0.
 
 A single AuthBridge plugin instance (`cpex`) wraps an entire CPEX
-`PluginManager`. Operators declare which CPEX hook names fire on each
+`PolicyEngine`. Operators declare which CPEX hook names fire on each
 AuthBridge phase via the `hooks` block; CPEX's own YAML defines the
 sub-plugins those hooks dispatch to.
 
@@ -40,9 +41,8 @@ sub-plugins those hooks dispatch to.
                                        │  │  rules  │ │  PDP    │ │
                                        │  └─────────┘ └─────────┘ │
                                        │  ┌─────────┐ ┌─────────┐ │
-                                       │  │ PII scan│ │ Audit   │ │
-                                       │  └─────────┘ │ logger  │ │
-                                       │              └─────────┘ │
+                                       │  │  CEL    │ │  OPA    │ │
+                                       │  └─────────┘ └─────────┘ │
                                        └──────────────────────────┘
 ```
 
@@ -57,9 +57,9 @@ The cpex plugin is the right home for policy that:
 - **Needs to be edited by non-developers**. The APL DSL + Cedar
   policies live in operator YAML; updates ship via ConfigMap reload
   rather than a plugin re-deploy.
-- **Composes pre-built CPEX sub-plugins** — PII scanners, audit
-  loggers, OAuth delegators — instead of writing those from scratch in
-  Go.
+- **Composes CPEX's built-in plugins** — JWT identity, OAuth
+  delegation, Cedar, CEL and OPA — instead of writing those from scratch
+  in Go.
 
 It is **not** the right home for:
 
@@ -80,7 +80,7 @@ binaries (`cortex`, `cortex-envoy`, `authbridge-lite`)
 stay pure-Go and never import the plugin.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
-is tag-free; only the cgo adapter that talks to `cpex.PluginManager`
+is tag-free; only the cgo adapter that talks to `cpex.PolicyEngine`
 is `//go:build cpex`. Unit tests run with `CGO_ENABLED=0` against a
 fake Manager.
 
@@ -95,10 +95,10 @@ chain continue. CPEX's standard hook names:
 
 | Hook | Fires for | Typical sub-plugins |
 |---|---|---|
-| `cmf.tool_pre_invoke` | MCP tool call about to be forwarded | Cedar PDP, PII scanner, validators |
-| `cmf.tool_post_invoke` | MCP tool result returned | Audit logger, post-call delegators |
-| `cmf.llm_input` | LLM inference request | Prompt-PII redactors |
-| `cmf.llm_output` | LLM inference response | Output redactors, audit |
+| `cmf.tool_pre_invoke` | MCP tool call about to be forwarded, or plain egress with `synthetic_egress` | Cedar, CEL or OPA steps, delegation |
+| `cmf.tool_post_invoke` | MCP tool result returned | result redaction, post-result checks |
+| `cmf.llm_input` | LLM inference request | checks on prompts and tool results, session taint |
+| `cmf.llm_output` | LLM inference response | output checks |
 
 ### Decision vocabulary
 
@@ -129,8 +129,9 @@ different levels:
 - **The CPEX runtime YAML** declares the sub-plugins, PDPs and routes
   CPEX loads. Cortex does not parse or reshape it. It arrives as a file
   (`config_file`) or as one string (`config`) and goes to CPEX's
-  `LoadConfig` verbatim, so its schema is CPEX's own: see
-  [CPEX's configuration reference](https://contextforge-org.github.io/cpex/docs/configuration/).
+  `LoadConfig` verbatim, so its schema is CPEX 0.3.0's own: see
+  [CPEX's configuration reference](https://contextforge-org.github.io/cpex/docs/configuration/)
+  and, for an older policy, [Migrating a CPEX 0.2.x policy](#migrating-a-cpex-02x-policy).
 
 ```yaml
 plugins:
@@ -170,20 +171,18 @@ plugin can be installed before its policy ships.
 ### The CPEX runtime YAML
 
 The top-level sections this example uses are `plugins:` (the sub-plugins
-policy can call), `global:` (cross-cutting PDPs such as Cedar, and the
-session store), `routes:` (the APL policy, one entry per tool, prompt or
-resource) and `plugin_settings:`. It is trimmed from
-[`demos/hr-cpex/k8s/cpex-policy.yaml`](../demos/hr-cpex/k8s/cpex-policy.yaml),
-the complete working example:
+policy can call), `global:` (cross-cutting PDPs such as Cedar and CEL, and
+the session store) and `routes:` (the APL policy, one entry per tool,
+prompt, resource or model). `engine_settings:` holds engine-wide settings;
+its default, `dispatch: policy`, runs a plugin only where a route reaches
+it. [`demos/hr-cpex/`](../demos/hr-cpex/) has a complete working policy.
 
 ```yaml
-plugin_settings:
-  routing_enabled: true
-
 plugins:
   - name: jwt-user
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]    # the JWKS fetch is an outbound call
     on_error: fail
     config:
       role: user
@@ -197,31 +196,20 @@ plugins:
             url: "https://keycloak.example.com/realms/prod/protocol/openid-connect/certs"
       claim_mapper: standard
 
-  - name: pii-scan
-    kind: validator/pii-scan
-    hooks: [cmf.tool_pre_invoke]
-    on_error: fail
-    config:
-      detect:
-        - { kind: ssn }
-        - { kind: credit_card }
-      mode: deny
-
 global:
-  apl:
-    pdp:
-      - kind: cedar-direct
-        dialect: cedar
-        policy_text: |
-          @id("engineering-internal-repos")
-          permit(
-            principal,
-            action == Action::"read",
-            resource is Repo
-          ) when {
-            principal.roles.contains("engineer") &&
-            resource.visibility == "internal"
-          };
+  pdp:
+    - kind: cel
+    - kind: cedar-direct
+      policy_text: |
+        @id("engineering-internal-repos")
+        permit(
+          principal,
+          action == Action::"read",
+          resource is Repo
+        ) when {
+          principal.roles.contains("engineer") &&
+          resource.visibility == "internal"
+        };
 
 routes:
   - tool: search_repos
@@ -244,8 +232,15 @@ routes:
     authorization:
       pre_invocation:
         - "require(perm.email_send)"
-        - "run(pii-scan)"
+        - cel:
+            expr: "!has(args.body) || !args.body.matches('[0-9]{3}-[0-9]{2}-[0-9]{4}')"
+            on_deny: ["deny('SSN pattern in body', 'pii.detected')"]
 ```
+
+Identity plugins run only on routes that list them under `authentication:`,
+so a route that reads `subject.*`, `role.*` or `authenticated` must list
+one. The CEL step catches the one shape it names; it is not data-loss
+prevention.
 
 To keep everything in one place, the same YAML can go inline under
 `config:` instead. It is a string, so it needs a block scalar (`|`):
@@ -258,23 +253,45 @@ plugins:
         on_request:
           - cmf.tool_pre_invoke
       config: |
-        plugin_settings:
-          routing_enabled: true
-        plugins:
-          - name: pii-scan
-            kind: validator/pii-scan
-            hooks: [cmf.tool_pre_invoke]
-            on_error: fail
-            config:
-              detect:
-                - { kind: ssn }
-              mode: deny
+        global:
+          pdp:
+            - kind: cel
         routes:
           - tool: send_email
             authorization:
               pre_invocation:
-                - "run(pii-scan)"
+                - cel:
+                    expr: "!has(args.body) || !args.body.matches('[0-9]{3}-[0-9]{2}-[0-9]{4}')"
+                    on_deny: ["deny('SSN pattern in body', 'pii.detected')"]
 ```
+
+### Migrating a CPEX 0.2.x policy
+
+CPEX 0.3.0 rejects every key it does not know, so a 0.2.x policy fails at
+boot rather than loading with inert sections. The changes most policies
+need:
+
+- Drop the `apl:` wrapper: `pdp:`, `session_store:` and `attribute_files:`
+  sit directly under `global:`, and a route's `authorization:`, `args:` and
+  `result:` sit on the route.
+- `plugin_settings:` is `engine_settings:`; `routing_enabled: true` is the
+  default `dispatch: policy` and can go.
+- `identity:` is `authentication:`; `policy:` and `post_policy:` are
+  `authorization.pre_invocation:` and `authorization.post_invocation:`.
+- A plugin that makes HTTP calls declares `capabilities: [perform_http]`:
+  `identity/jwt` with a `jwks_url`, `delegator/oauth`, `elicitation/ciba`.
+- Every JWT trusted issuer lists `audiences`.
+- `validator/pii-scan` and `audit/logger` are gone. Use a CEL or APL deny
+  step for PII patterns, an APL `redact` field pipeline for redaction, and
+  the session timeline for audit: every cpex invocation is recorded there
+  with its decision and violation code.
+- A declared plugin that no route reaches (through `authentication:`,
+  `run(...)` or `delegate(...)`) fails the load.
+
+The load error carries no detail: it says `parse / deserialize failed` or
+`pipeline / lifecycle error`. CPEX's
+[migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/)
+lists every change.
 
 ### Pipeline composition
 
@@ -303,7 +320,7 @@ A typical inbound chain:
 plugins:
   - name: jwt-validation       # identity gate
   - name: mcp-parser           # populate pctx.Extensions.MCP
-  - name: cpex                 # APL/Cedar/PII via CPEX
+  - name: cpex                 # APL/Cedar/CEL via CPEX
 ```
 
 ## Status codes & reasons
@@ -314,6 +331,12 @@ plugins:
 | `cpex.denied` | 403 | A CPEX sub-plugin returned deny without a violation code. |
 | `cpex.<sanitized>` | 403 | A CPEX sub-plugin returned deny with a violation code; the `<sanitized>` part lower-cases letters, replaces other characters with underscores, e.g. `pii.detected` → `cpex.pii_detected`. |
 | `cpex.principal_unavailable` | 403 | Principal injection is configured but its token file cannot be read; tool calls that resolve identity are denied. |
+| `cpex.delegation_unavailable` | 403 | A `delegate(...)` step granted a token, but CPEX 0.3.0 does not hand the token's value to the host. Forwarding would send the caller's own bearer where the policy asked for the delegated one, so the request is denied. |
+| `cpex.unnamed_entity` | 403 | An MCP `tools/call` or `prompts/get` with no name, or a `resources/read` with no URI. |
+| `cpex.ambiguous_request` | 403 | A parsed JSON body has a repeated key, or two keys equal under case folding, so policy and the server could read different requests. |
+
+The last four are decided by the plugin rather than by policy, and
+`fail_open` does not apply to them.
 
 On a deny, the `Invocation.Reason` field and the response carry the
 namespaced code and the static message `request denied by policy`. The
@@ -399,8 +422,8 @@ cross the FFI boundary.
 
 A fixed allowlist of sensitive header prefixes and exact names is
 stripped from the CMF payload before crossing the FFI boundary —
-CPEX sub-plugins (notably `audit/logger`) frequently log the payload
-they receive, and the AuthBridge session API has no auth on it.
+CPEX sub-plugins may log the payload they receive, and the AuthBridge
+session API has no auth on it.
 
 Stripped prefixes: `authorization`, `cookie`, `set-cookie`,
 `proxy-authorization`, `x-amz-security-token`.
@@ -414,9 +437,8 @@ discovering one in an audit log.
 
 ## Background tasks
 
-CPEX sub-plugins that emit asynchronous work (the canonical case is
-`audit/logger` writing to an external sink) return their results
-through `BackgroundTasks`. The cpex plugin spawns a goroutine per
+CPEX sub-plugins that emit asynchronous work (writing to an external
+sink, say) return their results through `BackgroundTasks`. The cpex plugin spawns a goroutine per
 Invoke that awaits the background work and routes per-sub-plugin
 errors through the default `slog` handler with the request ID.
 
@@ -428,7 +450,7 @@ need to route background results separately from foreground logs.
 
 - **Single-value body redaction; multi-part rewrites fail closed.** Body
   modifications **are** re-serialized. When a CPEX sub-plugin returns
-  `modify` with a body payload change (the PII scanner / `redact` path is
+  `modify` with a body payload change (an APL `redact` field pipeline is
   the canonical case), the cpex plugin rewrites `pctx.Body` format-aware
   per protocol — MCP `tools/call` arguments and results, inference
   messages, and A2A artifact parts (see `applyBodyModFromCMF` and the
@@ -457,7 +479,10 @@ need to route background results separately from foreground logs.
 | Pipeline build fails: `cpex bypass_paths: invalid bypass pattern` | An entry in `bypass_paths` has bad `path.Match` syntax. | Fix the glob pattern (`/api/*/v1`, `/static/**` etc.). |
 | Pipeline build fails: `cpex config: pattern "*" matches everything` | Operator wrote a wildcard pattern in `bypass_hosts` or `bypass_paths`. | If you want to disable cpex, remove it from the pipeline; don't bypass everything. |
 | All traffic is rejected with `cpex.error` (a 200 MCP error frame for MCP calls, else 502), JWKS errors in logs | A CPEX `identity/jwt` plugin can't fetch its JWKS from Keycloak. | Check that the plugin's `decoding_key.url` in the CPEX YAML is reachable from inside the pod, and that `bypass_hosts` still covers Keycloak (the default does). |
-| Audit logger silently produces no records | `BackgroundTasks` goroutine started but the audit sink is unreachable. | Search the slog stream for `cpex: background sub-plugin error` — the request ID and elapsed time correlate the failure with the foreground request. |
+| Pipeline build fails: `LoadConfig: cpex: parse / deserialize failed` | The CPEX YAML has a key, hook or plugin kind 0.3.0 does not know — usually a 0.2.x policy (`apl:`, `plugin_settings:`, `validator/pii-scan`). | Migrate it; see [Migrating a CPEX 0.2.x policy](#migrating-a-cpex-02x-policy). |
+| Pipeline build fails: `LoadConfig: cpex: pipeline / lifecycle error` | A declared plugin no route reaches, or a plugin that cannot start (an unset `env_var` secret, for instance). | Reference the plugin from a route or drop it; check its secrets. |
+| Requests deny with `cpex.auth_jwks_unavailable` while the IdP is up | The JWKS URL is on loopback or a private address, which CPEX's HTTP transport refuses by default. | Set `private_destinations: true` if the policy is trusted, or reach the IdP through a public address. |
+| Background work fails silently | A `BackgroundTasks` goroutine started but its sink is unreachable. | Search the slog stream for `cpex: background sub-plugin error` — the request ID and elapsed time correlate the failure with the foreground request. |
 
 ## See also
 
@@ -465,8 +490,11 @@ need to route background results separately from foreground logs.
   plugin's own reference: CMF mapping, APL examples, building and testing.
 - [`cmd/README.md`](../cmd/README.md) — the `cortex-cpex` binary and the
   `authbridge-cpex` image it ships in.
-- `cmd/cortex-cpex/CPEX_FFI_VERSION` — pinned CPEX FFI ABI version
-  the binary was built against.
+- `cmd/cortex-cpex/CPEX_FFI_VERSION` — the CPEX release tag the FFI is
+  pinned to. `CPEX_FFI_ABI` beside it holds the FFI ABI integer, and
+  `CPEX_FFI_SHA256` the digest of each target's tarball;
+  `scripts/fetch-cpex-ffi.sh` downloads the library and checks it against
+  both.
 - [CPEX documentation](https://contextforge-org.github.io/cpex/docs/) —
   the runtime YAML, APL, and the built-in sub-plugins.
 - [CPEX repository](https://github.com/contextforge-org/cpex) — source

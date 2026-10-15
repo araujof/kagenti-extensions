@@ -11,7 +11,7 @@ import (
 // requiring CGO_ENABLED or the libcpex_ffi.a static library.
 //
 // The real implementation lives in manager_cpex.go (//go:build cpex)
-// and wraps the cpex.PluginManager from the
+// and wraps the cpex.PolicyEngine from the
 // github.com/contextforge-org/cpex/go/cpex package. The
 // stub in manager_stub.go (//go:build !cpex) makes NewManager error
 // out with a clear "build the cpex binary" message if anyone tries to
@@ -79,7 +79,7 @@ type ManagerOptions struct {
 // NewManager is defined in one of two build-tag-gated files:
 //
 //   - manager_cpex.go (//go:build cpex)  — returns a manager wrapping
-//     cpex.PluginManager; pulls in libcpex_ffi via cgo.
+//     cpex.PolicyEngine; pulls in libcpex_ffi via cgo.
 //   - manager_stub.go (//go:build !cpex) — returns an error so a
 //     misconfigured binary fails loud at Configure time instead of
 //     silently registering a no-op plugin.
