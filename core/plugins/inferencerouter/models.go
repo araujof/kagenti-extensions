@@ -3,6 +3,7 @@ package inferencerouter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -45,6 +46,21 @@ const (
 	// that may use every model gets in place of refusedType.
 	invalidModel = "Invalid model name passed in model="
 )
+
+// modelNotFound are the phrases a model server's error message carries for a model it
+// does not have, %s standing for the name the refused attempt was sent with, and the
+// statuses each was recorded at. Each was recorded from the server named, on
+// /v1/chat/completions, /v1/messages and /v1/responses alike; a phrase is added only
+// once a server has been seen to answer with it.
+var modelNotFound = []struct {
+	phrase   string
+	statuses []int
+}{
+	// Ollama 0.40.4 (404) and llama.cpp b11429 serving several models (400).
+	{"model '%s' not found", []int{http.StatusBadRequest, http.StatusNotFound}},
+	// vLLM 0.31.0.
+	{"The model `%s` does not exist.", []int{http.StatusNotFound}},
+}
 
 // capturedPaths are the paths a captured request is sent to, by how the path the
 // agent named ends: the API format, whoever the agent and whatever its provider.
@@ -163,7 +179,7 @@ func (p *Router) chooseModel(pctx *pipeline.Context, server string) {
 // limit teaches the router that limit for the model, and the request is fitted and
 // sent again. Each kind is answered at most once per request.
 func (p *Router) Resend(_ context.Context, pctx *pipeline.Context, status int, body []byte) bool {
-	if refusesModel(status, body) {
+	if model, _ := pctx.RequestModel(); refusesModel(status, body, model) {
 		return p.resendForModel(pctx)
 	}
 	if kind, n, ok := limitRefusal(status, body); ok {
@@ -246,19 +262,34 @@ func (p *Router) resendForModel(pctx *pipeline.Context) bool {
 	return true
 }
 
-// refusesModel reports whether a server's answer refuses the model a request named:
-// a 403 with refusedType, or a 400 whose error, a string or an object's message,
-// contains invalidModel.
-func refusesModel(status int, body []byte) bool {
+// refusesModel reports whether a server's answer refuses model, the name the refused
+// attempt was sent with: a 403 with refusedType, a 400 whose error, a string or an
+// object's message, contains invalidModel, or an answer whose error message carries
+// one of modelNotFound's phrases for model at a status that phrase was recorded at.
+// A phrase for another name, or for none, is not a refusal of this one.
+func refusesModel(status int, body []byte, model string) bool {
 	switch status {
 	case http.StatusForbidden:
-		return gjson.GetBytes(body, "error.type").String() == refusedType
+		if gjson.GetBytes(body, "error.type").String() == refusedType {
+			return true
+		}
 	case http.StatusBadRequest:
 		e := gjson.GetBytes(body, "error")
 		if e.IsObject() {
 			e = e.Get("message")
 		}
-		return e.Type == gjson.String && strings.Contains(e.String(), invalidModel)
+		if e.Type == gjson.String && strings.Contains(e.String(), invalidModel) {
+			return true
+		}
+	}
+	if model == "" {
+		return false
+	}
+	msg := errorMessage(body)
+	for _, nf := range modelNotFound {
+		if slices.Contains(nf.statuses, status) && strings.Contains(msg, fmt.Sprintf(nf.phrase, model)) {
+			return true
+		}
 	}
 	return false
 }
