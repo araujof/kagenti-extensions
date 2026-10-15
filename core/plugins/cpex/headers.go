@@ -145,11 +145,9 @@ var protectedHeaderExact = map[string]struct{}{
 
 var protectedHeaderPrefixes = []string{"proxy-", "x-authbridge-"}
 
-// isProtected reports whether write-back must leave name alone. Headers
-// flattenHeaders never sends are protected too: CPEX never saw them, so
-// it cannot have meant to change them. extra names more protected headers.
-func isProtected(name string, extra ...string) bool {
-	lower := strings.ToLower(name)
+// isFramingOrInternal reports whether the lower-case header name is a
+// framing, hop-by-hop or Cortex-internal header.
+func isFramingOrInternal(lower string) bool {
 	if _, ok := protectedHeaderExact[lower]; ok {
 		return true
 	}
@@ -157,6 +155,17 @@ func isProtected(name string, extra ...string) bool {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
+	}
+	return false
+}
+
+// isProtected reports whether write-back must leave name alone. Headers
+// flattenHeaders never sends are protected too: CPEX never saw them, so
+// it cannot have meant to change them. extra names more protected headers.
+func isProtected(name string, extra ...string) bool {
+	lower := strings.ToLower(name)
+	if isFramingOrInternal(lower) {
+		return true
 	}
 	for _, e := range extra {
 		if lower == strings.ToLower(e) {

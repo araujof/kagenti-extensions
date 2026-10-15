@@ -14,6 +14,7 @@ import (
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/vmihailenco/msgpack/v5"
+	"golang.org/x/net/http/httpguts"
 )
 
 // cpexManager is the CPEX-backed Manager implementation. Wraps
@@ -45,6 +46,9 @@ func NewManager(opts ManagerOptions) (Manager, error) {
 	var aplOpts []rcpex.APLOption
 	if opts.PrivateDestinations {
 		aplOpts = append(aplOpts, rcpex.WithPrivateDestinations())
+	}
+	if opts.DelegatedCredentials {
+		aplOpts = append(aplOpts, rcpex.WithDelegatedCredentials())
 	}
 	if err := mgr.EnableAPL(aplOpts...); err != nil {
 		mgr.Shutdown()
@@ -121,6 +125,8 @@ func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipelin
 	isResponse := pctx.CurrentPhase() == pipeline.InvocationPhaseResponse
 	payload, ext := buildCMF(pctx, isResponse, c.opts)
 	details := messageEgressDetails(&payload.Message)
+	written := writtenCredentialHeaders(pctx)
+	hideHeaders(ext, written)
 
 	// Streaming-response guard: when we're on the response phase, the
 	// body is non-empty, a protocol parser claimed this traffic, yet the
@@ -182,13 +188,17 @@ func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipelin
 			fmt.Errorf("cpex invoke %q: %w", hookName, err)
 	}
 
+	var minted []rcpex.DelegatedCredential
 	if pres.ContinueProcessing {
-		withheld, derr := delegatedTokensWithheld(pres)
+		tokens, derr := delegatedTokenCount(pres)
 		if derr != nil {
 			return Result{Decision: DecisionError, Reason: derr.Error()},
 				fmt.Errorf("cpex invoke %q: %w", hookName, derr)
 		}
-		if withheld {
+		if tokens > 0 {
+			minted = c.forwardable(pres.DelegatedCredentials, tokens)
+		}
+		if tokens > 0 && minted == nil {
 			return Result{
 				Decision: DecisionDeny,
 				Code:     codeDelegationUnavailable,
@@ -204,7 +214,8 @@ func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipelin
 	changed := false
 	if pres.ContinueProcessing {
 		var applyErr error
-		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), c.opts.Principal.headerName(), c.opts.Workload.headerName()); applyErr != nil {
+		protect := append([]string{c.opts.Principal.headerName(), c.opts.Workload.headerName()}, written...)
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), protect...); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -218,6 +229,11 @@ func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipelin
 			return Result{Decision: DecisionError, Reason: applyErr.Error()},
 				fmt.Errorf("cpex apply modifications %q: %w", hookName, applyErr)
 		}
+	}
+
+	if len(minted) > 0 {
+		writeCredentials(pctx, minted)
+		changed = true
 	}
 
 	res := mapResult(pres, changed)
@@ -236,7 +252,9 @@ type requestIdentity struct{ headers map[string]string }
 // stripped the caller's token from pctx.Headers, and the response is
 // resolved as the same caller either way.
 func (c *cpexManager) requestIdentityHeaders(ctx context.Context, pctx *pipeline.Context, ext *rcpex.Extensions, isResponse bool) (map[string]string, error) {
-	if isResponse {
+	// So does a later request-phase hook once a delegated credential has
+	// replaced the caller's Authorization.
+	if isResponse || writtenCredentialHeaders(pctx) != nil {
 		if st := pipeline.GetState[requestIdentity](pctx, identityStateKey); st != nil {
 			return st.headers, nil
 		}
@@ -264,16 +282,13 @@ func messageEgressDetails(msg *rcpex.Message) map[string]string {
 	return nil
 }
 
-// delegatedTokensWithheld reports whether a delegate() step granted a
-// token on this invocation. Unless the host asks for delegated credentials,
-// which this plugin does not, CPEX returns only the token's metadata
-// (audience, outbound header) in raw_credentials.delegated_tokens; the
-// value is never serialized across the FFI. Forwarding the request would
-// then send the caller's inbound bearer where the policy asked for the
-// delegated one, so Invoke denies instead.
-func delegatedTokensWithheld(pres *rcpex.PipelineResult) (bool, error) {
+// delegatedTokenCount returns how many tokens delegate() steps granted on
+// this invocation, from the metadata in raw_credentials.delegated_tokens.
+// That metadata never carries the token value; only an engine enabled
+// WithDelegatedCredentials returns it, in PipelineResult.DelegatedCredentials.
+func delegatedTokenCount(pres *rcpex.PipelineResult) (int, error) {
 	if len(pres.ModifiedExtensions) == 0 {
-		return false, nil
+		return 0, nil
 	}
 	var ext struct {
 		RawCredentials *struct {
@@ -281,9 +296,90 @@ func delegatedTokensWithheld(pres *rcpex.PipelineResult) (bool, error) {
 		} `msgpack:"raw_credentials"`
 	}
 	if err := msgpack.Unmarshal(pres.ModifiedExtensions, &ext); err != nil {
-		return false, fmt.Errorf("decode modified extensions: %w", err)
+		return 0, fmt.Errorf("decode modified extensions: %w", err)
 	}
-	return ext.RawCredentials != nil && len(ext.RawCredentials.DelegatedTokens) > 0, nil
+	if ext.RawCredentials == nil {
+		return 0, nil
+	}
+	return len(ext.RawCredentials.DelegatedTokens), nil
+}
+
+// forwardable returns creds when the plugin may forward them in place of
+// the tokens delegate() steps granted, or nil, which denies the request:
+// forwarding is off, a granted token came back without its credential, or
+// a credential names a header outside delegated_credential_headers or has
+// a value that is not valid on the wire. Forwarding then would send the
+// caller's own bearer where the policy asked for the delegated one.
+func (c *cpexManager) forwardable(creds []rcpex.DelegatedCredential, tokens int) []rcpex.DelegatedCredential {
+	if !c.opts.DelegatedCredentials || len(creds) < tokens {
+		return nil
+	}
+	for _, cr := range creds {
+		v := cr.Value.Reveal()
+		if !c.credentialHeaderAllowed(cr.Header) || strings.TrimSpace(v) == "" || !httpguts.ValidHeaderFieldValue(v) {
+			slog.Warn("cpex: delegated credential not forwardable", "header", cr.Header, "target", cr.Target)
+			return nil
+		}
+	}
+	return creds
+}
+
+func (c *cpexManager) credentialHeaderAllowed(name string) bool {
+	for _, h := range c.opts.DelegatedCredentialHeaders {
+		if strings.EqualFold(strings.TrimSpace(h), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// delegatedStateKey keys the names of the headers a delegated credential
+// was written to on pctx.
+const delegatedStateKey = "cpex.delegated"
+
+type writtenHeaders struct{ names []string }
+
+// writeCredentials sets each credential's header on the request, replacing
+// whatever the caller sent, and remembers the names so later invocations
+// on this request neither send the value to CPEX nor let write-back change
+// it. The value goes only to pctx.Headers, which session events do not
+// record.
+func writeCredentials(pctx *pipeline.Context, creds []rcpex.DelegatedCredential) {
+	if pctx.Headers == nil {
+		pctx.Headers = http.Header{}
+	}
+	st := pipeline.GetState[writtenHeaders](pctx, delegatedStateKey)
+	if st == nil {
+		st = &writtenHeaders{}
+		pipeline.SetState(pctx, delegatedStateKey, st)
+	}
+	for _, cr := range creds {
+		pctx.Headers.Set(cr.Header, cr.Value.Reveal())
+		st.names = append(st.names, http.CanonicalHeaderKey(cr.Header))
+	}
+}
+
+// writtenCredentialHeaders returns the headers writeCredentials set on
+// this request, or nil.
+func writtenCredentialHeaders(pctx *pipeline.Context) []string {
+	if st := pipeline.GetState[writtenHeaders](pctx, delegatedStateKey); st != nil {
+		return st.names
+	}
+	return nil
+}
+
+// hideHeaders removes names from the request headers sent to CPEX.
+func hideHeaders(ext *rcpex.Extensions, names []string) {
+	if ext == nil || ext.Http == nil {
+		return
+	}
+	for k := range ext.Http.RequestHeaders {
+		for _, n := range names {
+			if strings.EqualFold(k, n) {
+				delete(ext.Http.RequestHeaders, k)
+			}
+		}
+	}
 }
 
 // backgroundWaitTimeout is a backstop on how long awaitBackground's outer

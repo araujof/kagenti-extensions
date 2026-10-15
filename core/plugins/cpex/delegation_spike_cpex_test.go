@@ -7,36 +7,34 @@ package cpex
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
-	"github.com/vmihailenco/msgpack/v5"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// The delegation tests below drive the CPEX engine the way the cpex
-// plugin does (InvokeResolved, loopback IdP, private destinations on)
-// and pin down what a Go host can see after a granted delegate() step.
-// Unless the host asks for delegated credentials (CPEX 0.3.1's
-// WithDelegatedCredentials, which the plugin does not use), the minted
-// token stays in Rust memory: the result
-// carries its metadata in raw_credentials.delegated_tokens, never its
-// value, which is why the plugin denies with cpex.delegation_unavailable.
+// The delegation tests below drive the CPEX engine against a loopback
+// IdP and pin down how a delegate() step's minted token reaches the
+// forwarded request: only through PipelineResult.DelegatedCredentials of
+// an engine enabled WithDelegatedCredentials, never through the result's
+// extensions, payload or metadata, and never into a session record or log.
 
 const (
 	spikeIssuer   = "https://idp.spike.test"
 	spikeAudience = "cortex-spike"
-	spikeMinted   = "spike-only-minted-workday-token"
+	spikeMinted   = "mQ7x2ZpL9vKd4RwT8hNc"
 )
 
 var spikeSecret = []byte("cortex-spike-only-hs256-secret-0123456789")
@@ -131,14 +129,14 @@ routes:
 `
 }
 
-func spikeEngine(t *testing.T, policy string) *rcpex.PolicyEngine {
+func spikeEngine(t *testing.T, policy string, opts ...rcpex.APLOption) *rcpex.PolicyEngine {
 	t.Helper()
 	eng, err := rcpex.NewPolicyEngineDefault()
 	if err != nil {
 		t.Fatalf("NewPolicyEngineDefault: %v", err)
 	}
 	t.Cleanup(eng.Shutdown)
-	if err := eng.EnableAPL(rcpex.WithPrivateDestinations()); err != nil {
+	if err := eng.EnableAPL(append([]rcpex.APLOption{rcpex.WithPrivateDestinations()}, opts...)...); err != nil {
 		t.Fatalf("EnableAPL: %v", err)
 	}
 	if err := eng.LoadConfig(policy); err != nil {
@@ -170,9 +168,9 @@ func spikeCall(t *testing.T, eng *rcpex.PolicyEngine, bearer, tool string) *rcpe
 	return res
 }
 
-// A granted delegation exchanges the token and reports its metadata, but
-// no channel of the Go result carries the minted value.
-func TestDelegationMintedTokenNotObservable(t *testing.T) {
+// Without the opt-in a granted delegation reports the token's metadata,
+// but no channel of the Go result carries the minted value.
+func TestDelegationMintedTokenWithheldWithoutOptIn(t *testing.T) {
 	idp := newSpikeIdP(t)
 	eng := spikeEngine(t, spikePolicy(idp.srv.URL+"/token"))
 
@@ -183,70 +181,166 @@ func TestDelegationMintedTokenNotObservable(t *testing.T) {
 	if got := idp.count(); got != 1 {
 		t.Fatalf("token exchanges = %d, want 1", got)
 	}
+	if len(res.DelegatedCredentials) != 0 {
+		t.Fatalf("credentials returned without the opt-in: %d", len(res.DelegatedCredentials))
+	}
+	if n, err := delegatedTokenCount(res); err != nil || n != 1 {
+		t.Fatalf("delegatedTokenCount = %d, %v; want 1", n, err)
+	}
+	assertNoToken(t, "engine result", res.ModifiedExtensions, res.ModifiedPayload, []byte(fmt.Sprintf("%+v %#v", res, res)))
+}
 
-	var ext struct {
-		Http *struct {
-			RequestHeaders map[string]string `msgpack:"request_headers"`
-		} `msgpack:"http"`
-		RawCredentials *struct {
-			DelegatedTokens []any `msgpack:"delegated_tokens"`
-		} `msgpack:"raw_credentials"`
+// With the opt-in the engine returns the minted credential, and nothing
+// but Reveal prints it.
+func TestDelegationMintedTokenReturnedWithOptIn(t *testing.T) {
+	idp := newSpikeIdP(t)
+	eng := spikeEngine(t, spikePolicy(idp.srv.URL+"/token"), rcpex.WithDelegatedCredentials())
+
+	res := spikeCall(t, eng, spikeJWT("alice", []string{"hr"}), "get_compensation")
+	if res.IsDenied() || len(res.DelegatedCredentials) != 1 {
+		t.Fatalf("denied=%v credentials=%d, want one credential", res.IsDenied(), len(res.DelegatedCredentials))
 	}
-	if err := msgpack.Unmarshal(res.ModifiedExtensions, &ext); err != nil {
-		t.Fatalf("decode modified extensions: %v", err)
+	c := res.DelegatedCredentials[0]
+	if c.Header != "Authorization" || c.Value.Reveal() != "Bearer "+spikeMinted || c.Target != "workday-api" {
+		t.Fatalf("credential = %+v", c)
 	}
-	if ext.RawCredentials == nil || len(ext.RawCredentials.DelegatedTokens) != 1 {
-		t.Fatalf("expected one delegated token's metadata, got %+v", ext.RawCredentials)
+	assertNoToken(t, "engine result", res.ModifiedExtensions, res.ModifiedPayload, []byte(fmt.Sprintf("%v %+v %#v", res, res, c)))
+}
+
+// spikePlugin configures the cpex plugin on spikePolicy, with delegated
+// credentials forwarded or not.
+func spikePlugin(t *testing.T, idp *spikeIdP, forward bool) *CPEX {
+	t.Helper()
+	cfg := map[string]any{
+		"config":               spikePolicy(idp.srv.URL + "/token"),
+		"private_destinations": true,
 	}
-	meta := fmt.Sprint(ext.RawCredentials.DelegatedTokens[0])
-	for _, want := range []string{"workday-api", "Authorization"} {
-		if !strings.Contains(meta, want) {
-			t.Errorf("delegated token metadata %s lacks %q", meta, want)
-		}
+	if forward {
+		cfg["delegated_credentials"] = true
 	}
-	if ext.Http != nil {
-		for k, v := range ext.Http.RequestHeaders {
-			if strings.Contains(v, spikeMinted) {
-				t.Errorf("minted token surfaced in request header %q", k)
+	return configuredEngine(t, cfg, HookToolPreInvoke)
+}
+
+// captureLogs sends every slog record, debug included, to a buffer for
+// the rest of the test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&lockedWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// assertNoToken fails when any 8-byte run of the minted token appears in
+// one of bufs.
+func assertNoToken(t *testing.T, label string, bufs ...[]byte) {
+	t.Helper()
+	for _, b := range bufs {
+		for i := 0; i+8 <= len(spikeMinted); i++ {
+			if bytes.Contains(b, []byte(spikeMinted[i:i+8])) {
+				t.Fatalf("%s carries part of the minted token", label)
 			}
 		}
 	}
-
-	// Every byte channel and the printed result: none carries the value.
-	needle := []byte(spikeMinted)
-	for name, b := range map[string][]byte{
-		"modified_extensions": res.ModifiedExtensions,
-		"modified_payload":    res.ModifiedPayload,
-		"printed result":      []byte(fmt.Sprintf("%+v %#v", res, res)),
-	} {
-		if bytes.Contains(b, needle) {
-			t.Errorf("minted token found in %s", name)
-		}
-	}
-	if meta, _ := json.Marshal(res.Metadata); bytes.Contains(meta, needle) {
-		t.Error("minted token found in metadata")
-	}
-
-	// Without the value the plugin cannot forward the delegated
-	// credential, so it fails closed with cpex.delegation_unavailable.
-	if withheld, err := delegatedTokensWithheld(res); err != nil || !withheld {
-		t.Fatalf("delegatedTokensWithheld = %v, %v; want true", withheld, err)
-	}
 }
 
-// A role denial ahead of the delegate() step never reaches the IdP.
+// The minted credential replaces the caller's Authorization on the
+// forwarded request, and stays out of the session record and the logs.
+func TestDelegationCredentialForwarded(t *testing.T) {
+	logs := captureLogs(t)
+	idp := newSpikeIdP(t)
+	p := spikePlugin(t, idp, true)
+
+	caller := "Bearer " + spikeJWT("alice", []string{"hr"})
+	pctx := toolCall("get_compensation", http.Header{"Authorization": {caller}})
+	a := p.OnRequest(context.Background(), pctx)
+	wantContinue(t, "alice get_compensation", a)
+	if got := idp.count(); got != 1 {
+		t.Fatalf("token exchanges = %d, want 1", got)
+	}
+	if got := pctx.Headers.Values("Authorization"); len(got) != 1 || got[0] != "Bearer "+spikeMinted {
+		t.Fatalf("forwarded Authorization = %d values, want the minted token alone", len(got))
+	}
+	if inv := lastInvocation(t, pctx); inv.Action != "modify" {
+		t.Fatalf("invocation action = %q, want modify", inv.Action)
+	}
+
+	recorded, err := json.Marshal(map[string]any{"extensions": pctx.Extensions, "identity": pctx.Identity, "action": a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoToken(t, "session record", recorded)
+	assertNoToken(t, "logs", logs.Bytes())
+}
+
+// A request the policy denies before its delegate() step reaches no IdP
+// and gets no credential.
 func TestDelegationDeniedBeforeExchange(t *testing.T) {
 	idp := newSpikeIdP(t)
-	eng := spikeEngine(t, spikePolicy(idp.srv.URL+"/token"))
+	eng := spikeEngine(t, spikePolicy(idp.srv.URL+"/token"), rcpex.WithDelegatedCredentials())
 
 	res := spikeCall(t, eng, spikeJWT("evan", []string{"engineer"}), "get_compensation")
-	if !res.IsDenied() {
-		t.Fatal("expected denied")
+	if !res.IsDenied() || len(res.DelegatedCredentials) != 0 {
+		t.Fatalf("denied=%v credentials=%d, want a deny with none", res.IsDenied(), len(res.DelegatedCredentials))
+	}
+	if n, _ := delegatedTokenCount(res); n != 0 {
+		t.Fatal("a denied result must not report a granted delegation")
+	}
+
+	p := spikePlugin(t, idp, true)
+	caller := "Bearer " + spikeJWT("evan", []string{"engineer"})
+	pctx := toolCall("get_compensation", http.Header{"Authorization": {caller}})
+	a := p.OnRequest(context.Background(), pctx)
+	if a.Type != pipeline.Reject || a.Violation.Code == "cpex."+codeDelegationUnavailable {
+		t.Fatalf("evan get_compensation: %v %+v, want a policy deny", a.Type, a.Violation)
+	}
+	if got := pctx.Headers.Get("Authorization"); got != caller {
+		t.Fatal("a denied request's Authorization was rewritten")
 	}
 	if got := idp.count(); got != 0 {
 		t.Fatalf("token exchanges = %d, want 0", got)
 	}
-	if withheld, _ := delegatedTokensWithheld(res); withheld {
-		t.Fatal("a denied result must not report a withheld delegation")
+}
+
+// Without delegated_credentials the plugin cannot forward the minted
+// token, so it fails closed rather than send the caller's bearer.
+func TestDelegationUnavailableWithoutOptIn(t *testing.T) {
+	idp := newSpikeIdP(t)
+	p := spikePlugin(t, idp, false)
+	caller := "Bearer " + spikeJWT("alice", []string{"hr"})
+	pctx := toolCall("get_compensation", http.Header{"Authorization": {caller}})
+	wantReject(t, "alice get_compensation", p.OnRequest(context.Background(), pctx), "cpex."+codeDelegationUnavailable)
+	if got := idp.count(); got != 1 {
+		t.Fatalf("token exchanges = %d, want 1", got)
+	}
+}
+
+// A credential for a header outside delegated_credential_headers is not
+// forwarded, and the request fails closed.
+func TestDelegationCredentialHeaderNotAllowed(t *testing.T) {
+	idp := newSpikeIdP(t)
+	p := configuredEngine(t, map[string]any{
+		"config":                       spikePolicy(idp.srv.URL + "/token"),
+		"private_destinations":         true,
+		"delegated_credentials":        true,
+		"delegated_credential_headers": []string{"X-Workday-Token"},
+	}, HookToolPreInvoke)
+	caller := "Bearer " + spikeJWT("alice", []string{"hr"})
+	pctx := toolCall("get_compensation", http.Header{"Authorization": {caller}})
+	wantReject(t, "alice get_compensation", p.OnRequest(context.Background(), pctx), "cpex."+codeDelegationUnavailable)
+	if got := pctx.Headers.Get("Authorization"); got != caller {
+		t.Fatal("Authorization was rewritten")
 	}
 }

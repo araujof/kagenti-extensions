@@ -157,9 +157,10 @@ CPEX session store keyed by the subject and the session id, threaded from
 `X-Session-Id` (or, with `session_source: resolved`, the session the forward
 proxy resolved). A later `send_email` in the same session reads that label and
 denies, blocking the exfiltration at the session level rather than with a
-per-call filter. The `delegate(...)` step's token does not reach the host, so
-`get_compensation` is denied with `cpex.delegation_unavailable` once the
-exchange succeeds (see [Decisions and denials](#decisions-and-denials)).
+per-call filter. Unless `delegated_credentials` is on, the `delegate(...)`
+step's token does not reach the host, so `get_compensation` is denied with
+`cpex.delegation_unavailable` once the exchange succeeds (see [Decisions and
+denials](#decisions-and-denials)).
 
 ### External PDPs (BYOP)
 
@@ -478,9 +479,19 @@ Some denials come from the plugin rather than from policy, and `fail_open`
 does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
 (above), `cpex.principal_unavailable` (above), and
 `cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
-step granted a token: the plugin does not take the token's value from CPEX,
-and forwarding would send the caller's own bearer where the policy asked for
-the delegated one.
+step granted a token the plugin cannot forward: `delegated_credentials` is
+off (the engine then keeps the token), or a credential came back for a
+header outside `delegated_credential_headers`, or without its value.
+Forwarding would send the caller's own bearer where the policy asked for the
+delegated one.
+
+**Delegated credentials.** With `delegated_credentials: true` the engine
+returns each minted credential to the plugin, which writes it to the request
+as its header (default allowlist: `Authorization`), replacing the caller's
+value, after the header write-back. The value never enters the invocation,
+the session record or a log, and later CPEX calls on the same request do not
+see it. It needs CPEX 0.3.1 or later; a 0.3.0 library rejects the
+option, failing the plugin at startup.
 
 **How a rejection is rendered.** The plugin sets the decision and a status
 (`403` for a policy deny, `502` for a CPEX-internal error); the HTTP/proxy

@@ -228,9 +228,9 @@ func TestBuildCMFThisWorkload(t *testing.T) {
 	}
 }
 
-// A delegate() step that is granted hands back a token the Go host cannot
-// read, so the request is denied rather than forwarded with the caller's
-// own bearer.
+// A delegate() step that is granted on a manager that does not forward
+// delegated credentials denies the request rather than forward it with the
+// caller's own bearer.
 func TestDelegationWithoutHostCredentialDenies(t *testing.T) {
 	secret := []byte("cortex-test-only-hs256-secret-0123456789")
 	var exchanges atomic.Int32

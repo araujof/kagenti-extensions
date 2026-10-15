@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // cpexConfig is the operator-facing schema for the cpex plugin. The
@@ -145,6 +147,19 @@ type cpexConfig struct {
 	// step that is false always denies. Steps after the denying one do
 	// not run. Codes the plugin itself emits cannot be listed.
 	ObserveCodes []string `json:"observe_codes" description:"Policy violation codes recorded as observe instead of enforced; the labels the denying step set still apply."`
+
+	// DelegatedCredentials forwards the credentials CPEX delegate() steps
+	// mint: each one is written to the request as its header, replacing
+	// the caller's value. Off by default, and then a request whose policy
+	// delegated is denied with cpex.delegation_unavailable instead, because
+	// the engine keeps the minted token. Needs a CPEX library that returns
+	// delegated credentials to the host.
+	DelegatedCredentials bool `json:"delegated_credentials" default:"false" description:"Forward the credentials CPEX delegate() steps mint, as request headers. Default false: a request whose policy delegated is denied."`
+
+	// DelegatedCredentialHeaders lists the headers a delegated credential
+	// may be written to. A credential for any other header denies the
+	// request with cpex.delegation_unavailable.
+	DelegatedCredentialHeaders []string `json:"delegated_credential_headers" description:"Headers a delegated credential may be written to. Default [Authorization]."`
 }
 
 // principalConfig configures principal injection. An empty TokenFile turns
@@ -213,6 +228,9 @@ func (c *cpexConfig) applyDefaults() {
 	if c.Workload.Audience != "" && c.Workload.Header == "" {
 		c.Workload.Header = defaultWorkloadHeader
 	}
+	if c.DelegatedCredentials && c.DelegatedCredentialHeaders == nil {
+		c.DelegatedCredentialHeaders = []string{"Authorization"}
+	}
 	// c.BypassPaths is filled lazily from bypass.DefaultPatterns
 	// in plugin.go's Configure (avoids importing bypass here).
 }
@@ -257,6 +275,20 @@ func (c *cpexConfig) validate() error {
 			return fmt.Errorf("workload.header must not be %q", c.Workload.Header)
 		case c.Principal.TokenFile != "" && h == strings.ToLower(strings.TrimSpace(c.Principal.Header)):
 			return fmt.Errorf("workload.header must differ from principal.header")
+		}
+	}
+	if len(c.DelegatedCredentialHeaders) > 0 && !c.DelegatedCredentials {
+		return errors.New("delegated_credential_headers needs delegated_credentials: true")
+	}
+	for _, h := range c.DelegatedCredentialHeaders {
+		lower := strings.ToLower(strings.TrimSpace(h))
+		switch {
+		case lower == "" || !httpguts.ValidHeaderFieldName(lower):
+			return fmt.Errorf("delegated_credential_headers: %q is not a header name", h)
+		case isFramingOrInternal(lower),
+			c.Principal.TokenFile != "" && lower == strings.ToLower(strings.TrimSpace(c.Principal.Header)),
+			c.Workload.Audience != "" && lower == strings.ToLower(strings.TrimSpace(c.Workload.Header)):
+			return fmt.Errorf("delegated_credential_headers must not name %q", h)
 		}
 	}
 	if c.WorkerThreads < 0 {

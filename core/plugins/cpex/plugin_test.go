@@ -3,6 +3,7 @@ package cpex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -218,6 +219,43 @@ func TestConfigure_SessionSourceAndPrivateDestinations(t *testing.T) {
 	}
 }
 
+func TestConfigure_DelegatedCredentials(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantForward bool
+		wantHeaders []string
+	}{
+		{`{}`, false, nil},
+		{`{"delegated_credentials":true}`, true, []string{"Authorization"}},
+		{`{"delegated_credentials":true,"delegated_credential_headers":["X-Api-Key"]}`, true, []string{"X-Api-Key"}},
+	}
+	for _, tc := range cases {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(tc.raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", tc.raw, err)
+		}
+		if seen.DelegatedCredentials != tc.wantForward || fmt.Sprint(seen.DelegatedCredentialHeaders) != fmt.Sprint(tc.wantHeaders) {
+			t.Errorf("Configure(%s): options = %+v", tc.raw, seen)
+		}
+	}
+	for _, raw := range []string{
+		`{"delegated_credential_headers":["Authorization"]}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["Host"]}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-authbridge-direction"]}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["bad header"]}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-user-token"],"principal":{"token_file":"/t"}}`,
+	} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("Configure(%s): want error", raw)
+		}
+	}
+}
+
 func TestConfigure_RejectsWildcardBypassHost(t *testing.T) {
 	p := setupFake(&FakeManager{})
 	err := p.Configure([]byte(`{"bypass_hosts":["*"]}`))
@@ -341,6 +379,7 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"bypass_hosts", "bypass_paths",
 		"fallback_identification", "session_source", "private_destinations",
 		"synthetic_egress", "principal",
+		"delegated_credentials", "delegated_credential_headers",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)

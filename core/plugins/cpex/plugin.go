@@ -239,6 +239,9 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		SyntheticEgress:        c.SyntheticEgress,
 		Principal:              principal,
 		Workload:               newWorkloadSource(c.Workload, p.workloadJWT(c.Workload.Audience)),
+
+		DelegatedCredentials:       c.DelegatedCredentials,
+		DelegatedCredentialHeaders: c.DelegatedCredentialHeaders,
 	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces

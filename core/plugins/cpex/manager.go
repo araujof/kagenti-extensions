@@ -78,6 +78,11 @@ type ManagerOptions struct {
 	// Workload is the pod's SPIFFE JWT-SVID for identity resolution on the
 	// same requests, or nil when workload injection is off.
 	Workload *workloadSource
+
+	// DelegatedCredentials and DelegatedCredentialHeaders are the validated
+	// config values of the same names; see cpexConfig.
+	DelegatedCredentials       bool
+	DelegatedCredentialHeaders []string
 }
 
 // NewManager is defined in one of two build-tag-gated files:
