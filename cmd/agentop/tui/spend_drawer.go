@@ -277,10 +277,18 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 		// something else is a lie printed on screen.
 		return false, "spend: the usage pane is the breakdown — use its own [b] and [w]"
 	case paneAgents:
-		// THE SAME ARGUMENT AS paneUsage: that pane's rows ARE a per-agent cost breakdown, and
-		// the drawer's `a` axis cycles to `agent` — so opening it there offers a reader a way to
-		// reach, in a drawer, the view they are already looking at.
-		return false, "spend: the agents pane is already the per-agent breakdown"
+		// THE ROW UNDER THE CURSOR SCOPES THE DRAWER, and that is what makes this pane host it
+		// where the usage pane refuses. The pane's rows are a per-agent breakdown of ONE window,
+		// while the drawer beneath them breaks THE HIGHLIGHTED AGENT down by model, endpoint or
+		// agent — the endpoint axis is the server split the pane's COST column aggregates away,
+		// and COST beside SERVER invites reading one as spent on the other. The row is the same
+		// scope Enter would commit, but the drawer only READS it; see spendDrawerAgent.
+		//
+		// IT USED TO REFUSE, on the argument that the pane was already the per-agent breakdown —
+		// true of the drawer's agent axis and nothing else, and written before the SERVER column
+		// (03161ee7) made the pane a routing console. The refusal then barred the one surface
+		// that could reconcile a row's cost with the servers it was actually spent on.
+		return true, ""
 	}
 	return true, ""
 }
@@ -372,6 +380,34 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 	// minutes on the month.
 	m.spend.drawer.invalidate()
 	return tea.Batch(m.fetchSpendDrawer(), spendDrawerTick(m.spend.drawer.tickGen, m.spend.pollInterval()))
+}
+
+// syncSpendDrawerScope refetches the drawer when the scope it should be showing is not the
+// one it last asked for: the highlighted row on the agents pane, the committed scope
+// everywhere else (spendDrawerAgent). Expanded-gated and one comparison, so a caller can
+// run it on every keypress at no cost.
+//
+// PANE-BLIND BY DESIGN. There is no setPane choke point to hook — the pane is assigned in
+// twenty-odd places, the same fact spendDrawerReservesRows records — so the sites that
+// would each need one (a cursor move, esc, `u`, `P`, `C`, Enter) are replaced by the ONE
+// place every keypress passes through: Update's KeyMsg arm, which runs this after handleKey
+// has done its mutating. The async entry — `A`'s reply entering the pane a round trip after
+// the keypress that asked for it — is the one transition no key sees, so agentRowsLoadedMsg
+// carries the second call. The drawer's own tick is the backstop: it refetches on cadence
+// whatever this missed.
+//
+// IT REFETCHES RATHER THAN INVALIDATING: invalidate would bump the drawer's tickGen and
+// kill its poll chain — nothing re-arms that but `$` itself — and the old snapshot staying
+// on screen until the new one lands is the behaviour cycleSpendAxis already chose for its
+// axis change. The caption comes from the snapshot, so rows and caption lag together.
+func (m *model) syncSpendDrawerScope() tea.Cmd {
+	if !m.spend.expanded {
+		return nil
+	}
+	if want := m.spendDrawerAgent(); want == m.spend.drawerAgent {
+		return nil
+	}
+	return m.fetchSpendDrawer()
 }
 
 // cycleSpendAxis handles `a` while the drawer is open, and refetches.
@@ -716,8 +752,17 @@ func drawerTotals(snap *usage.Snapshot) usage.Counts {
 // what the tree glyphs were gesturing at before they were dropped, and which the hint line
 // otherwise says only in brackets. The left one is constant because tiers are always tiers:
 // that asymmetry is the point, since one column answers "on what" and the other "by whom".
-func drawerHeaders(axis usage.Group, twoCol bool, width int) string {
+//
+// scope, when not empty, rides the right header as "BY ENDPOINT · claude-code": the agent
+// the snapshot was narrowed to. It matters most on the agents pane, where the drawer holds
+// the row under the cursor while the band above holds the committed scope and the two can
+// name different agents; without the caption a reader has one screen naming two agents and
+// nothing saying which one the breakdown belongs to.
+func drawerHeaders(axis usage.Group, scope string, twoCol bool, width int) string {
 	right := "BY " + strings.ToUpper(string(axis))
+	if scope != "" {
+		right += " · " + scope
+	}
 	if !twoCol {
 		// THREE SPACES, matching what fitStripFigures(" ", ...) puts in front of the rows
 		// below — `label + "  "`. Two would leave the header one column left of its column.
@@ -725,6 +770,21 @@ func drawerHeaders(axis usage.Group, twoCol bool, width int) string {
 	}
 	return clipRow(fmt.Sprintf("  %-*s%s", tierColumnWidth+drawerColumnGutter,
 		"WHERE IT WENT", right), width)
+}
+
+// drawerScopeLabel is the agent the drawer's snapshot is scoped to, sanitised, or "" when it
+// is not.
+//
+// THE SNAPSHOT'S OWN ECHO (snap.Agent), not the scope the fetch asked for: a reply still in
+// the air must not caption rows it does not carry, and an older server that ignored agent=
+// answers with no echo — the drawer is genuinely unscoped then, and the caption says so by
+// saying nothing. Sanitised for the reason drawerLabels sanitises snap.Group: the field is
+// server-supplied JSON that reaches the terminal verbatim.
+func drawerScopeLabel(snap *usage.Snapshot) string {
+	if snap == nil {
+		return ""
+	}
+	return sanitizeLabel(snap.Agent)
 }
 
 // renderSpendDrawer returns the drawer's rows, ready to join under the strip.
@@ -799,7 +859,7 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Gr
 	}
 
 	out := make([]string, 0, spendDrawerLines)
-	out = append(out, drawerHeaders(axis, twoCol, width))
+	out = append(out, drawerHeaders(axis, drawerScopeLabel(snap), twoCol, width))
 	// THE LEFT COLUMN IS tierPanelLines, NOT numTierRows: the four rate tiers PLUS the
 	// reasoning row that hangs under output. The right column's slots are filled by the
 	// `i < len(rows)` guard below, so whichever column is shorter pads itself rather than

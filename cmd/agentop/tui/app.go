@@ -1485,11 +1485,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// config off it, and nothing else refetches it off the pipeline panes: an `agentop server
 		// use` run in a shell since then would otherwise show here only after a restart, and S
 		// would open with its cursor on a value the proxy no longer runs.
+		// The drawer follows the pane this reply may just have entered, or the rows a
+		// background refresh reordered under the cursor — the one transition no keypress
+		// sees, since `A` enters a round trip after the press. See syncSpendDrawerScope.
+		sync := m.syncSpendDrawerScope()
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, m.loadPipelineCmd()
+			return m, tea.Batch(m.loadPipelineCmd(), sync)
 		}
-		return m, nil
+		return m, sync
 
 	case usageLoadedMsg:
 		// Discard anything but the newest request's reply. Two rapid `w` presses
@@ -2133,7 +2137,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m, m.handleKey(msg)
+		// The drawer's scope sync rides every keypress, AFTER handleKey has moved the cursor
+		// or changed the pane — the one place all of those pass through, which is why the
+		// sync is hooked here and not at each transition. See syncSpendDrawerScope.
+		return m, tea.Batch(m.handleKey(msg), m.syncSpendDrawerScope())
 	}
 
 	// Delegate to the active pane's component.

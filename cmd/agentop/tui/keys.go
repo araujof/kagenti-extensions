@@ -1260,7 +1260,10 @@ func (m *model) helpView() string {
 		if m.serverKeyOffered() {
 			serverHint = "  [S] server"
 		}
-		return "[↑↓] nav" + enterHint + escHint + serverHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		// [$] SPEND, for the same reason the sessions footer carries it: the footer is where a
+		// key gets discovered. The drawer here breaks down the row under the cursor.
+		spendHint := "  [$] spend"
+		return "[↑↓] nav" + enterHint + escHint + serverHint + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

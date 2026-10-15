@@ -127,6 +127,12 @@ type spendState struct {
 	windowStep int
 	// drawerAxis is the grouping drawer.snap was asked for, which a scoped reply may not carry.
 	drawerAxis usage.Group
+	// drawerAgent is the agent the drawer's last fetch asked for, so a cursor move — or a
+	// pane change — can tell a refetch it owes from one it does not. Recorded at ISSUE time
+	// by fetchSpendDrawer, including for a fetch that goes on to fail: the ask is what
+	// matters, not whether it was answered. Cleared by invalidate, which is always followed
+	// by a fetch that re-records it (startSpendPolling) or by a closed drawer.
+	drawerAgent string
 }
 
 // spendSpan identifies one of the four budget spans the band reports.
@@ -275,6 +281,7 @@ func (s *spendState) invalidate() {
 		s.chains[i].invalidate()
 	}
 	s.drawer.invalidate()
+	s.drawerAgent = ""
 }
 
 // spendLoadedMsg carries one span's fetched snapshot back to Update.
@@ -1003,6 +1010,22 @@ func spendDrawerTick(gen uint64, every time.Duration) tea.Cmd {
 	})
 }
 
+// spendDrawerAgent is the scope the drawer's next fetch breaks down: the committed scope
+// everywhere, and on the agents pane THE ROW UNDER THE CURSOR — the same row Enter would
+// commit (selectedAgentScope), read here at fetch time and never stored. The drawer follows
+// the cursor without `$` ever narrowing anything: Enter stays the only key that writes the
+// scope, the band above the drawer keeps following the committed one, and the two can name
+// different agents on one screen — the drawer's caption says which it holds, which is the
+// reader's reconciliation between them.
+func (m *model) spendDrawerAgent() string {
+	if m.pane == paneAgents {
+		if row, ok := m.selectedAgentScope(); ok {
+			return row
+		}
+	}
+	return m.agentScope
+}
+
 // fetchSpendDrawer requests the breakdown: ONE window, folded by the current axis.
 //
 // The window comes from the drawer's own cycle and the axis from `a`, and both are captured
@@ -1017,7 +1040,10 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 	// GetUsageWindow, not GetUsage: the drawer's span can now be a symbolic boundary, which a
 	// time.Duration cannot express. One request-building path for every span it can be pointed
 	// at, so the hour cannot drift from the other three.
-	window, resolution, axis, agent := m.spend.window(), m.spend.windowResolution(), m.spendAxis(), m.agentScope
+	window, resolution, axis, agent := m.spend.window(), m.spend.windowResolution(), m.spendAxis(), m.spendDrawerAgent()
+	// Recorded at issue so syncSpendDrawerScope can tell a refetch it owes from one it does
+	// not — a cursor move on the agents pane changes this, a clamped one must not refetch.
+	m.spend.drawerAgent = agent
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
