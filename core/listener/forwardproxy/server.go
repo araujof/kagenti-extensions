@@ -648,7 +648,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 		respAction := s.OutboundPipeline.RunResponse(phaseCtx, pctx)
 		if respAction.Type == pipeline.Reject {
-			httpx.WriteRejection(w, respAction)
+			s.rejectResponse(w, pctx, respAction)
 			return
 		}
 
@@ -663,7 +663,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			defer cancelFinal()
 			respFrameAction := s.OutboundPipeline.RunResponseFrame(finalCtx, pctx, pctx.ResponseBody, true)
 			if respFrameAction.Type == pipeline.Reject {
-				httpx.WriteRejection(w, respFrameAction)
+				s.rejectResponse(w, pctx, respFrameAction)
 				return
 			}
 		}
@@ -1374,6 +1374,31 @@ func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
 	return &pipeline.SessionView{ID: sid}
 }
 
+// rejectResponse answers the client with a response-phase rejection and
+// records it, before any of the upstream's response is written. The request
+// row is already on the timeline; without this row the deny that replaced
+// the response left no trace of its own.
+func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, action pipeline.Action) {
+	httpx.WriteRejection(w, action)
+	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
+		return
+	}
+	s.Sessions.Append(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound))
+}
+
+// responseSessionID is the bucket a response row files under: the session
+// pinned when the request row was recorded, else the active one, else the
+// default.
+func (s *Server) responseSessionID(pctx *pipeline.Context) string {
+	if sid := pctx.OutboundSessionID; sid != "" {
+		return sid
+	}
+	if sid := s.Sessions.ActiveSession(); sid != "" {
+		return sid
+	}
+	return session.DefaultSessionID
+}
+
 // recordOutboundResponseEvent emits the SessionResponse event for a
 // completed outbound response. Extracted from handleRequest so the
 // streaming path can call it once at end-of-stream and the buffered
@@ -1392,13 +1417,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// response lands in the same bucket. Fall back to ActiveSession() only
 	// when nothing was pinned (defensive — a response-only path), then to
 	// the default bucket. See Context.OutboundSessionID.
-	sid := pctx.OutboundSessionID
-	if sid == "" {
-		sid = s.Sessions.ActiveSession()
-	}
-	if sid == "" {
-		sid = session.DefaultSessionID
-	}
+	sid := s.responseSessionID(pctx)
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
 		At:            time.Now(),
@@ -1654,7 +1673,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 	// anything is written. streamFallbackBuffered runs its own RunResponse, so
 	// this is done only on the flushing path to avoid double-dispatch.
 	if respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx); respAction.Type == pipeline.Reject {
-		httpx.WriteRejection(w, respAction)
+		s.rejectResponse(w, pctx, respAction)
 		return
 	}
 
@@ -1720,7 +1739,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 	defer cancelPhase()
 	respAction := s.OutboundPipeline.RunResponse(phaseCtx, pctx)
 	if respAction.Type == pipeline.Reject {
-		httpx.WriteRejection(w, respAction)
+		s.rejectResponse(w, pctx, respAction)
 		return
 	}
 	if s.OutboundPipeline.HasStreamingResponders() {
@@ -1758,7 +1777,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 			}
 			frameAction := s.OutboundPipeline.RunResponseFrame(foldCtx, pctx, frame, false)
 			if frameAction.Type == pipeline.Reject {
-				httpx.WriteRejection(w, frameAction)
+				s.rejectResponse(w, pctx, frameAction)
 				return
 			}
 		}
@@ -1769,7 +1788,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 		defer cancelFinal()
 		finalAction := s.OutboundPipeline.RunResponseFrame(finalCtx, pctx, nil, true)
 		if finalAction.Type == pipeline.Reject {
-			httpx.WriteRejection(w, finalAction)
+			s.rejectResponse(w, pctx, finalAction)
 			return
 		}
 	}
