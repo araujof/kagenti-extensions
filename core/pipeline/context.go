@@ -185,6 +185,14 @@ type Context struct {
 	SessionSource SessionSource
 	SessionHeader string
 
+	// ChainSession is the session a process above the sender in its process
+	// chain named, when the listener can see the chain: the session of the
+	// agent that started the sender. It can differ from Session, which follows
+	// a session the sender named itself. A plugin keying security state on the
+	// session should prefer it, so a child process cannot name a fresh session
+	// to leave its parent's.
+	ChainSession string
+
 	// OutboundSessionID pins the session bucket the outbound REQUEST event was
 	// recorded under, so the paired RESPONSE event lands in the same session.
 	// recordOutboundResponseEvent reuses it instead of re-resolving

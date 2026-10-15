@@ -663,6 +663,10 @@ func TestCPEXSessionID(t *testing.T) {
 			SessionHeader: header,
 		}
 	}
+	withChain := func(pctx *pipeline.Context, chain string) *pipeline.Context {
+		pctx.ChainSession = chain
+		return pctx
+	}
 	cases := []struct {
 		name         string
 		pctx         *pipeline.Context
@@ -694,6 +698,18 @@ func TestCPEXSessionID(t *testing.T) {
 			resolved("s1", "", ""), sessionSourceResolved, "", true},
 		{"resolved, no session", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"x"}}},
 			sessionSourceResolved, "", true},
+		{"resolved, a child's own header yields to its parent's session",
+			withChain(resolved("fresh", pipeline.SessionSourceHeader, session.ClaudeCodeSessionHeader), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"resolved, a child's own claim yields to its parent's session",
+			withChain(resolved("fresh", pipeline.SessionSourceProcess, ""), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"resolved, a pending child takes its parent's session",
+			withChain(resolved(session.PendingSessionID("claude-code"), pipeline.SessionSourcePending, ""), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"header ignores the process chain",
+			withChain(&pipeline.Context{Headers: http.Header{"X-Session-Id": {"taint-demo-42"}}}, "claude-1"),
+			sessionSourceHeader, "taint-demo-42", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

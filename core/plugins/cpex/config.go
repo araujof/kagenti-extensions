@@ -102,7 +102,9 @@ type cpexConfig struct {
 	//                      default bucket) and the generic X-Session-Id and
 	//                      Session-Id headers give no session id, and the
 	//                      caller's X-Session-Id and A2A context id are
-	//                      ignored.
+	//                      ignored. When a process above the sender named
+	//                      a session, that session wins over the sender's
+	//                      own, so a child of an agent stays in its taint.
 	SessionSource string `json:"session_source" default:"header" description:"Session id for CPEX session state: header (X-Session-Id / A2A context id) or resolved (the listener's session, when a dedicated agent header or the process chain named it)."`
 
 	// PrivateDestinations lets every CPEX builtin of this instance (JWKS

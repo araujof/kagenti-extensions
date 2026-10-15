@@ -147,6 +147,10 @@ type Server struct {
 	// selfTrafficSeen holds the (executable, service) pairs selfTraffic has announced.
 	selfTrafficSeen sync.Map
 
+	// chainOverrideLogged holds the session header names hydrateSession has
+	// reported naming a session other than the process chain's.
+	chainOverrideLogged sync.Map
+
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
 	// nothing is ever decrypted: the pipeline sees opaque tunnels, every
@@ -1264,6 +1268,15 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Heade
 		pctx.Session = s.sessionViewFor(sid)
 		pctx.SessionSource = how.source
 		pctx.SessionHeader = how.header
+	}
+	if chain != nil && s.processesOn() {
+		pctx.ChainSession = s.Sessions.ChainSession(chain)
+		if pctx.ChainSession != "" && sid != pctx.ChainSession && how.source == pipeline.SessionSourceHeader {
+			if _, seen := s.chainOverrideLogged.LoadOrStore(how.header, struct{}{}); !seen {
+				slog.Info("forwardproxy: a process named a session other than its parent agent's; "+
+					"policy keyed on the process chain uses the parent's", "header", how.header)
+			}
+		}
 	}
 	return sid
 }

@@ -54,7 +54,13 @@ func cpexSessionID(pctx *pipeline.Context, source string) (id string, replaces b
 // (the most recent session, User-Agent affinity, a pending or the default
 // bucket) is not an identity a caller can be held to, and the generic
 // X-Session-Id and Session-Id headers let any caller name a fresh session.
+// The session a parent agent named (ChainSession) wins over one the sender
+// named itself, so a child process cannot name a fresh session to leave
+// its parent's taint.
 func trustedSessionID(pctx *pipeline.Context) string {
+	if id := pctx.ChainSession; id != "" && id != session.DefaultSessionID && !strings.HasPrefix(id, session.PendingPrefix) {
+		return id
+	}
 	if pctx.Session == nil {
 		return ""
 	}

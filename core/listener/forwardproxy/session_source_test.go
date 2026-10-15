@@ -84,3 +84,49 @@ func TestSessionSourceProcessChain(t *testing.T) {
 		t.Fatalf("tool: source %q/%q, want process", pctx.SessionSource, pctx.SessionHeader)
 	}
 }
+
+// A child of the agent that names a session of its own — by header, or later from
+// the claim that header left — still carries the agent's session as ChainSession, so
+// a policy keyed on it cannot be escaped. The agent's own requests carry none.
+func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{
+		Sessions:         store,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
+		Processes:        newFakeProcs(),
+	}
+	agent := session.Proc{PID: 100, Start: 1}
+	shell := session.Proc{PID: 150, Start: 2}
+	child := session.Proc{PID: 200, Start: 3}
+
+	named := func(sid string) http.Header {
+		h := http.Header{"User-Agent": {procClaudeUA}}
+		h.Set(session.ClaudeCodeSessionHeader, sid)
+		return h
+	}
+	pctx := &pipeline.Context{}
+	s.hydrateSession(pctx, named("claude-1"), []session.Proc{agent, shell})
+	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
+	if pctx.ChainSession != "" {
+		t.Errorf("agent: ChainSession %q, want none", pctx.ChainSession)
+	}
+
+	pctx = &pipeline.Context{}
+	sid := s.hydrateSession(pctx, named("fresh"), []session.Proc{child, shell, agent})
+	store.Append("fresh", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
+	if sid != "fresh" || pctx.SessionSource != pipeline.SessionSourceHeader {
+		t.Fatalf("child: recorded under %q via %q, want fresh via header", sid, pctx.SessionSource)
+	}
+	if pctx.ChainSession != "claude-1" {
+		t.Errorf("child with its own header: ChainSession %q, want claude-1", pctx.ChainSession)
+	}
+
+	pctx = &pipeline.Context{}
+	if sid := s.hydrateSession(pctx, http.Header{}, []session.Proc{child, shell, agent}); sid != "fresh" {
+		t.Fatalf("child without header: %q, want its own claim fresh", sid)
+	}
+	if pctx.ChainSession != "claude-1" {
+		t.Errorf("child without header: ChainSession %q, want claude-1", pctx.ChainSession)
+	}
+}
