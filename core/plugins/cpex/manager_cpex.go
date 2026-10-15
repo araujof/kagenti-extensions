@@ -151,8 +151,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		err  error
 	)
 	if hookName != rcpex.HookIdentityResolve && c.mgr.HasHooksFor(rcpex.HookIdentityResolve) {
-		inject := ext.Meta != nil && injectsPrincipal(pctx, ext.Meta.EntityType)
-		headers, herr := identityHeaders(pctx.Headers, inject, c.opts.Principal)
+		headers, herr := c.requestIdentityHeaders(pctx, ext, isResponse)
 		if herr != nil {
 			return Result{
 				Decision: DecisionDeny,
@@ -224,6 +223,33 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	res := mapResult(pres, changed)
 	res.Details = details
 	return res, nil
+}
+
+// identityStateKey keys the request's identity headers on pctx.
+const identityStateKey = "cpex.identity"
+
+type requestIdentity struct{ headers map[string]string }
+
+// requestIdentityHeaders returns the headers identity resolution reads.
+// The request phase computes them and keeps them on pctx; the response
+// phase reuses them, because by then a policy's assertions may have
+// stripped the caller's token from pctx.Headers, and the response is
+// resolved as the same caller either way.
+func (c *cpexManager) requestIdentityHeaders(pctx *pipeline.Context, ext *rcpex.Extensions, isResponse bool) (map[string]string, error) {
+	if isResponse {
+		if st := pipeline.GetState[requestIdentity](pctx, identityStateKey); st != nil {
+			return st.headers, nil
+		}
+	}
+	inject := ext.Meta != nil && injectsPrincipal(pctx, ext.Meta.EntityType)
+	headers, err := identityHeaders(pctx.Headers, inject, c.opts.Principal)
+	if err != nil {
+		return nil, err
+	}
+	if !isResponse {
+		pipeline.SetState(pctx, identityStateKey, &requestIdentity{headers: headers})
+	}
+	return headers, nil
 }
 
 // messageEgressDetails returns egressDetails for an http_egress tool call
