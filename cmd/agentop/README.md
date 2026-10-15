@@ -687,7 +687,8 @@ verified, and its known issues.
 
 ## Choosing an inference server (`agentop server`)
 
-With several LiteLLM servers, each with its own URL and key, `agentop server`
+With several inference servers — LiteLLM gateways or local model servers — each
+with its own URL and key, `agentop server`
 chooses which one an agent's **new** sessions use, through the
 [`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
 session stays on the server it started on, including one already running when its
@@ -734,7 +735,8 @@ refusal is believed for an hour, and a session keeps the model it was given.
   wrong URL or key is caught here; it prints what each word names now. A name that
   exists is replaced only after a yes (`--yes` skips the question), which is how a
   key is rotated; with no terminal to ask on, nothing is written. A server on a
-  host another server already has, on any port, is refused. The first `add`
+  host another server already has, on any port, is refused, except on a loopback
+  host such as `localhost`, where each port is a host of its own. The first `add`
   creates the plugin's entry, last in the outbound pipeline. A key or a word
   containing `$` is refused: the config loader would read it as an environment
   variable.
@@ -780,6 +782,30 @@ config, with the stats address read from it: that is how to try this against a
 second Cortex without touching the one every session uses. Flags go after the
 action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
 a malformed name, agent or URL included; 3 a replacement declined.
+
+### Local model servers
+
+Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
+of them checks the key unless started with one, but `add` needs one, so give any word.
+An agent keeps asking for its own model names, which a local server does not have;
+the server's refusal is answered with the `--main` or `--helper` model, as a
+LiteLLM refusal is:
+
+```sh
+echo ollama | agentop server add ollama http://localhost:11434 \
+  --main granite3.3 --helper granite3.3 --key-stdin
+agentop server use ollama --agent bob-shell
+```
+
+The refusals recognised are Ollama 0.40.4's and 0.7.0's, vLLM 0.31.0's and
+llama.cpp b11429's serving several models (`--models-dir`); the two Ollama
+versions word theirs differently, and both readings are matched. llama.cpp serving
+one model (`-m`) and LM Studio with a model loaded answer any name with that model,
+so their `--main` and
+`--helper` never come into play; LM Studio with nothing loaded refuses in words the
+router does not read. A prompt larger than the server's window is trimmed by Ollama
+rather than refused, so set its context length above the agent's prompts: Claude
+Code's opening turn can pass 64k tokens, Bob's is around 10k.
 
 ## Panes
 

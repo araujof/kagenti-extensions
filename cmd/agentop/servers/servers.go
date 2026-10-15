@@ -91,8 +91,8 @@ func Mapping(s routerconfig.Server) string {
 	return "main " + s.Main + " · helper " + s.Helper
 }
 
-// ForHost is the server whose host hostport names, compared as the plugin matches a request:
-// port-stripped and lowercased. ok is false for a host no server has, and for "".
+// ForHost is the server whose host hostport names, compared as the plugin matches a request.
+// ok is false for a host no server has, and for "".
 //
 // Unambiguous because the router refuses two servers on one host — the rule exists so that a
 // session's server can be named from where its requests went.
@@ -100,9 +100,9 @@ func ForHost(c routerconfig.Config, hostport string) (name string, ok bool) {
 	if hostport == "" {
 		return "", false
 	}
-	h := routerconfig.Hostname(hostport)
+	h := routerconfig.Key(hostport)
 	for _, name := range slices.Sorted(maps.Keys(c.Servers)) {
-		if ep, err := routerconfig.ParseURL(c.Servers[name].URL); err == nil && ep.Hostname == h {
+		if ep, err := routerconfig.ParseURL(c.Servers[name].URL); err == nil && ep.Key() == h {
 			return name, true
 		}
 	}

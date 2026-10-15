@@ -149,7 +149,8 @@ still parses and reports the traffic as unpriced.
 ## `inference-router`
 
 Sends a coding agent's new sessions to the inference server chosen for it — a
-LiteLLM gateway, say, with its own URL and key — and keeps every session on the
+LiteLLM gateway or a local model server such as Ollama, with its own URL and key —
+and keeps every session on the
 server it started on, wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
 beyond going through the proxy. Routing is opt-in per agent: an agent not listed
@@ -160,7 +161,7 @@ honors a redirect, so `cortex-envoy` and a config with an `mtls:` block refuse i
 at startup, and in-cluster use has not been examined.
 
 - `servers` (map, required) — inference servers by name: lowercase letters, digits, `.`, `_` and `-`. Each has:
-  - `url` (string, required) — `scheme://host[:port]`, `http` or `https`, no path, query or fragment. A port must be 1–65535; the scheme's default is dropped, so `https://x:443` is `x`. No two servers may share a host, compared without port or case: a session's server is named from the host its requests went to. A plain-`http` server on another machine logs a WARN at load, since routed requests would cross the network decrypted.
+  - `url` (string, required) — `scheme://host[:port]`, `http` or `https`, no path, query or fragment. A port must be 1–65535; the scheme's default is dropped, so `https://x:443` is `x`. No two servers may share a host, compared without case and, except on a loopback host such as `localhost`, without port, since one machine serves many things there: a session's server is named from the host its requests went to. A plain-`http` server on another machine logs a WARN at load, since routed requests would cross the network decrypted.
   - `key` (string, required) — the API key sent to this server in place of the client's, in the header the client used: `X-Api-Key` when it sent one, `Authorization: Bearer` otherwise, both when it sent both. Printable ASCII, no spaces. `/config` and `/v1/pipeline` redact it.
   - `main` (string, required) — a word naming this server's model for an agent's main work, a request that carries tools, sent in place of a model the server refuses (see **Models**). It resolves to the newest model on the server's list whose name, without its provider prefix, contains the word, case ignored: `opus` against `aws/claude-opus-5-5` and `claude-opus-4-8` is the first. No `/` and no whitespace. The fields `opus`, `sonnet` and `haiku` it replaced are refused by name.
   - `helper` (string, required) — the same for a request without tools, such as a title.
@@ -267,8 +268,12 @@ decides:
   `server` and `pin` (`new`, `existing` or `none`).
 - **Models.** A routed request goes with the model the agent asked for: the router
   does not read the server's list to judge it, because a LiteLLM server serves
-  aliases it does not list. When the server refuses the model, the router records the refusal for an
-  hour and, through `pipeline.Resender`, has the forward proxy send the request
+  aliases it does not list. When the server refuses the model — LiteLLM's 403
+  `team_model_access_denied` or 400 `Invalid model name passed in model=`, Ollama's
+  404 or llama.cpp's 400 `model <m> not found`, or vLLM's 404 ``The model `<m>`
+  does not exist.``, where `<m>` is the name the request was sent with, quoted in
+  any of the styles a server has been seen to use — the router
+  records the refusal for an hour and, through `pipeline.Resender`, has the forward proxy send the request
   again, once and before the agent sees anything, with the server's substitute:
   `main` for a request with tools, `helper` for one without, as the server's list
   resolves them. The re-sent request's row carries `modify/resent` with `server`,

@@ -949,3 +949,47 @@ func TestRouter_RecordedHistoryOutranksTheRequestsTurn(t *testing.T) {
 		t.Errorf("pin = %q, want glm", pin)
 	}
 }
+
+// localServers is two model servers on this machine, with claude-code routed to ollama.
+const localServers = `{"servers": {
+	"ollama": {"url": "http://localhost:11434", "key": "ollama-key", "main": "granite", "helper": "granite"},
+	"vllm":   {"url": "http://localhost:8000", "key": "vllm-key", "main": "qwen", "helper": "qwen"}},
+	"agents": {"claude-code": "ollama"}}`
+
+// A server on localhost owns its own port, not the machine: a routed agent's other
+// localhost traffic, such as an MCP server or a dev server, goes where the agent sent it.
+func TestRouter_ALocalServerOwnsOnlyItsPort(t *testing.T) {
+	const ollamaOnly = `{"servers": {
+		"ollama": {"url": "http://localhost:11434", "key": "ollama-key", "main": "granite", "helper": "granite"}},
+		"agents": {"claude-code": "ollama"}}`
+	for _, host := range []string{"localhost:3000", "localhost:5173", "localhost"} {
+		t.Run(host, func(t *testing.T) {
+			p := build(t, ollamaOnly)
+			pctx := request(newStore(t), host, claudeUA, "s1")
+			pctx.Scheme, pctx.Path, pctx.Extensions.Inference = "http", "/mcp", nil
+			run(t, p, pctx)
+			assertUntouched(t, pctx, host)
+			assertRecord(t, pctx, pipeline.ActionSkip, "not_an_inference_server", nil)
+		})
+	}
+	t.Run("its own port", func(t *testing.T) {
+		p := build(t, ollamaOnly)
+		pctx := request(newStore(t), "localhost:11434", claudeUA, "s1")
+		pctx.Scheme, pctx.Path, pctx.Extensions.Inference = "http", "/v1/models", nil
+		run(t, p, pctx)
+		assertRouted(t, pctx, "localhost:11434", "ollama-key")
+	})
+}
+
+// A session's history names its server by the host and port its requests went to, so a
+// conversation that ran on one local server stays there when its agent is routed to
+// another on the same machine.
+func TestRouter_HistoryTellsTwoLocalServersApart(t *testing.T) {
+	h := &fakeHistory{events: map[string][]pipeline.SessionEvent{
+		"running": archived(sent("localhost:8000", claudeUA)),
+	}}
+	p := buildWithHistory(t, localServers, h)
+	pctx := claudeCode(request(newStore(t), "api.anthropic.com", claudeUA, "running"), pipeline.AgentRoleMain, 26, 3)
+	run(t, p, pctx)
+	assertRouted(t, pctx, "localhost:8000", "vllm-key")
+}
