@@ -238,6 +238,10 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 	}
 	client := m.client
 	m.agentsFetchedAt = time.Now()
+	// An opening fetch starts the visit on today; `w` lasts for one visit.
+	if open != agentsOpenNever {
+		m.agentsWindowStep = 0
+	}
 	// Captured here, on the update goroutine, for the reason fetchSpendSpan records.
 	def := m.agentsSpanDef()
 	return func() tea.Msg {

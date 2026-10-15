@@ -232,3 +232,36 @@ func groupedWindows(queries []string, group string) []string {
 	}
 	return out
 }
+
+// AN OPENING FETCH STARTS ON TODAY: an `A` press from another pane, and the startup gate a new
+// connection runs. `w` lasts for one visit — `A` on the pane itself, the pane's poll and esc
+// back from the sessions list it led to keep it — so leaving and re-entering, or connecting to
+// another pod, does not inherit a window the reader picked for a different look.
+func TestAgentsPane_AnOpeningFetchStartsOnToday(t *testing.T) {
+	m, asked := cursorScopeModel(t)
+	pressKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	asked()
+
+	pressKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	if got := groupedWindows(asked(), "agent"); len(got) != 1 || got[0] != "7d" {
+		t.Errorf("`A` on the pane itself requested %v; want the visit's 7d kept", got)
+	}
+
+	m.pane = paneSessions
+	pressKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	if got := groupedWindows(asked(), "agent"); len(got) != 1 || got[0] != "today" {
+		t.Errorf("`A` from Sessions requested %v; want today", got)
+	}
+
+	m.pane = paneAgents
+	pressKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if m.agentsSpan() == spanToday {
+		t.Fatal("`w` on the pane left the window on today; the gate case below would prove nothing")
+	}
+	m.pane = paneSessions
+	asked()
+	runCmds(m.startupAgentsGateCmd())
+	if got := groupedWindows(asked(), "agent"); len(got) != 1 || got[0] != "today" {
+		t.Errorf("the startup gate requested %v; want today, whatever the last connection's `w` left", got)
+	}
+}
