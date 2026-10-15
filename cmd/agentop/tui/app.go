@@ -473,6 +473,9 @@ type model struct {
 	sessionsData map[string]SessionMetadata
 	// harvest refreshes sessionsData in the background once the UI is up. Nil disables it.
 	harvest HarvestFunc
+	// version is the build agentop was started as, shown after its name on every title bar.
+	// Empty renders the bare name, which is what tests construct.
+	version string
 	// lastHarvest is when the most recent harvest was STARTED. Read by ONE caller: the sessions
 	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then. The picker
 	// no longer has a cadence to measure — it harvests on arrival — so nothing there reads this.
@@ -2304,7 +2307,7 @@ func (m *model) paneView() string {
 	}
 
 	if m.pane == paneNamespaces {
-		title := "agentop · pick namespace"
+		title := m.appName() + " · pick namespace"
 		// m.namespaces == nil → still loading (don't flash the empty-state
 		// hint mid-load); non-nil empty slice → loaded, no agents found.
 		var body string
@@ -2341,7 +2344,7 @@ func (m *model) paneView() string {
 		)
 	}
 	if m.pane == panePods {
-		title := "agentop · " + m.selectedNamespace + " · pick pod"
+		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
 		footer := m.helpView()
 		if m.pickerErr != "" {
@@ -2390,7 +2393,7 @@ func (m *model) paneView() string {
 		// The contrast carries it instead: every band cell names its own span, and the table is
 		// the only thing on screen with a SESSION column. The [?] overlay still states it in full
 		// for a reader who wants it spelled out.
-		title = fmt.Sprintf("agentop · %s", m.endpoint)
+		title = fmt.Sprintf("%s · %s", m.appName(), m.endpoint)
 		body = m.sessionsTbl.View()
 		if m.sessionsScope() != "" && len(m.sessionRowIDs) == 0 {
 			body = styleHint.Render("(no session belongs to " + sanitizeLabel(m.agentScope) + ")")
@@ -2413,7 +2416,7 @@ func (m *model) paneView() string {
 		// was in the title it said which of the two top-level views was showing;
 		// with the strip gone, a pane whose title read only "agentop · <endpoint>"
 		// would be indistinguishable from Sessions in a screenshot.
-		title = fmt.Sprintf("agentop · %s · pipeline", m.endpoint)
+		title = fmt.Sprintf("%s · %s · pipeline", m.appName(), m.endpoint)
 		if m.pipeline == nil {
 			body = styleHint.Render("(loading pipeline…)")
 		} else {
@@ -2424,14 +2427,14 @@ func (m *model) paneView() string {
 		if m.detailPlugin != nil {
 			name = m.detailPlugin.Name
 		}
-		title = fmt.Sprintf("agentop · pipeline · %s", name)
+		title = fmt.Sprintf("%s · pipeline · %s", m.appName(), name)
 		body = m.detailVp.View()
 	case paneUsage:
 		scope := "all"
 		if m.usage.session != "" {
 			scope = m.usage.session
 		}
-		title = fmt.Sprintf("agentop · %s · usage · %s", m.endpoint, scope)
+		title = fmt.Sprintf("%s · %s · usage · %s", m.appName(), m.endpoint, scope)
 		// The agent scope goes in the TITLE because it changes what every figure on the pane
 		// means.
 		if m.agentScope != "" {
@@ -2441,7 +2444,7 @@ func (m *model) paneView() string {
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
 		// this pane has no window cycle of its own to make that discoverable.
-		title = fmt.Sprintf("agentop · %s · agents · %s", m.endpoint, m.agentsWindowLabel())
+		title = fmt.Sprintf("%s · %s · agents · %s", m.appName(), m.endpoint, m.agentsWindowLabel())
 		// THE HIGHLIGHTED ROW, not the committed scope: the band and the drawer follow the
 		// cursor here (spendScopeAgent), so the row is what every figure on screen describes.
 		// It used to name the committed scope, which put "scoped to claude-code" over a band
@@ -2468,7 +2471,7 @@ func (m *model) paneView() string {
 			body = m.agentsTbl.View()
 		}
 	case paneCatalog:
-		title = fmt.Sprintf("agentop · %s · catalog", m.endpoint)
+		title = fmt.Sprintf("%s · %s · catalog", m.appName(), m.endpoint)
 		if m.catalog == nil {
 			body = styleHint.Render("(loading catalog…)")
 		} else if len(m.catalog.Plugins) == 0 {
@@ -2568,6 +2571,18 @@ func (m *model) paneView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
+// appName is what every title bar starts with: "agentop", and the build when one was given.
+//
+// On the title rather than only behind --version because a screenshot or a pasted title line
+// is how a report about this TUI usually arrives, and the build is the first thing worth
+// knowing about it.
+func (m *model) appName() string {
+	if m.version == "" {
+		return "agentop"
+	}
+	return "agentop " + m.version
+}
+
 // sessionHeader renders a session-scoped title bar: "agentop · <label>" plus an optional
 // suffix ("event"), clipped only if the terminal genuinely cannot hold it.
 //
@@ -2582,7 +2597,7 @@ func (m *model) paneView() string {
 // right one.
 func (m *model) sessionHeader(id, suffix string) string {
 	label := m.sessionLabel(id)
-	head := "agentop · "
+	head := m.appName() + " · "
 	tail := ""
 	if suffix != "" {
 		tail = " · " + suffix
@@ -2837,6 +2852,8 @@ type RunOptions struct {
 	// --skip-claude-metadata. The viewer then shows whatever the metadata file already
 	// held — the titles from the last run — so this only ever ADDS names.
 	Harvest HarvestFunc
+	// Version names this build on the title bar. Empty shows the name alone.
+	Version string
 }
 
 // Run starts the bubbletea program. See RunOptions for mode selection.
@@ -2858,6 +2875,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// newPickerModel and New would otherwise each need their own copy.
 	m.save = opts.Save
 	m.harvest = opts.Harvest
+	m.version = opts.Version
 	defer func() {
 		if m.activePF != nil {
 			_ = m.activePF.Close()
