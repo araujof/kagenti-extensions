@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,8 +206,8 @@ func TestSpendState_ZeroValueRequestsTheLiveHour(t *testing.T) {
 		t.Errorf("axis() = %q on a zero-value state, want %q", got, usage.GroupModel)
 	}
 	// A ring span asks for a single bucket; a symbolic one omits the resolution entirely.
-	if got := s.windowResolution(); got != spendResolution {
-		t.Errorf("windowResolution() = %v for the hour, want %v", got, spendResolution)
+	if got := spanResolution(s.windowSpan()); got != spendResolution {
+		t.Errorf("spanResolution() = %v for the hour, want %v", got, spendResolution)
 	}
 }
 
@@ -1152,10 +1154,17 @@ func TestRenderSpendDrawer_HeadersNameTheScopedAgent(t *testing.T) {
 // is no setPane choke point to hook (the pane is assigned in twenty-odd places), so the one
 // place every keypress passes through is the only sound one.
 func TestSpendDrawer_FollowsTheAgentsCursor(t *testing.T) {
+	var mu sync.Mutex
 	var asked []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		agent := r.URL.Query().Get("agent")
-		asked = append(asked, agent)
+		// The drawer's requests only — they are the grouped ones. The band follows the
+		// cursor too and restarts with it; TestSpendBand_FollowsTheAgentsCursor covers it.
+		if r.URL.Query().Get("group") != "" {
+			mu.Lock()
+			asked = append(asked, agent)
+			mu.Unlock()
+		}
 		// The agent is ECHOED, as the real server does, so fetchUsageScoped does not take
 		// its old-server fallback and re-ask unscoped — see the fetch-scope test.
 		_, _ = w.Write([]byte(`{"window":"1h","group":"model","agent":"` + agent + `","buckets":[],"totals":{}}`))
@@ -1176,24 +1185,30 @@ func TestSpendDrawer_FollowsTheAgentsCursor(t *testing.T) {
 	m.spend.expanded = true
 	press := func(key tea.KeyMsg) {
 		_, cmd := m.Update(key)
-		if cmd != nil {
-			cmd()
-		}
+		runCmds(cmd)
+	}
+	requests := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(asked)
 	}
 
 	press(tea.KeyMsg{Type: tea.KeyDown})
-	if len(asked) != 1 || asked[0] != "bob-shell/2.0.5" {
-		t.Errorf("after the cursor moved, requests = %v; want exactly one, for bob-shell/2.0.5", asked)
+	seen := requests()
+	if len(seen) != 1 || seen[0] != "bob-shell/2.0.5" {
+		t.Errorf("after the cursor moved, requests = %v; want exactly one, for bob-shell/2.0.5", seen)
 	}
 
 	press(tea.KeyMsg{Type: tea.KeyDown})
-	if len(asked) != 1 {
-		t.Errorf("a clamped cursor move refetched: requests = %v; a key that moves nothing must fetch nothing", asked)
+	seen = requests()
+	if len(seen) != 1 {
+		t.Errorf("a clamped cursor move refetched: requests = %v; a key that moves nothing must fetch nothing", seen)
 	}
 
 	press(tea.KeyMsg{Type: tea.KeyEsc})
-	if len(asked) != 2 || asked[1] != "claude-code/2.1.270" {
-		t.Errorf("after leaving the pane, requests = %v; want a refetch under the committed scope claude-code/2.1.270", asked)
+	seen = requests()
+	if len(seen) != 2 || seen[1] != "claude-code/2.1.270" {
+		t.Errorf("after leaving the pane, requests = %v; want a refetch under the committed scope claude-code/2.1.270", seen)
 	}
 }
 
@@ -1318,7 +1333,7 @@ func TestSpendDrawer_PollsAtTheCadenceOfTheSpanItShows(t *testing.T) {
 	m := &model{}
 	for i := range spendDrawerWindows {
 		want := spendSpanDefs[spendDrawerSpans[i]].pollInterval()
-		if got := m.spend.pollInterval(); got != want {
+		if got := m.spendDrawerPollInterval(); got != want {
 			t.Errorf("step %d (%s): cadence %v, want its span's %v",
 				i, m.spend.window(), got, want)
 		}

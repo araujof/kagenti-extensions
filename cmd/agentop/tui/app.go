@@ -793,6 +793,11 @@ type model struct {
 	agentsErr error
 	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
 	agentsFetchedAt time.Time
+	// agentsWindowStep is how far `w` has moved the agents pane's window past today; see
+	// agentsSpan. agentsRowsWindow is the window the rows on screen answer for, which the title
+	// names — "" until a reply lands.
+	agentsWindowStep int
+	agentsRowsWindow string
 	// agentsGateOwesALook is the startup gate held open for one session list. Its reply can land
 	// before the connection's first list, and the list now votes — agentChoices counts the agents
 	// its sessions name — so a decline made without one is provisional. Set when the gate declines
@@ -1445,14 +1450,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agentRowsLoadedMsg:
-		// NO REQUEST-ID GUARD, unlike usageLoadedMsg below, and the difference is the shape of
-		// the request rather than an oversight: this fetch has no view options to get out of
-		// step with. Every call asks for the same window and the same grouping, so two replies
-		// landing out of order carry the same question and the later one is simply fresher.
-		// Last-write-wins is the whole correctness requirement here.
+		// NO REQUEST-ID GUARD, unlike usageLoadedMsg below: the one view option this fetch has
+		// is the window, so a reply for any other window than the pane's is dropped, and two
+		// replies for the same one carry the same question — the later is simply fresher. Only
+		// a background refresh can be outrun that way, since `w` moves the window on the pane.
+		if msg.open == agentsOpenNever && msg.window != m.agentsSpanDef().window {
+			return m, nil
+		}
 		m.agentsErr = msg.err
 		if msg.err == nil {
 			m.agents = msg.rows
+			m.agentsRowsWindow = msg.window
 		}
 		switch {
 		case msg.open == agentsOpenNever:
@@ -1488,10 +1496,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// config off it, and nothing else refetches it off the pipeline panes: an `agentop server
 		// use` run in a shell since then would otherwise show here only after a restart, and S
 		// would open with its cursor on a value the proxy no longer runs.
-		// The drawer follows the pane this reply may just have entered, or the rows a
+		// The band and drawer follow the pane this reply may just have entered, or the rows a
 		// background refresh reordered under the cursor — the one transition no keypress
-		// sees, since `A` enters a round trip after the press. See syncSpendDrawerScope.
-		sync := m.syncSpendDrawerScope()
+		// sees, since `A` enters a round trip after the press. See syncSpendScope.
+		sync := m.syncSpendScope()
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
 			return m, tea.Batch(m.loadPipelineCmd(), sync)
@@ -1817,7 +1825,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.spendDrawerTickIsCurrent(msg.gen) || !m.spend.expanded {
 			return m, nil
 		}
-		return m, tea.Batch(m.fetchSpendDrawer(), spendDrawerTick(msg.gen, m.spend.pollInterval()))
+		return m, tea.Batch(m.fetchSpendDrawer(), spendDrawerTick(msg.gen, m.spendDrawerPollInterval()))
 
 	case streamClosedMsg:
 		// In picker mode, ignore the close from the previous session —
@@ -2140,10 +2148,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// The drawer's scope sync rides every keypress, AFTER handleKey has moved the cursor
+		// The spend scope sync rides every keypress, AFTER handleKey has moved the cursor
 		// or changed the pane — the one place all of those pass through, which is why the
-		// sync is hooked here and not at each transition. See syncSpendDrawerScope.
-		return m, tea.Batch(m.handleKey(msg), m.syncSpendDrawerScope())
+		// sync is hooked here and not at each transition. See syncSpendScope.
+		return m, tea.Batch(m.handleKey(msg), m.syncSpendScope())
 	}
 
 	// Delegate to the active pane's component.
@@ -2436,12 +2444,13 @@ func (m *model) paneView() string {
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
 		// this pane has no window cycle of its own to make that discoverable.
-		title = fmt.Sprintf("%s · %s · agents · %s", m.appName(), m.endpoint, agentsWindow)
-		// Which agent is currently scoped, so returning to the picker shows the state rather
-		// than only the choices. The footer's Enter label says what the key will do to the row
-		// under the cursor; this says what is set, whatever the cursor is on.
-		if m.agentScope != "" {
-			title += " · scoped to " + sanitizeLabel(m.agentScope)
+		title = fmt.Sprintf("%s · %s · agents · %s", m.appName(), m.endpoint, m.agentsWindowLabel())
+		// THE HIGHLIGHTED ROW, not the committed scope: the band and the drawer follow the
+		// cursor here (spendScopeAgent), so the row is what every figure on screen describes.
+		// It used to name the committed scope, which put "scoped to claude-code" over a band
+		// and drawer showing bob-shell. Enter still commits the row.
+		if agent := m.spendScopeAgent(); agent != "" {
+			title += " · agent=" + sanitizeLabel(agent)
 		}
 		hasRows := len(m.pickerRows()) > 0
 		switch {

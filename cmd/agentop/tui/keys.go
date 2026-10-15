@@ -227,6 +227,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return m.cycleSpendAxis()
 			}
 		case "w":
+			// The agents pane's window, drawer open or closed; see cycleAgentsWindow.
+			if m.pane == paneAgents {
+				return m.cycleAgentsWindow()
+			}
 			if m.spendDrawerVisible() {
 				return m.cycleSpendWindow()
 			}
@@ -1263,7 +1267,8 @@ func (m *model) helpView() string {
 		// [$] SPEND, for the same reason the sessions footer carries it: the footer is where a
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
-		return "[↑↓] nav" + enterHint + escHint + serverHint + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		// [w] the pane's window, which the title names; see cycleAgentsWindow.
+		return "[↑↓] nav" + enterHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }
