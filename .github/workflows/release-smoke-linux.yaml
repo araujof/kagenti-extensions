@@ -8,11 +8,11 @@
 # that guarantees the release assets this pulls from already exist, rather
 # than racing the upload.
 #
-# arm64: out of scope here. No real arm64 GitHub-hosted runner exists in this
-# org, and no arm64-execution pattern exists anywhere in this repo's CI today
-# (build.yaml's QEMU usage builds container images for arm64 but never runs
-# one) — extending that to install.sh/agentop would be new infrastructure, not
-# a small addition to this workflow.
+# Runs on both amd64 and arm64 via a matrix: install.sh already does its own
+# `uname -m` arch detection and release-binaries.yaml already publishes
+# linux/arm64 tarballs, so the only gap was a runner to execute on. GitHub's
+# ubuntu-24.04-arm label (standard, GA, free for public repos) closes it with
+# no script changes.
 #
 # Deliberately not covered: driving a real request through the proxy and
 # asserting a parsed event with a non-zero token count (#957's third
@@ -33,13 +33,27 @@ permissions:
 
 jobs:
   linux-smoke-test:
-    name: Linux install/upgrade/uninstall smoke test
+    name: Linux install/upgrade/uninstall smoke test (${{ matrix.arch }})
     # event == 'push' excludes Release binaries' workflow_dispatch dry runs,
     # which build but never publish — nothing would exist yet to install.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
-    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false — each arch is an independently meaningful result,
+      # not a retry of the other; one arch failing shouldn't cancel the
+      # other's signal.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            # Pinned rather than a floating "-latest" arm alias (none exists
+            # today) so both matrix legs run the same Ubuntu version as each
+            # other.
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 15
     steps:
       # Pinned to the release's own commit, so the script asserts on output
