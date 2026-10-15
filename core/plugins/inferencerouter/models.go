@@ -195,7 +195,7 @@ func (p *Router) resendForLimit(pctx *pipeline.Context, kind limitKind, n int) b
 	if !switched(pctx) || slices.Contains(pctx.ResendReasons(), "limit") {
 		return false
 	}
-	server, ok := p.byHost[routerconfig.Hostname(pctx.Host)]
+	server, ok := p.byHost[routerconfig.Key(pctx.Host)]
 	if !ok {
 		return false
 	}
@@ -235,7 +235,7 @@ func (p *Router) resendForModel(pctx *pipeline.Context) bool {
 	if !pctx.Redirected() {
 		return false
 	}
-	server, ok := p.byHost[routerconfig.Hostname(pctx.Host)]
+	server, ok := p.byHost[routerconfig.Key(pctx.Host)]
 	ext := pctx.Extensions.Inference
 	if !ok || ext == nil || ext.RequestedModel != "" {
 		return false

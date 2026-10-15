@@ -130,7 +130,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// what it protects cannot drift apart. A server replaced under its own name keeps its host.
 	if other, ok := servers.ForHost(c, ep.Host); ok && other != name {
 		fmt.Fprintf(stderr, "agentop server add: %s is already on %s. Each server needs a host of its own, "+
-			"because agentop names a session's server from the host its requests went to.\n", other, ep.Hostname)
+			"because agentop names a session's server from the host its requests went to.\n", other, ep.Key())
 		return 1
 	}
 	old, replacing := c.Servers[name]

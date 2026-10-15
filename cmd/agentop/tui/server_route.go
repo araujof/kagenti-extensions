@@ -152,7 +152,7 @@ const sessionsNotAHost = "(not a host)"
 // parenthesis that would draw one host as two) shows sessionsNotAHost instead, and nothing of
 // its text. Splitting off the port is not enough: routerconfig.Hostname splits at the last ':',
 // so "sk-…:x@evil.example" comes back as "sk-…", the key (servers.Host refuses a URL whole for
-// the same reason). The port is dropped, as the router matches without it. That alphabet is
+// the same reason). That alphabet is
 // stricter than sanitizeLabel, so what passes it needs no sanitising; a server name does.
 func sessionServerCell(router routerconfig.Config, host string, w int) string {
 	if host == "" {

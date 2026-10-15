@@ -128,13 +128,13 @@ func (c Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("servers.%s.url: %w", name, err)
 		}
-		// Port-blind on purpose. agentop names a session's server from the host its
-		// requests went to, and two servers on one host would make that ambiguous.
-		if other, ok := byHost[ep.Hostname]; ok {
+		// agentop names a session's server from the host its requests went to, and two
+		// servers on one host would make that ambiguous.
+		if other, ok := byHost[ep.Key()]; ok {
 			return fmt.Errorf("servers %q and %q are both on %s: each server needs a host of its own, "+
-				"because a session's server is named from the host its requests went to", other, name, ep.Hostname)
+				"because a session's server is named from the host its requests went to", other, name, ep.Key())
 		}
-		byHost[ep.Hostname] = name
+		byHost[ep.Key()] = name
 		if err := CheckKey(s.Key); err != nil {
 			return fmt.Errorf("servers.%s.key: %w", name, err)
 		}
@@ -208,6 +208,9 @@ type Endpoint struct {
 // URL is the endpoint as scheme://host, the form agentop writes.
 func (e Endpoint) URL() string { return e.Scheme + "://" + e.Host }
 
+// Key is what a request is matched to this endpoint by: Key of its Host.
+func (e Endpoint) Key() string { return Key(e.Host) }
+
 // PlaintextRemote reports an http endpoint on another machine. A request routed
 // there leaves the proxy decrypted, with its key and its prompt, across the network.
 func (e Endpoint) PlaintextRemote() bool {
@@ -260,11 +263,33 @@ func ParseURL(raw string) (Endpoint, error) {
 	return Endpoint{Scheme: u.Scheme, Host: joinHost(hostname, withoutDefault(u.Scheme, port)), Hostname: hostname}, nil
 }
 
-// Hostname is a request's host[:port], lowercased and without the port: what the
-// request is matched to a server by.
+// Hostname is a request's host[:port], lowercased and without the port.
 func Hostname(hostport string) string {
 	h, _ := splitHost(hostport)
 	return h
+}
+
+// Key is what a request's host[:port] is matched to a server by: the host, lowercased,
+// and on a loopback host its port too, since one machine serves many things there — a
+// model server on one port, an MCP or dev server on another. A port a scheme defaults,
+// 80 or 443, counts as none, as a server URL drops it.
+func Key(hostport string) string {
+	h, port := splitHost(hostport)
+	if !isLoopback(h) {
+		return h
+	}
+	if port == "80" || port == "443" {
+		port = ""
+	}
+	return joinHost(h, port)
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func splitHost(hostport string) (host, port string) {

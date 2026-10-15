@@ -966,3 +966,28 @@ func TestResend_AKeptSubstituteRefusedIsNotResentAgain(t *testing.T) {
 		t.Error("Resend = true for a kept substitute the server refused: a second model for one request")
 	}
 }
+
+// A local server's refusal is answered from that server's own list, found by the host and
+// port the request was sent to.
+func TestResend_ALocalServersRefusalIsAnsweredFromItsOwnList(t *testing.T) {
+	r := New()
+	if err := r.Configure(json.RawMessage(localServers)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	r.catalogs.set("ollama", []string{"granite3.3:8b"})
+	r.catalogs.set("vllm", []string{"qwen2.5-0.5b"})
+	p, err := pipeline.New([]pipeline.Plugin{r})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	pctx := claudeCode(request(newStore(t), "api.anthropic.com", claudeUA, "s1"), pipeline.AgentRoleMain, 26, 0)
+	pctx.Body = []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}]}`)
+	run(t, p, pctx)
+	assertRouted(t, pctx, "localhost:11434", "ollama-key")
+	if !resend(p, pctx, http.StatusNotFound, `{"type":"error","error":{"type":"not_found_error","message":"model 'claude-opus-5-5' not found"}}`) {
+		t.Fatal("Resend = false for ollama's refusal")
+	}
+	if got := sentModel(t, pctx); got != "granite3.3:8b" {
+		t.Errorf("model = %q, want ollama's granite3.3:8b", got)
+	}
+}

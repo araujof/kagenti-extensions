@@ -197,7 +197,7 @@ func (r route) target() *url.URL {
 // Router is the plugin. Built by Configure; the zero value routes nothing.
 type Router struct {
 	servers map[string]route  // by server name
-	byHost  map[string]string // every server's Endpoint.Hostname, to its name
+	byHost  map[string]string // every server's Endpoint.Key, to its name
 	agents  map[string]string // agent name to server name
 
 	// store is the process's durable store (storage.StoreConsumer), where pins are
@@ -273,7 +273,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 				"server", name, "url", ep.URL())
 		}
 		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper}
-		byHost[ep.Hostname] = name
+		byHost[ep.Key()] = name
 	}
 	p.servers, p.byHost, p.agents = servers, byHost, c.Agents
 	return nil
@@ -295,8 +295,8 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// to any other host is captured when it is a routed agent's inference request,
 	// and sent to the server's path for its API format.
 	captured := ""
-	addressed := p.byHost[routerconfig.Hostname(pctx.Host)] // the server the request named, "" for none
-	if _, ok := p.byHost[routerconfig.Hostname(pctx.Host)]; !ok {
+	addressed := p.byHost[routerconfig.Key(pctx.Host)] // the server the request named, "" for none
+	if _, ok := p.byHost[routerconfig.Key(pctx.Host)]; !ok {
 		path, ok := capture(pctx)
 		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx)) {
 			pctx.Skip("not_an_inference_server")
@@ -598,7 +598,7 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 		turnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
 		return "", false
 	}
-	if server, ok = p.byHost[routerconfig.Hostname(e.Host)]; ok {
+	if server, ok = p.byHost[routerconfig.Key(e.Host)]; ok {
 		return server, true
 	}
 	// A request the router captures from a routed agent is recorded under its

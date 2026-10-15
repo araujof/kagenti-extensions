@@ -127,3 +127,23 @@ func TestInactive(t *testing.T) {
 		}
 	}
 }
+
+// On a loopback host a server is its host and port, as the plugin matches a request
+// there: a session sent to another port on the same machine is on no server.
+func TestForHost_LocalServersByPort(t *testing.T) {
+	local := routerconfig.Config{Servers: map[string]routerconfig.Server{
+		"ollama": {URL: "http://localhost:11434", Key: "k", Main: "g", Helper: "g"},
+		"vllm":   {URL: "http://localhost:8000", Key: "k", Main: "q", Helper: "q"},
+	}}
+	for host, want := range map[string]string{
+		"localhost:11434": "ollama",
+		"localhost:8000":  "vllm",
+		"localhost:3000":  "",
+		"localhost":       "",
+	} {
+		got, ok := ForHost(local, host)
+		if got != want || ok != (want != "") {
+			t.Errorf("ForHost(%q) = %q, %v; want %q", host, got, ok, want)
+		}
+	}
+}
