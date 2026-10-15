@@ -207,8 +207,7 @@ shapes — run it with no harness name:
 $ agentop configure status
 HARNESS       STATUS        DETAIL
 claude-code   enabled       ~/.claude/settings.json
-bob           uncertain     ~/Library/.../settings.json does not exist, so IBM Bob has not saved settings here
-bobshell      not enabled   CORTEX_BOBSHELL is unset in this shell
+bob           uncertain     editor: ~/Library/.../settings.json does not exist, so IBM Bob has not saved settings here; shell: CORTEX_BOBSHELL is unset in this shell
 opencode      uncertain     opencode not found on PATH or in ~/.opencode/bin
 codex         not enabled   no Cortex values in ~/.codex/.env
 
@@ -336,11 +335,12 @@ command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
 
-## Typing `bob` instead of `agentop exec -- bob` (`agentop configure bobshell`)
+## Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
 
-`agentop exec -- bob` routes one invocation. `agentop configure bobshell enable`
+`agentop exec -- bob` routes one invocation. `agentop configure bob enable`
 makes that the meaning of `bob` in every new shell, by appending a delimited
-block to your rc file:
+block to your rc file — the same command configures the editor above, and does
+both:
 
 ```sh
 # >>> cortex agentop (bobshell) >>>
@@ -352,15 +352,15 @@ export CORTEX_BOBSHELL=1
 ```
 
 ```sh
-agentop configure bobshell enable    # append the block
-agentop configure bobshell disable   # remove exactly that block
-agentop configure bobshell status    # is bob routed in THIS shell?
+agentop configure bob enable    # append the block (and set the editor's proxy)
+agentop configure bob disable   # remove exactly that block (and the editor's key)
+agentop configure bob status    # both halves, each with its own verdict
 ```
 
 Both `enable` and `disable` ask before writing, and `--yes` skips the question:
 
 ```sh
-agentop configure bobshell enable --yes    # no prompt
+agentop configure bob enable --yes    # no prompt
 ```
 
 With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
@@ -371,18 +371,18 @@ and 3 is what lets an unattended caller tell the two apart — the same code
 unattended caller that omits `--yes` is still a no-op; it is just no longer a
 silent one. Scripted callers should pass `--yes`.
 
-`bob` and `bobshell` are two different agents, not two spellings of one. `bob`
-configures the IBM Bob **editor** — a VS Code fork, so the lever is `http.proxy`
-in its `settings.json` (below). `bobshell` configures the **shell integration** —
-a `bob` function in your rc file, so typing `bob` at a prompt runs through
-Cortex. Configuring one does not configure the other, and neither name is an
-alias of the other: `agentop configure bob --settings X` is a usage error under
-`bobshell`, and vice versa.
+Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
+**editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
+(above) — and the **shell integration**, a `bob` function in your rc file so
+typing `bob` at a prompt runs through Cortex. Each half reports its own outcome
+and prompts before its own write, and a failure in one does not stop the other.
 
-The editor agent briefly did not exist. It was removed on the reasoning that
-what needed configuring was the shell integration and "IBM Bob itself needs no
-configuring", which was right about the binary and wrong about the editor. It is
-back, and the two now stand side by side.
+The two were separate commands (`configure bob` and `configure bobshell`) until
+2026-10-15, when the agent converged on one name and one row in `agentop
+observe`; `bobshell` is no longer a command. The editor half briefly did not
+exist at all before that — it was removed on the reasoning that "IBM Bob itself
+needs no configuring", which was right about the binary and wrong about the
+editor.
 
 Let `enable` write it rather than pasting the block above. What `enable` appends
 begins with a blank line, which the fence cannot show you: it is invisible when
@@ -482,10 +482,10 @@ Both answers exit 0: "not enabled" is a report, not a failure.
 
 ## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
 
-IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
+This is the editor half of `configure bob`; the shell half has its own section
+below. IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
 configure bob enable` writes it as a flat, top-level key in Bob's user settings,
 and on macOS one more key beside it:
-
 ```json
 {
   "http.proxy": "http://127.0.0.1:47600",
@@ -516,9 +516,10 @@ agentop configure bob status      # report, and act on nothing
 `enable` and `disable` show every change and ask once before writing, keep a
 `.bak` of the settings file as it was first found, and take `--yes` for unattended
 use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
-the same convention as `configure claude-code` and `configure bobshell`.
-`--settings PATH` and `--config PATH` override either file.
-
+the same convention as `configure claude-code`. `--settings
+PATH` and `--config PATH` override either file. Restart Bob afterwards: whether
+it re-reads a proxy change live is unverified, so the message says restart rather
+than guess.
 ### Trusting Cortex's CA without the keychain (macOS)
 
 The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
@@ -550,11 +551,11 @@ macOS `enable` makes two changes, and neither touches the keychain:
   # <<< cortex agentop (bob) <<<
   ```
 
-  The file, and every rule for editing it, is `configure bobshell`'s: `~/.zshrc`
-  for zsh, `~/.bashrc` for bash, followed through one symlink, written
-  atomically, and removed by `disable` only when it is exactly what `enable`
-  wrote. Any other shell, a dangling link, or a deeper chain gets the block
-  printed to place yourself.
+  The file, and every rule for editing it, is the shell half of `configure
+  bob`'s: `~/.zshrc` for zsh, `~/.bashrc` for bash, followed through one symlink,
+  written atomically, and removed by `disable` only when it is exactly what
+  `enable` wrote. Any other shell, a dangling link, or a deeper chain gets the
+  block printed to place yourself.
 
 A block in a file your login shell never reads fails silently — Bob just goes back
 to being passed through unread — so `enable` then starts your shell the way Bob
@@ -824,7 +825,7 @@ LiteLLM refusal is:
 ```sh
 echo ollama | agentop server add ollama http://localhost:11434 \
   --main granite3.3 --helper granite3.3 --key-stdin
-agentop server use ollama --agent bob-shell
+agentop server use ollama --agent bob
 ```
 
 The refusals recognised are Ollama 0.40.4's and 0.7.0's, vLLM 0.31.0's and
@@ -1524,8 +1525,8 @@ remembered between runs: a second agent appearing is exactly when the picker
 becomes worth showing, so a remembered dismissal would go stale then.
 
 **Agents the proxy does not recognise share one row, `Other`**, listed last. The
-proxy names an agent only from a User-Agent it recognises (`claude-code`,
-`bob-shell`, `ibm-bob`, `opencode`); anything else is reported under its raw
+proxy names an agent only from a User-Agent it recognises (`claude-code`, `bob`,
+`opencode`); anything else is reported under its raw
 User-Agent, and one program can send several — the IBM Bob IDE was three rows before
 it was recognised, and none of them could reach its session ([#1210]). Picking `Other`
 lists every session that names no recognised agent, including the `default` and

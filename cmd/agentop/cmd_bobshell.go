@@ -10,12 +10,17 @@ import (
 	"strings"
 )
 
-const bobShellUsage = `agentop configure bobshell — run Bob through Cortex by typing "bob"
+// bobShellUsage documents the SHELL HALF of `agentop configure bob` — reached as
+// `configure bob enable/disable/status`, which runs this and the editor half both
+// (see runBob). Kept as this half's own text because runBobShell remains a
+// self-contained entry point the tests drive directly, and its --help arm answers
+// with it.
+const bobShellUsage = `the shell half of agentop configure bob — run Bob through Cortex by typing "bob"
 
-Usage:
-  agentop configure bobshell enable  [--yes]
-  agentop configure bobshell disable [--yes]
-  agentop configure bobshell status
+Usage (as part of agentop configure bob, which also configures the editor):
+  agentop configure bob enable  [--yes] [--settings PATH] [--config PATH]
+  agentop configure bob disable [--yes] [--settings PATH] [--config PATH]
+  agentop configure bob status  [--settings PATH] [--config PATH]
 
 Flags:
   --yes           do not prompt for confirmation
@@ -397,7 +402,7 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	// to have, since the user sees "Enabled" and then a command that does not work.
 	// cmd_exec.go's helper already handles the embedded-single-quote case.
 	fmt.Fprintf(stdout, "\nOpen a new terminal, or run:\n  source %s\n", shellQuote(path))
-	fmt.Fprint(stdout, "\nThen \"bob\" runs through Cortex. \"agentop configure bobshell disable\" is the off switch.\n")
+	fmt.Fprint(stdout, "\nThen \"bob\" runs through Cortex. \"agentop configure bob disable\" is the off switch.\n")
 	return 0
 }
 
@@ -524,7 +529,7 @@ func bobShellStatus(stdout io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "  %s (unset)\n", bobShellEnvVar)
 	fmt.Fprint(stdout, "not enabled in this shell\n")
-	fmt.Fprint(stdout, "\nIf you have just run enable, this shell has not read the file yet — open a new\nterminal or source it. Otherwise: agentop configure bobshell enable\n")
+	fmt.Fprint(stdout, "\nIf you have just run enable, this shell has not read the file yet — open a new\nterminal or source it. Otherwise: agentop configure bob enable\n")
 	return 0
 }
 
