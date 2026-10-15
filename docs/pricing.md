@@ -532,7 +532,9 @@ rates in that block; tiers you omit keep their base value.
               output_cost_per_million: 22.50
 ```
 
-`agentop pricing` renders these as an indented `above 200,000 tok:` line beneath the model.
+`agentop pricing` renders these as an indented `above 200,000 tok:` line beneath the model
+— or `above 272,000 tok:` on an OpenAI one, since the breakpoint is the vendor's. Its
+footnote names every breakpoint in the table it just printed.
 
 ## Discounts
 
