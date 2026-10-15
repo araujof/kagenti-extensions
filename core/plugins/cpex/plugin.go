@@ -446,6 +446,9 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionAllow, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionDeny:
+		if res.Elicitation != nil {
+			return suspend(pctx, res.Elicitation, res.Details), true
+		}
 		// Namespace CPEX-emitted codes under cpex.* so operator
 		// dashboards group them distinctly from AuthBridge-native
 		// plugins. sanitizeReason normalizes whatever CPEX put in

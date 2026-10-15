@@ -465,6 +465,16 @@ listeners then choose the wire shape (`core/listener/httpx/render.go`):
 (The gRPC listener — extproc — doesn't use this renderer and surfaces
 denials per its own protocol.)
 
+**A call waiting for approval.** A `require_approval(...)` step that has not
+been answered yet suspends the call rather than denying it. The client gets
+`cpex.elicitation_pending` with the JSON-RPC code `-32120` on an MCP frame (a
+403 otherwise), a static message, and `error.data.details.elicitation_id`
+(plus `approver` and `expires_at` when known). It retries the same call with
+`X-Policy-Elicitation-Id: <id>`; once the approver answers, the retry goes
+through or is denied. A retry that also sends `X-Policy-Elicitation-Peek: true`
+only reports an approval, as `cpex.elicitation_approved` (`-32121`), without
+running the tool. The session record keeps the approver, not the id.
+
 A CPEX policy `deny` is a normal outcome and is always honored. `fail_open` only
 governs CPEX-internal failures (an FFI error, an unreachable backend, a
 modification that cannot be applied): with `fail_open: false` those are rejected

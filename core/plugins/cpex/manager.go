@@ -180,6 +180,10 @@ type Result struct {
 	// Details is recorded as the Invocation's details. It must hold only
 	// values safe for the unauthenticated session API.
 	Details map[string]string
+
+	// Elicitation is set on a deny that is a suspension awaiting a
+	// human's approval rather than a refusal.
+	Elicitation *Elicitation
 }
 
 // SubPluginError is one CPEX sub-plugin's error report, lifted from

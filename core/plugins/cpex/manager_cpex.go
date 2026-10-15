@@ -1014,6 +1014,7 @@ func mapResult(p *rcpex.PipelineResult, changed bool) Result {
 		if p.Violation != nil {
 			res.Code = p.Violation.Code
 			res.Reason = p.Violation.Reason
+			res.Elicitation = elicitationFromViolation(p.Violation.Code, p.Violation.Details)
 			if p.Violation.PluginName != "" {
 				res.PluginsRun = appendUnique(res.PluginsRun, p.Violation.PluginName)
 			}
