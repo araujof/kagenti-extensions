@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -35,46 +34,29 @@ import (
 // -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
+// revision is the commit a local build was made from, "+dirty" appended when its tree had
+// uncommitted changes. Set by `make agentop` via -ldflags "-X main.revision=...", from git run
+// in the tree being built; empty for any other build.
+//
+// Not read from runtime/debug's VCS settings: Go recognises only a .git directory, so a build
+// in a .worktrees/ checkout, whose .git is a file, is stamped with the enclosing checkout's
+// HEAD and dirty state.
+var revision string
+
 // displayVersion is version as the TUI's title bar shows it: the release tag, or for a
 // local build the commit it was built from, since "dev" alone cannot tell two of those apart.
 //
 // Not a replacement for version itself, which the service unit records and compares
 // against: a revision there would make every rebuild look like a different install.
 func displayVersion() string {
-	if version != "dev" {
-		return version
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return version
-	}
-	return devVersion(info.Settings)
+	return displayVersionOf(version, revision)
 }
 
-// devVersion is "dev-<short revision>", with "+dirty" when the tree had uncommitted
-// changes; plain "dev" when the build carried no VCS stamp (go run, -buildvcs=false).
-func devVersion(settings []debug.BuildSetting) string {
-	var rev string
-	var dirty bool
-	for _, s := range settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
-		}
+func displayVersionOf(version, revision string) string {
+	if version != "dev" || revision == "" {
+		return version
 	}
-	if rev == "" {
-		return "dev"
-	}
-	if len(rev) > 8 {
-		rev = rev[:8]
-	}
-	v := "dev-" + rev
-	if dirty {
-		v += "+dirty"
-	}
-	return v
+	return "dev-" + revision
 }
 
 // dispatchableSubcommands are the documented names main routes on, in the order
