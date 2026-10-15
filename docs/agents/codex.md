@@ -196,7 +196,8 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
-**Tokens always; cost only if you configure a rate.** Token counts come from the Responses
+**Tokens always; cost on a laptop once the price list downloads, or wherever you
+configure a rate.** Token counts come from the Responses
 API's usage block and aggregate alongside other agents (verified: a one-turn `codex exec`
 reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`).
 
@@ -290,12 +291,19 @@ Not tested:
   dialect is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
-- **Cost**, since no rate applies to the model — the pricing path is unexercised for Codex.
+- **Cost from a downloaded rate, against live Codex traffic.** The rate exists upstream and
+  the bundled table now carries first-party OpenAI prices, so the arithmetic is the same one
+  every other agent uses — but nobody has watched a real `codex exec` turn get priced from
+  `~/.cortex/price-list.json`. A configured `pricing:` entry is the exercised path.
 - **Tool pruning**, which is unsupported above rather than merely untested.
 
 ## Known issues
 
-- **Cost is blank.** Tokens aggregate; cost does not, for want of a rate — see
+- **Cost is blank where no list price reaches the model.** Two cases, and neither is
+  Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
+  model newer than the pinned commit has no rate there; and `bundled: false` turns the
+  shipped table *and* the download off together. On a laptop with defaults the rate arrives
+  with the first hourly fetch. See
   [What Cortex shows for it](#what-cortex-shows-for-it).
 - **Chatty non-inference traffic.** A single one-turn `codex exec` produced ~100 recorded
   events, most of them not inference: repeated polling of
