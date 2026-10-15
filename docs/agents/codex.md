@@ -198,14 +198,27 @@ for this dialect.
 
 **Tokens always; cost only if you configure a rate.** Token counts come from the Responses
 API's usage block and aggregate alongside other agents (verified: a one-turn `codex exec`
-reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`). **Cost is
-blank out of the box**, and the reason is not Codex-specific: the bundled rate table is
-**Anthropic-only by design**, so any agent on a non-Anthropic model reports its requests
-as *priceable but unpriced* — named, never under-priced. See
+reported 13,260 tokens under the `codex` series of `GET /v1/usage?group=agent`).
+
+**Cost on a laptop install: usually yes, and from a download rather than from the
+binary.** The bundled table carries first-party OpenAI list rates, so a GPT model prices
+the same way a Claude one does — but the *shipped* table is pinned to a LiteLLM commit,
+and a model added upstream after that commit is not in it. `gpt-6-luna` is one such, so
+the compiled-in table alone does not price it. What closes the gap is the price-list
+download: a local install fetches LiteLLM `main` at startup and hourly through the same
+filter that generated the table, keeps it in `~/.cortex/price-list.json`, and today's
+upstream prices `gpt-6-luna` at $0.10 in / $0.50 out per million. So cost appears without
+configuring anything, once that first download lands.
+
+**On a sidecar in a cluster, no.** Sidecars make no such call and keep the compiled-in
+table, so a model newer than the pin reports *priceable but unpriced* there — named,
+never under-priced. See
 [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced).
 
-A rate does exist upstream if you want one. These are the first-party OpenAI list prices
-for the model Codex uses, from the same LiteLLM table the bundled one is generated from:
+Pin the rate yourself when you want it independent of a download — in a sidecar, with
+`bundled: false`, or to assert a figure rather than inherit one. These are the first-party
+OpenAI list prices for the model Codex uses, and a configured entry outranks both the
+shipped table and the download:
 
 ```yaml
 # ~/.cortex/config.yaml

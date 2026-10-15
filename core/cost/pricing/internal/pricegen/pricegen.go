@@ -44,11 +44,46 @@ func keepProvider(p string) bool {
 	return p == AnthropicProvider || p == OpenAIProvider
 }
 
-// contextThreshold is the one long-context breakpoint in scope. LiteLLM also
-// publishes _above_272k and _above_512k variants for other providers, and an
-// _above_1hr cache-write premium; both are deliberately out of scope (see
-// pricing.Tier), so their fields are ignored rather than silently flattened.
-const contextThreshold = 200_000
+// BundledProviders names the allow-list for an error message, as "anthropic or
+// openai".
+//
+// Exported and shared rather than spelled out at each site: three messages say
+// which providers a usable list has to carry — this package's own "no entries in
+// the price map" and both of pricelist's "has no row with a rate" — and two of
+// them went on naming anthropic alone after openai joined, telling an operator
+// debugging a rejected download to look for the wrong thing. One function means
+// the next provider added cannot leave a message behind.
+func BundledProviders() string {
+	return AnthropicProvider + " or " + OpenAIProvider
+}
+
+// The long-context breakpoints in scope, one per bundled provider that publishes
+// one: Anthropic prices above 200k prompt tokens, OpenAI above 272k. No upstream
+// row carries both today, but Rates.At picks the highest breakpoint a prompt
+// exceeds rather than the first listed, so a row that did would resolve correctly
+// instead of by slice order.
+//
+// 272K JOINED WHEN OPENAI DID, because ignoring it is not neutral. 18 of the
+// OpenAI rows price input and cache-read at 2x and output at 1.5x above it
+// (gpt-5.5: $5 -> $10/Mtok input, $30 -> $45 output) on models that accept
+// 922k-1.05M tokens, so a long session crosses it easily. Read at the base rate
+// those requests would be priced too low and still labelled bundled — which is
+// the "unpriced, never under-priced" promise broken silently, a worse answer than
+// the coverage gap it replaced. A row whose above-272k rate exceeds what
+// pricing.BundleableRate allows is therefore dropped whole rather than carried at
+// its base rate; see ratesOf.
+//
+// STILL NOT EVERY VARIANT UPSTREAM PUBLISHES. _above_512k, the _above_1hr
+// cache-write premium, and the per-service-tier suffixes (_flex, _priority,
+// _batches, _decisions, including their _above_272k combinations) remain out of
+// scope — see pricing.Tier. Exact JSON tags are what keeps them out: a tag of
+// input_cost_per_token_above_272k_tokens does not match that field's _flex
+// sibling, so a suffix added upstream is ignored rather than silently flattened
+// into the tier it resembles.
+const (
+	contextThreshold200k = 200_000
+	contextThreshold272k = 272_000
+)
 
 // tokensPerMillion renders rates in the unit providers publish.
 const tokensPerMillion = 1_000_000
@@ -62,10 +97,20 @@ type modelInfo struct {
 	CacheRead  *float64 `json:"cache_read_input_token_cost"`
 	Output     *float64 `json:"output_cost_per_token"`
 
-	InputAbove      *float64 `json:"input_cost_per_token_above_200k_tokens"`
-	CacheWriteAbove *float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
-	CacheReadAbove  *float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
-	OutputAbove     *float64 `json:"output_cost_per_token_above_200k_tokens"`
+	// Anthropic's long-context tier.
+	InputAbove200      *float64 `json:"input_cost_per_token_above_200k_tokens"`
+	CacheWriteAbove200 *float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+	CacheReadAbove200  *float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
+	OutputAbove200     *float64 `json:"output_cost_per_token_above_200k_tokens"`
+
+	// OpenAI's. Named by their own breakpoint rather than sharing the fields
+	// above: the two are different rates at different prompt sizes, and folding
+	// them into one set would price a 250k-token OpenAI request at the premium
+	// it does not owe until 272k.
+	InputAbove272      *float64 `json:"input_cost_per_token_above_272k_tokens"`
+	CacheWriteAbove272 *float64 `json:"cache_creation_input_token_cost_above_272k_tokens"`
+	CacheReadAbove272  *float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
+	OutputAbove272     *float64 `json:"output_cost_per_token_above_272k_tokens"`
 }
 
 // Filter reduces a full price map to the first-party entries of the providers
@@ -105,7 +150,7 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 		keep[name] = body
 	}
 	if len(keep) == 0 {
-		return nil, fmt.Errorf("pricegen: no %s or %s entries in the price map", AnthropicProvider, OpenAIProvider)
+		return nil, fmt.Errorf("pricegen: no %s entries in the price map", BundledProviders())
 	}
 	if commit != "" {
 		stamp, err := json.Marshal(commit)
@@ -259,21 +304,31 @@ func ratesOf(mi modelInfo) (pricing.Rates, bool) {
 	set(pricing.TierCacheRead, mi.CacheRead)
 	set(pricing.TierOutput, mi.Output)
 
-	var th pricing.ContextThreshold
-	th.AbovePromptTokens = contextThreshold
-	setAbove := func(tier pricing.Tier, v *float64) {
-		if v != nil && *v > 0 {
-			th.Rate[tier], th.Set[tier] = *v, true
+	// One threshold per breakpoint in scope, ascending, and only for a breakpoint
+	// this row actually prices — a row carrying neither set contributes none, which
+	// is what keeps the common case a Thresholds-free table.
+	for _, bp := range []struct {
+		above                                int
+		input, cacheWrite, cacheRead, output *float64
+	}{
+		{contextThreshold200k, mi.InputAbove200, mi.CacheWriteAbove200, mi.CacheReadAbove200, mi.OutputAbove200},
+		{contextThreshold272k, mi.InputAbove272, mi.CacheWriteAbove272, mi.CacheReadAbove272, mi.OutputAbove272},
+	} {
+		th := pricing.ContextThreshold{AbovePromptTokens: bp.above}
+		setAbove := func(tier pricing.Tier, v *float64) {
+			if v != nil && *v > 0 {
+				th.Rate[tier], th.Set[tier] = *v, true
+			}
 		}
-	}
-	setAbove(pricing.TierInput, mi.InputAbove)
-	setAbove(pricing.TierCacheWrite, mi.CacheWriteAbove)
-	setAbove(pricing.TierCacheRead, mi.CacheReadAbove)
-	setAbove(pricing.TierOutput, mi.OutputAbove)
-	for _, s := range th.Set {
-		if s {
-			r.Thresholds = []pricing.ContextThreshold{th}
-			break
+		setAbove(pricing.TierInput, bp.input)
+		setAbove(pricing.TierCacheWrite, bp.cacheWrite)
+		setAbove(pricing.TierCacheRead, bp.cacheRead)
+		setAbove(pricing.TierOutput, bp.output)
+		for _, s := range th.Set {
+			if s {
+				r.Thresholds = append(r.Thresholds, th)
+				break
+			}
 		}
 	}
 	// A ROW THE COST PIPELINE WOULD REFUSE IS NOT EMITTED, on the rate alone and so
@@ -414,12 +469,23 @@ var bundledEntries = []Entry{
 		fmt.Fprintf(&b, "\t{Host: %q, Model: %q, Prov: ProvBundled, Rates: Rates{\n", e.Host, e.Model)
 		fmt.Fprintf(&b, "\t\tBase: %s,\n", renderFloats(e.Rates.Base))
 		fmt.Fprintf(&b, "\t\tSet:  %s,\n", renderBools(e.Rates.Set))
-		for _, th := range e.Rates.Thresholds {
-			b.WriteString("\t\tThresholds: []ContextThreshold{{\n")
-			fmt.Fprintf(&b, "\t\t\tAbovePromptTokens: %d,\n", th.AbovePromptTokens)
-			fmt.Fprintf(&b, "\t\t\tRate:              %s,\n", renderFloats(th.Rate))
-			fmt.Fprintf(&b, "\t\t\tSet:               %s,\n", renderBools(th.Set))
-			b.WriteString("\t\t}},\n")
+		// ONE Thresholds field holding every threshold, not one field per
+		// threshold. The loop used to open and close the slice literal on each
+		// pass, which is correct only while no row carries more than one
+		// breakpoint — a second would emit a duplicate `Thresholds:` key and
+		// format.Source below would refuse the file. That became reachable when
+		// OpenAI's 272k tier joined Anthropic's 200k one, so the shape is fixed
+		// here rather than left to fail on the first row that has both.
+		if len(e.Rates.Thresholds) > 0 {
+			b.WriteString("\t\tThresholds: []ContextThreshold{\n")
+			for _, th := range e.Rates.Thresholds {
+				b.WriteString("\t\t\t{\n")
+				fmt.Fprintf(&b, "\t\t\t\tAbovePromptTokens: %d,\n", th.AbovePromptTokens)
+				fmt.Fprintf(&b, "\t\t\t\tRate:              %s,\n", renderFloats(th.Rate))
+				fmt.Fprintf(&b, "\t\t\t\tSet:               %s,\n", renderBools(th.Set))
+				b.WriteString("\t\t\t},\n")
+			}
+			b.WriteString("\t\t},\n")
 		}
 		b.WriteString("\t}},\n")
 	}
