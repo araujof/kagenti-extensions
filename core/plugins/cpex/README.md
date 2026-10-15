@@ -172,11 +172,11 @@ typed extensions that CPEX policies read.
 | MCP `tools/call`, `prompts/get`, `resources/read`, result | `ContentPart` tool_call / prompt_request / resource_ref / tool_result | structured; rewritable on write-back |
 | MCP tool / prompt / resource name | `MetaExtension.{EntityType, EntityName}` | drives per-route dispatch |
 | Inference request messages | CMF text parts + `AgentExtension.Conversation.History` | drives `cmf.llm_input` |
-| Inference request tool output (Anthropic `tool_result` blocks, OpenAI chat `tool` messages) | CMF tool_result parts | read-only; APL `args` and CEL `args` on `llm:` routes read the text parts only |
+| Inference request tool output (Anthropic `tool_result` blocks, OpenAI chat `tool` messages) | CMF tool_result parts + `Extensions.Custom["tool_results"]`, `["tool_result_count"]` | read-only; APL and CEL on `llm:` routes read the custom keys (see below) |
 | Inference model | `MetaExtension.{EntityType: llm, EntityName}` + `LLMExtension.{ModelID, Provider}` | `llm:` routes; provider derived from model id |
 | Inference finish reason + token usage | `CompletionExtension.{StopReason, Tokens, Model}` | response phase |
 | A2A text parts | CMF text parts | role from phase |
-| A2A, MCP protocol methods (`tools/list`, `initialize`), unparsed traffic | `MetaExtension.{EntityType: http, EntityName: *}` | CPEX's global entity; `fallback_identification: none` sends no meta, which CPEX denies as `unidentified_request` |
+| A2A, MCP protocol methods (`tools/list`, `initialize`), unparsed traffic (with `synthetic_egress`, inbound only) | `MetaExtension.{EntityType: http, EntityName: *}` | CPEX's global entity; `fallback_identification: none` sends no meta, which CPEX denies as `unidentified_request` |
 | A2A session / task / message id | `AgentExtension.{SessionID, ConversationID}` + `ProvenanceExtension.MessageID` | |
 | Identity subject + scopes | `SecurityExtension.Subject.{ID, Roles}` | always mapped |
 | Identity auth method + curated claims | `SecurityExtension.AuthMethod`, `Subject.Claims` | issuer / audience / exp, not the raw claim map |
@@ -186,6 +186,25 @@ typed extensions that CPEX policies read.
 | Session id | `AgentExtension.SessionID` | from A2A natively or `X-Session-Id`; with `session_source: resolved`, the listener's session when an agent session header or the process chain named it |
 | HTTP headers | `HttpExtension.RequestHeaders` | Authorization and Cookie stripped |
 | `pctx.Extensions.Custom["cpex/<key>"]` | `Extensions.Custom["<key>"]` | only the `cpex/`-prefixed entries cross |
+
+Tool-result content parts are not visible to APL or CEL on an `llm:` route, so
+an inference request also carries its tool results in the custom extension:
+`custom.tool_result_count` (always set) and `custom.tool_results`, an object
+keyed by position (`"0"`, `"1"`, ...) because the attribute bag cannot hold a
+list of objects. Each entry has `tool_use_id` (empty for OpenAI chat),
+`content` (the first 8 KiB), `truncated` and `is_error`. They are policy input
+only, never recorded, and no other plugin can supply them. Guard on the count,
+since `custom.tool_results` is absent when there are none:
+
+```yaml
+- cel:
+    expr: "custom.tool_result_count == 0 || !custom.tool_results.exists(k, custom.tool_results[k].content.matches('AKIA[0-9A-Z]{16}'))"
+    on_deny: ["taint(secret, session)", "deny('secret in a tool result', 'secret_in_tool_result')"]
+```
+
+A CEL step allows when its expression is true and denies when it is false, so
+this step taints the session and denies the inference request together; a
+later `http_egress` route can then deny on `security.labels contains "secret"`.
 
 Caller identity lives in `SecurityExtension.Subject`. Policies read it from
 `security.subject`, not `agent.agent_id`. The `agent` slot models the agent's own

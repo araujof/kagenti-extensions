@@ -3,6 +3,7 @@ package cpex
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -311,4 +312,39 @@ func TestApplyInferenceRequestMod(t *testing.T) {
 			t.Fatalf("body = %s", pctx.Body)
 		}
 	})
+}
+
+func TestInferenceToolResultsCustom(t *testing.T) {
+	long := strings.Repeat("x", egressExcerptBytes+10)
+	inf := &pipeline.InferenceExtension{
+		Messages: []pipeline.InferenceMessage{
+			{Role: "user", Content: "hi"},
+			{Role: roleTool, Content: "openai result"},
+		},
+		ToolResults: []pipeline.InferenceToolResult{
+			{ToolUseID: "toolu_1", Content: "AKIAABCDEFGHIJKLMNOP"},
+			{ToolUseID: "toolu_2", Content: long, IsError: true},
+			{ToolUseID: "toolu_3"},
+		},
+	}
+	count, results := inferenceToolResultsCustom(inf)
+	if count != 3 {
+		t.Fatalf("count = %d, want 3", count)
+	}
+	want := map[string]any{
+		"0": map[string]any{"tool_use_id": "", "content": "openai result", "is_error": false, "truncated": false},
+		"1": map[string]any{"tool_use_id": "toolu_1", "content": "AKIAABCDEFGHIJKLMNOP", "is_error": false, "truncated": false},
+	}
+	for k, v := range want {
+		if !jsonEqual(results[k], v) {
+			t.Errorf("results[%s] = %v, want %v", k, results[k], v)
+		}
+	}
+	r2, _ := results["2"].(map[string]any)
+	if c, _ := r2["content"].(string); len(c) != egressExcerptBytes || r2["truncated"] != true || r2["is_error"] != true {
+		t.Fatalf("results[2] = %d bytes, %v", len(c), r2)
+	}
+	if count, results := inferenceToolResultsCustom(&pipeline.InferenceExtension{}); count != 0 || results != nil {
+		t.Fatalf("no tool results: %d %v", count, results)
+	}
 }

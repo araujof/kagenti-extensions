@@ -3,6 +3,7 @@ package cpex
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -281,4 +282,48 @@ func normalizeEmpty(v any) any {
 		}
 	}
 	return v
+}
+
+// Custom extension keys carrying an inference request's tool results.
+const (
+	customToolResults     = "tool_results"
+	customToolResultCount = "tool_result_count"
+)
+
+// inferenceToolResultsCustom returns an inference request's tool results
+// for the custom extension: an OpenAI chat message with role "tool" and
+// each Anthropic tool_result block with text, in that order, keyed by
+// position ("0", "1", ...) because CPEX's attribute bag cannot hold a list
+// of objects. Each carries tool_use_id, is_error, and its content cut to
+// egressExcerptBytes with truncated set when it was longer. results is nil
+// when there are none. This is policy input only and is never recorded.
+func inferenceToolResultsCustom(inf *pipeline.InferenceExtension) (count int, results map[string]any) {
+	if inf == nil {
+		return 0, nil
+	}
+	add := func(id, content string, isError bool) {
+		if content == "" {
+			return
+		}
+		excerpt, truncated := bodyExcerpt([]byte(content))
+		if results == nil {
+			results = map[string]any{}
+		}
+		results[strconv.Itoa(count)] = map[string]any{
+			"tool_use_id": id,
+			"content":     excerpt,
+			"is_error":    isError,
+			"truncated":   truncated,
+		}
+		count++
+	}
+	for _, m := range inf.Messages {
+		if m.Role == roleTool {
+			add("", m.Content, false)
+		}
+	}
+	for _, r := range inf.ToolResults {
+		add(r.ToolUseID, r.Content, r.IsError)
+	}
+	return count, results
 }
