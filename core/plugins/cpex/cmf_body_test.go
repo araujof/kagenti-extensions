@@ -735,15 +735,22 @@ func TestIsStreamingResponseGap_SSEBodyWithProtocolExtension(t *testing.T) {
 	}
 }
 
+// An inference stream of a known dialect is read; on a path no dialect
+// matches it cannot be, and fails closed.
 func TestIsStreamingResponseGap_InferenceSSE(t *testing.T) {
 	pctx := &pipeline.Context{
+		Path:         "/v1/chat/completions",
 		ResponseBody: []byte("data: {\"choices\":[{\"delta\":{}}]}\n\n"),
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{Model: "gpt-4"},
 		},
 	}
+	if isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("readable inference SSE reported as a gap")
+	}
+	pctx.Path = "/v1/other"
 	if !isStreamingResponseGap(pctx, true, 0) {
-		t.Fatal("expected streaming gap for inference SSE")
+		t.Fatal("expected streaming gap for inference SSE on an unknown path")
 	}
 }
 

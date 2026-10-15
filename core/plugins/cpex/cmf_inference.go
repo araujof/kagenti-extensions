@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 )
 
 // Inference (OpenAI chat/completions) body write-back. The cgo adapter
@@ -17,28 +18,61 @@ import (
 // tools, usage, …) survives untouched. Mirrors the MCP re-serializers in
 // cmf_body.go; kept tag-free so it's unit-tested under CGO_ENABLED=0.
 
-// inferenceResponseParts extracts the structured CMF content parts from a
-// non-streaming OpenAI chat/completions response body. Used on the
-// response phase, where cpex runs before inference-parser and so must
-// parse the body itself rather than read the not-yet-populated
-// inf.Completion / inf.ToolCalls (mirrors extractToolResultFromBody for
-// MCP).
-//
-// Emits an assistant text part per choice with string content (redactable
-// via cmf.llm_output) plus a tool_call part per tool call the model
-// emitted. Streaming (SSE) bodies don't parse as one JSON object and yield
-// nil — there's no structured content to redact, and the matching
-// write-back fails closed on SSE.
-func inferenceResponseParts(body []byte) []cmfPart {
+// inferenceResponse is what cpex reads from a buffered inference response.
+// Response hooks run in reverse pipeline order, so cpex runs before
+// inference-parser's OnResponse and reads the body itself.
+type inferenceResponse struct {
+	// parts are the CMF content parts: completion text, then tool calls.
+	parts []cmfPart
+	// calls are the tool calls as the model sent them, arguments unparsed.
+	calls []pipeline.InferenceToolCall
+	// decoded reports that the body was read as a response of its dialect.
+	decoded bool
+	// rewritable reports that a changed completion can be written back:
+	// a non-streaming OpenAI chat response. Elsewhere only deny applies.
+	rewritable bool
+}
+
+// readInferenceResponse reads pctx.ResponseBody. A non-streaming OpenAI
+// chat response yields a text part per choice with string content plus its
+// tool calls; every other dialect and every stream is read with
+// inference-parser's own normalizer, so a streamed tool call is the one it
+// assembles, and yields the completion text and the tool calls.
+func readInferenceResponse(pctx *pipeline.Context) inferenceResponse {
+	body := pctx.ResponseBody
 	if len(body) == 0 {
-		return nil
+		return inferenceResponse{}
 	}
+	if isOpenAIDialect(pctx.Path) {
+		if r, ok := openAIChatResponse(body); ok {
+			return r
+		}
+	}
+	ext := inferenceparser.ParseResponse(pctx.Path, body)
+	if ext == nil || (!ext.StreamedResponse && !json.Valid(body)) {
+		return inferenceResponse{}
+	}
+	r := inferenceResponse{decoded: true, calls: ext.ToolCalls}
+	if ext.Completion != "" {
+		r.parts = append(r.parts, cmfPart{Kind: cmfPartText, Text: ext.Completion})
+	}
+	for _, tc := range ext.ToolCalls {
+		if tc.Name != "" {
+			r.parts = append(r.parts, toolCallPart(tc))
+		}
+	}
+	return r
+}
+
+// openAIChatResponse reads a non-streaming OpenAI chat/completions body,
+// which ok reports it is.
+func openAIChatResponse(body []byte) (r inferenceResponse, ok bool) {
 	var envelope map[string]any
 	if json.Unmarshal(body, &envelope) != nil {
-		return nil
+		return r, false
 	}
+	r.decoded, r.rewritable = true, true
 	choices, _ := envelope["choices"].([]any)
-	var parts []cmfPart
 	for _, ch := range choices {
 		choice, ok := ch.(map[string]any)
 		if !ok {
@@ -46,10 +80,15 @@ func inferenceResponseParts(body []byte) []cmfPart {
 		}
 		msg, ok := choice["message"].(map[string]any)
 		if !ok {
+			// A legacy completions choice: readable, not rewritable.
+			if c, _ := choice["text"].(string); c != "" {
+				r.parts = append(r.parts, cmfPart{Kind: cmfPartText, Text: c})
+				r.rewritable = false
+			}
 			continue
 		}
 		if c, ok := msg["content"].(string); ok && c != "" {
-			parts = append(parts, cmfPart{Kind: cmfPartText, Text: c})
+			r.parts = append(r.parts, cmfPart{Kind: cmfPartText, Text: c})
 		}
 		toolCalls, _ := msg["tool_calls"].([]any)
 		for _, t := range toolCalls {
@@ -62,17 +101,23 @@ func inferenceResponseParts(body []byte) []cmfPart {
 			if name == "" {
 				continue
 			}
-			argsStr, _ := fn["arguments"].(string)
+			args, _ := fn["arguments"].(string)
 			id, _ := to["id"].(string)
-			parts = append(parts, cmfPart{
-				Kind:          cmfPartToolCall,
-				Name:          name,
-				Arguments:     parseToolArgs(argsStr),
-				CorrelationID: id,
-			})
+			tc := pipeline.InferenceToolCall{ID: id, Name: name, Arguments: args}
+			r.calls = append(r.calls, tc)
+			r.parts = append(r.parts, toolCallPart(tc))
 		}
 	}
-	return parts
+	return r, true
+}
+
+func toolCallPart(tc pipeline.InferenceToolCall) cmfPart {
+	return cmfPart{
+		Kind:          cmfPartToolCall,
+		Name:          tc.Name,
+		Arguments:     parseToolArgs(tc.Arguments),
+		CorrelationID: tc.ID,
+	}
 }
 
 // applyInferenceRequestBodyMod rewrites pctx.Body — an OpenAI-style
@@ -234,7 +279,7 @@ func applyInferenceResponseBodyMod(pctx *pipeline.Context, newCompletion string)
 func applyInferenceRequestMod(pctx *pipeline.Context, texts []string, toolResults []any) (mutated bool, err error) {
 	var sentTexts []string
 	var sentResults []any
-	for _, part := range inferenceToCMFParts(pctx.Extensions.Inference, false, nil) {
+	for _, part := range inferenceToCMFParts(pctx.Extensions.Inference) {
 		switch part.Kind {
 		case cmfPartText:
 			sentTexts = append(sentTexts, part.Text)
@@ -256,12 +301,15 @@ func applyInferenceRequestMod(pctx *pipeline.Context, texts []string, toolResult
 }
 
 // applyInferenceResponseMod applies the content parts CPEX returned for an
-// inference response, compared with what inferenceResponseParts sent. No
-// change is a no-op. A changed completion text is rewritten; any other
-// change (a tool call altered, added or removed, a text part removed) has
-// no re-serializer and is an error the caller fails closed on.
+// inference response, compared with what readInferenceResponse sent. No
+// change is a no-op. A changed completion text is rewritten on a
+// non-streaming OpenAI chat response; any other change (a tool call
+// altered, added or removed, a text part removed, or any change to another
+// dialect or a stream) has no re-serializer and is an error the caller
+// fails closed on.
 func applyInferenceResponseMod(pctx *pipeline.Context, returned []cmfPart) (mutated bool, err error) {
-	sentTexts, sentCalls := splitResponseParts(inferenceResponseParts(pctx.ResponseBody))
+	sent := readInferenceResponse(pctx)
+	sentTexts, sentCalls := splitResponseParts(sent.parts)
 	texts, calls := splitResponseParts(returned)
 	callsChanged := !jsonEqual(sentCalls, calls)
 	if !callsChanged && jsonEqual(sentTexts, texts) {
@@ -269,6 +317,9 @@ func applyInferenceResponseMod(pctx *pipeline.Context, returned []cmfPart) (muta
 	}
 	if callsChanged {
 		return false, fmt.Errorf("tool call rewrite on an inference response is not supported")
+	}
+	if !sent.rewritable {
+		return false, fmt.Errorf("body modification is supported on non-streaming OpenAI chat responses only, not %q", pctx.Path)
 	}
 	if len(texts) != len(sentTexts) || len(texts) != 1 {
 		return false, fmt.Errorf("inference response sent %d text parts, CPEX returned %d; only a single completion is rewritable",
@@ -320,10 +371,13 @@ func normalizeEmpty(v any) any {
 	return v
 }
 
-// Custom extension keys carrying an inference request's tool results.
+// Custom extension keys carrying an inference request's tool results and
+// an inference response's tool calls.
 const (
 	customToolResults     = "tool_results"
 	customToolResultCount = "tool_result_count"
+	customToolCalls       = "tool_calls"
+	customToolCallCount   = "tool_call_count"
 )
 
 // inferenceToolResultsCustom returns an inference request's tool results
@@ -362,4 +416,27 @@ func inferenceToolResultsCustom(inf *pipeline.InferenceExtension) (count int, re
 		add(r.ToolUseID, r.Content, r.IsError)
 	}
 	return count, results
+}
+
+// inferenceToolCallsCustom returns an inference response's tool calls for
+// the custom extension, keyed by position as inferenceToolResultsCustom
+// keys results: CEL on an llm route reads neither tool-call parts nor more
+// than the first one's arguments. Each carries id, name, and arguments as
+// the JSON text the model sent, cut to egressExcerptBytes with truncated
+// set when it was longer. This is policy input only and is never recorded.
+func inferenceToolCallsCustom(calls []pipeline.InferenceToolCall) (count int, out map[string]any) {
+	for _, tc := range calls {
+		args, truncated := bodyExcerpt([]byte(tc.Arguments))
+		if out == nil {
+			out = map[string]any{}
+		}
+		out[strconv.Itoa(count)] = map[string]any{
+			"id":        tc.ID,
+			"name":      tc.Name,
+			"arguments": args,
+			"truncated": truncated,
+		}
+		count++
+	}
+	return count, out
 }

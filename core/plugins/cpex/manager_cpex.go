@@ -831,16 +831,26 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 	// Request tool results, for policies on llm routes: tool-result content
 	// parts are not visible to APL or CEL there. Set after the passthrough
 	// so no other plugin can supply them.
-	if inf := pctx.Extensions.Inference; inf != nil && !isResponse && ext.Meta != nil && ext.Meta.EntityType == entityTypeLLM {
+	// Response tool calls likewise: APL reads only the first tool call's
+	// arguments.
+	if inf := pctx.Extensions.Inference; inf != nil && ext.Meta != nil && ext.Meta.EntityType == entityTypeLLM {
 		if ext.Custom == nil {
 			ext.Custom = map[string]any{}
 		}
-		count, results := inferenceToolResultsCustom(inf)
-		ext.Custom[customToolResultCount] = count
-		if results != nil {
-			ext.Custom[customToolResults] = results
+		countKey, listKey := customToolResultCount, customToolResults
+		var count int
+		var list map[string]any
+		if isResponse {
+			countKey, listKey = customToolCallCount, customToolCalls
+			count, list = inferenceToolCallsCustom(readInferenceResponse(pctx).calls)
 		} else {
-			delete(ext.Custom, customToolResults)
+			count, list = inferenceToolResultsCustom(inf)
+		}
+		ext.Custom[countKey] = count
+		if list != nil {
+			ext.Custom[listKey] = list
+		} else {
+			delete(ext.Custom, listKey)
 		}
 	}
 

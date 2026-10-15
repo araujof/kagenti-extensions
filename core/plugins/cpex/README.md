@@ -221,7 +221,8 @@ typed extensions that CPEX policies read.
 | MCP `tools/call`, `prompts/get`, `resources/read`, result | `ContentPart` tool_call / prompt_request / resource_ref / tool_result | structured; rewritable on write-back |
 | MCP tool / prompt / resource name | `MetaExtension.{EntityType, EntityName}` | drives per-route dispatch |
 | Inference request messages | CMF text parts + `AgentExtension.Conversation.History` | drives `cmf.llm_input` |
-| Inference request tool output (Anthropic `tool_result` blocks, OpenAI chat `tool` messages) | CMF tool_result parts + `Extensions.Custom["tool_results"]`, `["tool_result_count"]` | read-only; APL and CEL on `llm:` routes read the custom keys (see below) |
+| Inference request tool output (Anthropic `tool_result` blocks, OpenAI chat `tool` messages, Responses-API `function_call_output` items) | CMF tool_result parts + `Extensions.Custom["tool_results"]`, `["tool_result_count"]` | read-only; APL and CEL on `llm:` routes read the custom keys (see below) |
+| Inference response completion and tool calls (Anthropic Messages, OpenAI chat, Responses API; JSON or SSE) | CMF text + tool_call parts + `Extensions.Custom["tool_calls"]`, `["tool_call_count"]` | read with inference-parser's normalizer, so a streamed call is the assembled one; deny only, except a non-streaming OpenAI chat completion's text |
 | Inference model | `MetaExtension.{EntityType: llm, EntityName}` + `LLMExtension.{ModelID, Provider}` | `llm:` routes; provider derived from model id |
 | Inference finish reason + token usage | `CompletionExtension.{StopReason, Tokens, Model}` | response phase |
 | A2A text parts | CMF text parts | role from phase |
@@ -258,8 +259,23 @@ routes:
             on_deny: ["taint(secret, session)", "deny('secret in a tool result', 'secret_in_tool_result')"]
 ```
 
+A response carries its tool calls the same way, for `cmf.llm_output`:
+`custom.tool_call_count` and `custom.tool_calls`, each entry with `id`, `name`,
+`arguments` (the JSON text the model sent, first 8 KiB) and `truncated`. APL's
+`args.*` there sees only the first call's arguments. A response that cannot be
+read as its dialect fails closed; one read cleanly with no parts (an error
+body, an empty completion) does not.
+
+```yaml
+      post_invocation:
+        - cel:
+            expr: "!('secret' in security.labels) || custom.tool_call_count == 0 || !custom.tool_calls.exists(k, custom.tool_calls[k].arguments.matches(net))"
+            net: "\\b(curl|wget|nc)\\b"
+            on_deny: ["deny('tool call from a tainted session', 'tainted_tool_call')"]
+```
+
 A CEL step allows when its expression is true and denies when it is false, so
-this step taints the session and denies the inference request together; a
+the request-side step taints the session and denies the inference request together; a
 later `http_egress` route can then deny on `security.labels contains "secret"`.
 To taint without blocking the request, list the code in the plugin's
 `observe_codes` (`observe_codes: [secret_in_tool_result]`): the deny is
@@ -446,8 +462,8 @@ vocabulary:
 - **modify**: policy changed the forwarded body or headers. Changes are
   applied, the request continues. A body rewrite of an inference request is
   supported on OpenAI chat requests with a `messages` array only, and of an
-  inference response on a single non-streaming completion's text only; one on
-  any other dialect or shape, a changed tool result or tool call, or a removed
+  inference response on a single non-streaming OpenAI chat completion's text
+  only; one on any other dialect or shape, a stream, a changed tool result or tool call, or a removed
   part is an error that `fail_open` governs. Request headers are written back as a diff against
   those sent to CPEX, so an assertion can strip or replace a header. Headers
   never sent (Cookie, API keys), the hop-by-hop and framing headers (`host`,

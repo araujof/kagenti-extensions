@@ -16,14 +16,21 @@ import (
 )
 
 // isStreamingResponseGap reports whether a response-phase invocation has a
-// non-empty body that yielded zero structured content parts — i.e. a
-// streaming (SSE) body the policy engine can't inspect. Callers use this
-// to fail closed rather than silently allowing unredacted content through.
+// non-empty body the policy engine can't inspect: an MCP or A2A response
+// that yielded zero content parts (a stream), or an inference response that
+// could not be read as its dialect. An inference response read cleanly may
+// carry no parts (an empty completion, an error body). Callers fail closed.
 func isStreamingResponseGap(pctx *pipeline.Context, isResponse bool, cmfPartCount int) bool {
-	if !isResponse || cmfPartCount > 0 || len(pctx.ResponseBody) == 0 {
+	if !isResponse || len(pctx.ResponseBody) == 0 {
 		return false
 	}
-	return pctx.Extensions.MCP != nil || pctx.Extensions.Inference != nil || pctx.Extensions.A2A != nil
+	if pctx.Extensions.MCP == nil && pctx.Extensions.Inference != nil {
+		return !readInferenceResponse(pctx).decoded
+	}
+	if cmfPartCount > 0 {
+		return false
+	}
+	return pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil
 }
 
 // Values of the session_source config key.
@@ -433,8 +440,10 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cm
 		// Inference routes by model (`- llm: <model>`). Only structured
 		// text/tool parts cross — no opaque body part. Model persists from
 		// the request phase, so entity routing works on responses too.
-		return inferenceToCMFParts(pctx.Extensions.Inference, isResponse, pctx.ResponseBody),
-			entityTypeLLM, pctx.Extensions.Inference.Model
+		if isResponse {
+			return readInferenceResponse(pctx).parts, entityTypeLLM, pctx.Extensions.Inference.Model
+		}
+		return inferenceToCMFParts(pctx.Extensions.Inference), entityTypeLLM, pctx.Extensions.Inference.Model
 
 	case pctx.Extensions.A2A != nil:
 		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody), "", ""
@@ -448,31 +457,23 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cm
 	}
 }
 
-// inferenceToCMFParts maps an InferenceExtension onto ordered CMF content
-// parts for the given phase.
+// inferenceToCMFParts maps an inference request's InferenceExtension onto
+// ordered CMF content parts: one text part per request message with
+// non-empty string content, in message order (inference-parser populated
+// the extension before cpex on the forward request pass). Flattening the
+// whole prompt to text parts makes every message redactable via
+// cmf.llm_input, and the strict "non-empty string content, in order" rule
+// is the contract applyInferenceRequestBodyMod relies on to map redacted
+// text back onto the right body message positionally. Tool output becomes
+// tool-result parts instead: an OpenAI chat message with role "tool", and
+// each Anthropic tool_result block or Responses-API function_call_output
+// item the parser kept in inf.ToolResults. A result with no text (an image
+// block only) yields no part.
 //
-// Request phase: one text part per request message with non-empty string
-// content, in message order (read from the extension, which inference-parser
-// populated before cpex on the forward request pass). Flattening the whole
-// prompt to text parts makes every message redactable via cmf.llm_input,
-// and the strict "non-empty string content, in order" rule is the contract
-// applyInferenceRequestBodyMod relies on to map redacted text back onto the
-// right body message positionally. Tool output becomes tool-result parts
-// instead: an OpenAI chat message with role "tool", and each Anthropic
-// tool_result block the parser kept in inf.ToolResults. A result with no
-// text (an image block only) yields no part.
-//
-// Response phase: parsed from responseBody, NOT from inf.Completion.
-// Response hooks run in reverse pipeline order, so cpex executes BEFORE
-// inference-parser's OnResponse and inf.Completion isn't populated yet —
-// exactly the situation mcpToCMFPart handles for tool results. See
-// inferenceResponseParts.
-func inferenceToCMFParts(inf *pipeline.InferenceExtension, isResponse bool, responseBody []byte) []cmfPart {
+// The response is read from the body instead (readInferenceResponse).
+func inferenceToCMFParts(inf *pipeline.InferenceExtension) []cmfPart {
 	if inf == nil {
 		return nil
-	}
-	if isResponse {
-		return inferenceResponseParts(responseBody)
 	}
 	var parts []cmfPart
 	for _, m := range inf.Messages {
