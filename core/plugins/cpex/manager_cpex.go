@@ -21,7 +21,8 @@ import (
 // Lives behind //go:build cpex; the matching stub in manager_stub.go
 // handles the !cpex case.
 type cpexManager struct {
-	mgr *rcpex.PolicyEngine
+	mgr  *rcpex.PolicyEngine
+	opts ManagerOptions
 }
 
 // NewManager constructs a CPEX-backed Manager. Tokio worker pool size
@@ -45,7 +46,7 @@ func NewManager(opts ManagerOptions) (Manager, error) {
 		mgr.Shutdown()
 		return nil, fmt.Errorf("cpex enable APL: %w", err)
 	}
-	return &cpexManager{mgr: mgr}, nil
+	return &cpexManager{mgr: mgr, opts: opts}, nil
 }
 
 func (c *cpexManager) LoadConfig(yaml string) error {
@@ -114,7 +115,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	// — Invoke always runs inside OnRequest/OnResponse), which falls
 	// through to the request phase.
 	isResponse := pctx.CurrentPhase() == pipeline.InvocationPhaseResponse
-	payload, ext := buildCMF(pctx, isResponse)
+	payload, ext := buildCMF(pctx, isResponse, c.opts)
 
 	// Streaming-response guard: when we're on the response phase, the
 	// body is non-empty, a protocol parser claimed this traffic, yet the
@@ -590,7 +591,7 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 // AgentExtension models the agent's own execution/session context. This is
 // the spec-correct split (matches OPA + the CMF spec) and means policies
 // must read caller identity from security.subject, not agent.agent_id.
-func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *rcpex.Extensions) {
+func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcpex.MessagePayload, *rcpex.Extensions) {
 	// Phase drives the CMF role. Per-message roles (for multi-turn
 	// inference) are carried separately in AgentExtension.Conversation.
 	role := "user"
@@ -607,13 +608,12 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 
 	ext := &rcpex.Extensions{}
 
-	// Stamp the entity coordinates so cpex-core's route resolver
-	// (filter_entries_by_route) dispatches the per-entity APL policy
-	// handlers — require/Cedar/delegate/field-redaction. Without meta,
-	// only always-on global plugins fire and the route's deny gates are
-	// silently skipped. Entity is per-tool for MCP, per-model for
-	// inference, per-method for A2A (see pctxToCMFParts).
-	if entityType != "" && entityName != "" {
+	// Stamp the entity coordinates CPEX selects a route by. The same
+	// Extensions reach identity.resolve inside InvokeResolved, so the
+	// route's authentication list applies too. Traffic that names no
+	// entity takes the fallback identification (see identification).
+	entityType, entityName = identification(entityType, entityName, opts.FallbackIdentification)
+	if entityType != "" {
 		ext.Meta = &rcpex.MetaExtension{EntityType: entityType, EntityName: entityName}
 	}
 

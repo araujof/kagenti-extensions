@@ -62,6 +62,10 @@ type ManagerOptions struct {
 	// WorkerThreads sets CPEX's tokio worker pool size. 0 = auto
 	// (CPEX picks based on CPU count).
 	WorkerThreads int
+
+	// FallbackIdentification is the validated fallback_identification
+	// config value; see cpexConfig.
+	FallbackIdentification string
 }
 
 // NewManager is defined in one of two build-tag-gated files:

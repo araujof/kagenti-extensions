@@ -185,7 +185,10 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	if factory == nil {
 		factory = NewManager
 	}
-	mgr, err := factory(ManagerOptions{WorkerThreads: c.WorkerThreads})
+	mgr, err := factory(ManagerOptions{
+		WorkerThreads:          c.WorkerThreads,
+		FallbackIdentification: c.FallbackIdentification,
+	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces
 		// here with a clear "wrong binary" message. Pipeline.Build

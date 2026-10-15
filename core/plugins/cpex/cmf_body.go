@@ -149,12 +149,8 @@ func mcpToCMFPart(mcp *pipeline.MCPExtension, isResponse bool, requestBody, resp
 }
 
 // cmfEntity maps a cmfPart to the (entity_type, entity_name) pair CPEX's
-// route resolver keys on. cpex-core only dispatches a route's APL policy
-// handlers (require / cedar / delegate / field-redaction) when
-// Extensions.meta carries BOTH entity_type and entity_name (see
-// crates/cpex-core/src/manager.rs filter_entries_by_route); without them
-// the per-tool gates never fire and only always-on global plugins run.
-// caller leaves meta unset so non-action traffic isn't force-routed.
+// route resolver keys on. Parts that name no entity (protocol mechanics,
+// opaque text) return ("", "") and are identified by identification.
 func cmfEntity(part cmfPart) (entityType, entityName string) {
 	switch part.Kind {
 	case cmfPartToolCall, cmfPartToolResult:
@@ -168,13 +164,47 @@ func cmfEntity(part cmfPart) (entityType, entityName string) {
 	}
 }
 
+// Entity coordinates for requests that name no tool, prompt, resource or
+// model. PPE reserves http/* for an entity-less request: it matches `http:`
+// routes by path when the config declares them and otherwise falls back to
+// the global policy. Without any meta, CPEX 0.3.0 denies the request as
+// unidentified_request whenever the config declares a policy.
+const (
+	entityTypeLLM    = "llm"
+	globalEntityType = "http"
+	globalEntityName = "*"
+)
+
+// Values of the fallback_identification config key.
+const (
+	fallbackGlobal = "global"
+	fallbackNone   = "none"
+)
+
+// identification returns the meta coordinates for a request: the parsed
+// entity when there is one, otherwise the global identification unless the
+// fallback is "none", in which case it returns ("", "") and the request
+// carries no meta.
+func identification(entityType, entityName, fallback string) (string, string) {
+	if entityType != "" && entityName != "" {
+		return entityType, entityName
+	}
+	if fallback == fallbackNone {
+		return "", ""
+	}
+	return globalEntityType, globalEntityName
+}
+
 // pctxToCMFParts is the top-level protocol selector: it turns whichever
 // protocol extension is populated into ordered CMF content parts plus the
 // (entity_type, entity_name) routing coordinates. Precedence MCP →
 // inference → A2A mirrors the priority order parsers populate in, and any
 // unpopulated case falls back to a single opaque-text part carrying the
-// raw body — preserving pre-structured-mapping behavior for traffic no
-// parser claimed (control-plane RPCs, unknown formats).
+// raw body.
+//
+// Only MCP tool/prompt/resource calls and inference name an entity; A2A,
+// MCP protocol mechanics and unparsed traffic return ("", "") and take the
+// fallback identification (see identification).
 //
 // Splitting this from the cgo adapter keeps the MCP/inference/A2A → CMF
 // decision unit-testable under CGO_ENABLED=0; manager_cpex.go converts the
@@ -188,18 +218,14 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, e
 		return []cmfPart{part}, et, en
 
 	case pctx.Extensions.Inference != nil:
-		// Inference is always an action; route by model so operators can
-		// scope per-route APL gates with `- model: <name>`. Only structured
+		// Inference routes by model (`- llm: <model>`). Only structured
 		// text/tool parts cross — no opaque body part. Model persists from
 		// the request phase, so entity routing works on responses too.
 		return inferenceToCMFParts(pctx.Extensions.Inference, isResponse, pctx.ResponseBody),
-			"model", pctx.Extensions.Inference.Model
+			entityTypeLLM, pctx.Extensions.Inference.Model
 
 	case pctx.Extensions.A2A != nil:
-		// Route A2A by its JSON-RPC method (message/send, message/stream),
-		// which persists from the request phase.
-		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody),
-			"a2a_method", pctx.Extensions.A2A.Method
+		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody), "", ""
 
 	default:
 		body := pctx.Body

@@ -78,6 +78,17 @@ type cpexConfig struct {
 	// own. Uses rossoctl's shared bypass package so semantics match
 	// jwt-validation, ibac, etc.
 	BypassPaths []string `json:"bypass_paths" description:"URL path globs whose requests skip CPEX. Defaults to /healthz, /readyz, /livez, /.well-known/*."`
+
+	// FallbackIdentification decides how a request that names no tool,
+	// prompt, resource or model is identified to CPEX: A2A, MCP protocol
+	// methods (tools/list, initialize) and unparsed traffic.
+	//
+	//   global (default) — CPEX's global entity (http/*), so `http:`
+	//                      routes and the global policy govern it.
+	//   none             — no identification; CPEX denies the request as
+	//                      unidentified_request when the config declares
+	//                      any policy.
+	FallbackIdentification string `json:"fallback_identification" default:"global" description:"Identification for requests with no named entity: global (CPEX's http/* entity) or none (CPEX denies them as unidentified)."`
 }
 
 // hooksConfig declares which CPEX hooks the AuthBridge plugin
@@ -117,6 +128,9 @@ var defaultBypassHosts = []string{
 // operator who genuinely wants empty bypass lists must opt out
 // with `bypass_hosts: []` / `bypass_paths: []`.
 func (c *cpexConfig) applyDefaults() {
+	if c.FallbackIdentification == "" {
+		c.FallbackIdentification = fallbackGlobal
+	}
 	if c.BypassHosts == nil {
 		c.BypassHosts = append([]string(nil), defaultBypassHosts...)
 	}
@@ -135,6 +149,12 @@ func (c *cpexConfig) applyDefaults() {
 func (c *cpexConfig) validate() error {
 	if c.Config != "" && c.ConfigFile != "" {
 		return errors.New("`config` and `config_file` are mutually exclusive; set at most one")
+	}
+	switch c.FallbackIdentification {
+	case fallbackGlobal, fallbackNone:
+	default:
+		return fmt.Errorf("fallback_identification must be %q or %q, got %q",
+			fallbackGlobal, fallbackNone, c.FallbackIdentification)
 	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must be >= 0, got %d", c.WorkerThreads)

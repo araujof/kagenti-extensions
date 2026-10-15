@@ -516,6 +516,42 @@ func TestCMFEntity(t *testing.T) {
 	}
 }
 
+func TestIdentification(t *testing.T) {
+	cases := []struct {
+		name               string
+		pctx               *pipeline.Context
+		fallback           string
+		wantType, wantName string
+	}{
+		{"tool call", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/call", Params: map[string]any{"name": "get_compensation"}}}},
+			"", "tool", "get_compensation"},
+		{"tools/list", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/list"}}}, "", "http", "*"},
+		{"initialize", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "initialize"}}}, fallbackGlobal, "http", "*"},
+		{"inference", &pipeline.Context{Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{
+			Model: "claude-sonnet-4"}}}, "", "llm", "claude-sonnet-4"},
+		{"inference without model", &pipeline.Context{Extensions: pipeline.Extensions{
+			Inference: &pipeline.InferenceExtension{}}}, "", "http", "*"},
+		{"a2a", &pipeline.Context{Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{
+			Method: "message/send"}}}, "", "http", "*"},
+		{"unparsed", &pipeline.Context{Body: []byte("x")}, "", "http", "*"},
+		{"unparsed, fallback none", &pipeline.Context{Body: []byte("x")}, fallbackNone, "", ""},
+		{"tool call, fallback none", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/call", Params: map[string]any{"name": "t"}}}}, fallbackNone, "tool", "t"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, et, en := pctxToCMFParts(tc.pctx, false)
+			et, en = identification(et, en, tc.fallback)
+			if et != tc.wantType || en != tc.wantName {
+				t.Errorf("identification = (%q,%q), want (%q,%q)", et, en, tc.wantType, tc.wantName)
+			}
+		})
+	}
+}
+
 // --- stringifyRPCID ---
 
 func TestStringifyRPCID(t *testing.T) {
@@ -566,7 +602,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 		if len(parts) != 1 || parts[0].Text != "hi" {
 			t.Fatalf("inference parts: %+v", parts)
 		}
-		if et != "model" || en != "gpt-4o" {
+		if et != "llm" || en != "gpt-4o" {
 			t.Fatalf("inference entity = (%q,%q)", et, en)
 		}
 	})
@@ -582,8 +618,8 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 		if len(parts) != 1 || parts[0].Text != "yo" {
 			t.Fatalf("a2a parts: %+v", parts)
 		}
-		if et != "a2a_method" || en != "message/send" {
-			t.Fatalf("a2a entity = (%q,%q)", et, en)
+		if et != "" || en != "" {
+			t.Fatalf("a2a should name no entity, got (%q,%q)", et, en)
 		}
 	})
 

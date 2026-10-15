@@ -172,10 +172,10 @@ typed extensions that CPEX policies read.
 | MCP `tools/call`, `prompts/get`, `resources/read`, result | `ContentPart` tool_call / prompt_request / resource_ref / tool_result | structured; rewritable on write-back |
 | MCP tool / prompt / resource name | `MetaExtension.{EntityType, EntityName}` | drives per-route dispatch |
 | Inference request messages | CMF text parts + `AgentExtension.Conversation.History` | drives `cmf.llm_input` |
-| Inference model | `LLMExtension.{ModelID, Provider}` | provider derived from model id |
+| Inference model | `MetaExtension.{EntityType: llm, EntityName}` + `LLMExtension.{ModelID, Provider}` | `llm:` routes; provider derived from model id |
 | Inference finish reason + token usage | `CompletionExtension.{StopReason, Tokens, Model}` | response phase |
 | A2A text parts | CMF text parts | role from phase |
-| A2A method | `MetaExtension.{EntityType: a2a_method, EntityName}` | drives per-route dispatch |
+| A2A, MCP protocol methods (`tools/list`, `initialize`), unparsed traffic | `MetaExtension.{EntityType: http, EntityName: *}` | CPEX's global entity; `fallback_identification: none` sends no meta, which CPEX denies as `unidentified_request` |
 | A2A session / task / message id | `AgentExtension.{SessionID, ConversationID}` + `ProvenanceExtension.MessageID` | |
 | Identity subject + scopes | `SecurityExtension.Subject.{ID, Roles}` | always mapped |
 | Identity auth method + curated claims | `SecurityExtension.AuthMethod`, `Subject.Claims` | issuer / audience / exp, not the raw claim map |
@@ -243,6 +243,7 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `worker_threads` | `0` | CPEX tokio worker pool size; 0 lets CPEX pick |
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
+| `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
 inert. Configure succeeds and both phases return continue. `config` and

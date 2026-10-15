@@ -157,6 +157,7 @@ plugins:
 | `worker_threads` | int | `0` | Size of CPEX's tokio worker pool; `0` lets CPEX choose. |
 | `bypass_hosts` | `[]string` | Keycloak, SPIRE, observability | Host globs that skip CPEX, on outbound traffic only. Setting the list replaces the default rather than extending it. See [Bypass list curation](#bypass-list-curation). |
 | `bypass_paths` | `[]string` | `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*` | URL path globs that skip CPEX in both directions. Setting the list replaces the default. |
+| `fallback_identification` | string | `global` | How a request naming no tool, prompt, resource or model (A2A, MCP `tools/list` and `initialize`, unparsed traffic) is identified: `global` sends CPEX's global entity (`http`/`*`), so `http:` routes and the global policy govern it; `none` sends no identification, which CPEX denies as `unidentified_request` when the config declares any policy. Inference requests are identified as `llm`/<model>. |
 
 A `cpex` entry with no hooks and no CPEX YAML is valid and inert, so the
 plugin can be installed before its policy ships.

@@ -89,10 +89,16 @@ func newEngineManager(t *testing.T, opts ...rcpex.APLOption) Manager {
 // policy as its CPEX config, firing cmf.tool_pre_invoke on requests.
 func enginePlugin(t *testing.T, mgr Manager, policy string) *CPEX {
 	t.Helper()
+	return enginePluginHook(t, mgr, policy, HookToolPreInvoke)
+}
+
+// enginePluginHook is enginePlugin firing hook on requests.
+func enginePluginHook(t *testing.T, mgr Manager, policy, hook string) *CPEX {
+	t.Helper()
 	p := NewCPEX()
 	p.newManager = func(ManagerOptions) (Manager, error) { return mgr, nil }
 	raw, err := json.Marshal(map[string]any{
-		"hooks":  map[string]any{"on_request": []string{"cmf.tool_pre_invoke"}},
+		"hooks":  map[string]any{"on_request": []string{hook}},
 		"config": policy,
 	})
 	if err != nil {
@@ -199,7 +205,7 @@ func TestBuildCMFThisWorkload(t *testing.T) {
 		WorkloadID:  "spiffe://example.org/ns/team1/sa/agent",
 		TrustDomain: "example.org",
 	}
-	_, ext := buildCMF(pctx, false)
+	_, ext := buildCMF(pctx, false, ManagerOptions{})
 	raw, err := msgpack.Marshal(ext)
 	if err != nil {
 		t.Fatal(err)

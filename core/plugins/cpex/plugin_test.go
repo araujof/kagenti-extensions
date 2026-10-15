@@ -165,6 +165,30 @@ func TestConfigure_PassesWorkerThreadsToFactory(t *testing.T) {
 	}
 }
 
+func TestConfigure_FallbackIdentification(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{}`:                                   fallbackGlobal,
+		`{"fallback_identification":"none"}`:   fallbackNone,
+		`{"fallback_identification":"global"}`: fallbackGlobal,
+	} {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", raw, err)
+		}
+		if seen.FallbackIdentification != want {
+			t.Errorf("Configure(%s): FallbackIdentification = %q, want %q", raw, seen.FallbackIdentification, want)
+		}
+	}
+	if err := setupFake(&FakeManager{}).Configure([]byte(`{"fallback_identification":"tool"}`)); err == nil {
+		t.Fatal("Configure: expected error for unknown fallback_identification")
+	}
+}
+
 func TestConfigure_RejectsWildcardBypassHost(t *testing.T) {
 	p := setupFake(&FakeManager{})
 	err := p.Configure([]byte(`{"bypass_hosts":["*"]}`))
@@ -286,6 +310,7 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"hooks", "config", "config_file",
 		"fail_open", "worker_threads",
 		"bypass_hosts", "bypass_paths",
+		"fallback_identification",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)
