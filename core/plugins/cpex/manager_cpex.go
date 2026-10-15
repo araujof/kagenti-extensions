@@ -120,6 +120,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	// through to the request phase.
 	isResponse := pctx.CurrentPhase() == pipeline.InvocationPhaseResponse
 	payload, ext := buildCMF(pctx, isResponse, c.opts)
+	details := messageEgressDetails(&payload.Message)
 
 	// Streaming-response guard: when we're on the response phase, the
 	// body is non-empty, a protocol parser claimed this traffic, yet the
@@ -150,7 +151,17 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		err  error
 	)
 	if hookName != rcpex.HookIdentityResolve && c.mgr.HasHooksFor(rcpex.HookIdentityResolve) {
-		idp := rcpex.NewIdentityPayload(rcpex.TokenSourceBearer, lowerHeaders(pctx.Headers))
+		asTool := ext.Meta != nil && ext.Meta.EntityType == "tool"
+		headers, herr := identityHeaders(pctx.Headers, asTool, c.opts.Principal)
+		if herr != nil {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codePrincipalUnavailable,
+				Reason:   "principal token unavailable",
+				Details:  details,
+			}, nil
+		}
+		idp := rcpex.NewIdentityPayload(rcpex.TokenSourceBearer, headers)
 		pres, ct, bg, err = c.mgr.InvokeResolved(idp, hookName, rcpex.PayloadCMFMessage, payload, ext, nil)
 	} else {
 		pres, ct, bg, err = c.mgr.InvokeByName(hookName, rcpex.PayloadCMFMessage, payload, ext, nil)
@@ -183,6 +194,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 				Decision: DecisionDeny,
 				Code:     codeDelegationUnavailable,
 				Reason:   "delegated credential not available to the host",
+				Details:  details,
 			}, nil
 		}
 	}
@@ -209,7 +221,20 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		}
 	}
 
-	return mapResult(pres, changed), nil
+	res := mapResult(pres, changed)
+	res.Details = details
+	return res, nil
+}
+
+// messageEgressDetails returns egressDetails for an http_egress tool call
+// in msg, or nil.
+func messageEgressDetails(msg *rcpex.Message) map[string]string {
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil {
+			return egressDetails(p.ToolCallContent.Name, p.ToolCallContent.Arguments)
+		}
+	}
+	return nil
 }
 
 // codeDelegationUnavailable is the violation code for an allowed result
@@ -235,30 +260,6 @@ func delegatedTokensWithheld(pres *rcpex.PipelineResult) (bool, error) {
 		return false, fmt.Errorf("decode modified extensions: %w", err)
 	}
 	return ext.RawCredentials != nil && len(ext.RawCredentials.DelegatedTokens) > 0, nil
-}
-
-// lowerHeaders flattens http.Header into the lowercase-keyed single-value
-// map the identity resolvers expect (they look their configured header up
-// case-folded). Unlike flattenHeaders this keeps Authorization /
-// X-User-Token — the jwt resolvers need the raw tokens — and does not
-// strip the audit-sensitive set, because the IdentityPayload header map
-// is consumed only by the in-process resolvers, never logged.
-func lowerHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) == 0 {
-			continue
-		}
-		if len(vs) == 1 {
-			out[strings.ToLower(k)] = vs[0]
-		} else {
-			out[strings.ToLower(k)] = strings.Join(vs, ", ")
-		}
-	}
-	return out
 }
 
 // backgroundWaitTimeout is a backstop on how long awaitBackground's outer
@@ -620,7 +621,7 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 		role = "assistant"
 	}
 
-	cmfParts, entityType, entityName := pctxToCMFParts(pctx, isResponse)
+	cmfParts, entityType, entityName := pctxToCMFParts(pctx, isResponse, opts.SyntheticEgress)
 	var parts []rcpex.ContentPart
 	for _, cp := range cmfParts {
 		parts = append(parts, cmfPartToContentParts(cp)...)

@@ -107,9 +107,9 @@ CPEX sub-plugin verdicts map onto AuthBridge's 5-value
 
 | CPEX | AuthBridge | Chain effect |
 |---|---|---|
-| Allow | `allow` | Continue to next hook |
+| Allow | `allow` | Continue to next hook. Includes a result that only adds labels (`taint`) or returns the headers and payload as sent |
 | Deny  | `deny`  | **Stop chain**, return `pipeline.Reject` |
-| Modify | `modify` | Continue to next hook (mutations applied to pctx) |
+| Modify | `modify` | Continue to next hook (the forwarded body or headers changed) |
 | Observe | `observe` | Continue (diagnostics, no flow change) |
 
 A CPEX-internal failure (FFI panic, runtime error) is distinct from a
@@ -160,6 +160,9 @@ plugins:
 | `fallback_identification` | string | `global` | How a request naming no tool, prompt, resource or model (A2A, MCP `tools/list` and `initialize`, unparsed traffic) is identified: `global` sends CPEX's global entity (`http`/`*`), so `http:` routes and the global policy govern it; `none` sends no identification, which CPEX denies as `unidentified_request` when the config declares any policy. Inference requests are identified as `llm`/<model>. |
 | `session_source` | string | `header` | The session id CPEX keys session state (taint labels) on. `header` reads `X-Session-Id`, or the A2A context id. `resolved` uses the session the forward proxy resolved, but only when a dedicated agent session header (such as `X-Claude-Code-Session-Id`) or the process chain named it; a guessed session (most recent, User-Agent affinity, pending or default bucket) and the generic `X-Session-Id` and `Session-Id` headers give none, and the caller's `X-Session-Id` and A2A context id are ignored. CPEX binds session state to the subject, so a request with no subject has none either way. |
 | `private_destinations` | bool | `false` | Let CPEX builtins (JWKS fetches, token exchange, CIBA, Vault) reach loopback, private and link-local addresses, cloud metadata included. Turn on only for trusted policies on a trusted network, such as a local IdP in development. |
+| `synthetic_egress` | bool | `false` | Present a request no parser claimed as a call to the tool `http_egress`, with arguments `method`, `host` (port stripped), `path` (no query), `body` (first 8 KiB), `truncated` and `content_encoding`. A `CONNECT` tunnel carries its method and host only. CEL reads them as `args.<name>` on a `tool: http_egress` route. The excerpt is never recorded; the invocation keeps only its size and the truncated flag. |
+| `principal.token_file` | string | empty | File holding a caller JWT Cortex asserts for tool calls (MCP tools and `http_egress`): it is added to the headers CPEX identity resolution reads, never to the forwarded request or to inference traffic. A missing file logs a warning at startup and denies those calls with `cpex.principal_unavailable`. |
+| `principal.header` | string | `x-user-token` | Header the principal is presented under; the `identity/jwt` plugin's `header:` must match. A caller's own copy never reaches identity resolution. Must not be `Authorization`. |
 
 A `cpex` entry with no hooks and no CPEX YAML is valid and inert, so the
 plugin can be installed before its policy ships.
@@ -307,13 +310,15 @@ plugins:
 
 | Code | HTTP (non-MCP) | Meaning |
 |---|---|---|
-| `cpex.error` | 502 | CPEX FFI returned an error and `fail_open: false`. Body carries the underlying error message. |
+| `cpex.error` | 502 | CPEX FFI returned an error and `fail_open: false`. The underlying error is logged, not returned. |
 | `cpex.denied` | 403 | A CPEX sub-plugin returned deny without a violation code. |
 | `cpex.<sanitized>` | 403 | A CPEX sub-plugin returned deny with a violation code; the `<sanitized>` part lower-cases letters, replaces other characters with underscores, e.g. `pii.detected` → `cpex.pii_detected`. |
+| `cpex.principal_unavailable` | 403 | Principal injection is configured but its token file cannot be read; tool calls that resolve identity are denied. |
 
-The `Invocation.Reason` field carries the CPEX-side reason string for
-all of the above so operator dashboards can render the original
-sub-plugin message alongside the namespaced code.
+On a deny, the `Invocation.Reason` field and the response carry the
+namespaced code and the static message `request denied by policy`. The
+CPEX-side reason is policy-authored text that can quote the request, so
+it is logged at debug level only.
 
 **HTTP status / wire shape.** The plugin sets a status on every
 rejection — **403 Forbidden** for a policy `deny`, **502 Bad Gateway**

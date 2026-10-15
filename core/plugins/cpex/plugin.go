@@ -181,6 +181,14 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 			"header is attacker-controlled", "bypass_hosts", c.BypassHosts)
 	}
 
+	// A missing token file does not fail the boot: tool calls that need
+	// the principal are denied until it can be read.
+	principal, err := newPrincipalSource(c.Principal)
+	if err != nil {
+		slog.Warn("cpex: principal token unavailable; tool calls that resolve identity will be denied",
+			"token_file", c.Principal.TokenFile, "error", err)
+	}
+
 	factory := p.newManager
 	if factory == nil {
 		factory = NewManager
@@ -190,6 +198,8 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		FallbackIdentification: c.FallbackIdentification,
 		SessionSource:          c.SessionSource,
 		PrivateDestinations:    c.PrivateDestinations,
+		SyntheticEgress:        c.SyntheticEgress,
+		Principal:              principal,
 	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces
@@ -339,7 +349,7 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 	if p.cfg.FailOpen {
 		slog.Warn("cpex: invoke errored; allowing per fail_open=true",
 			"hook", hook, "error", err)
-		pctx.Observe(fmt.Sprintf("cpex error (fail_open): %v", err))
+		pctx.Observe("cpex error (fail_open)")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	// A CPEX-internal failure (FFI error, runtime panic) is an upstream
@@ -353,6 +363,7 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 		fmt.Sprintf("cpex error on %s", hook),
 		"cpex.error",
 		"cpex invocation failed",
+		nil,
 	)
 }
 
@@ -409,6 +420,11 @@ func sanitizeReason(s string) string {
 // mutations are already applied by manager_cpex.go before we see the
 // Result.
 //
+// A deny records and returns only the namespaced violation code and a
+// static message. CPEX's reason is policy-authored free text that can
+// quote the request (a matched secret, say); it goes to the debug log, not
+// to the client or the session API.
+//
 // DecisionError and any unrecognized decision fail CLOSED unless
 // fail_open is set: a Result the plugin can't interpret must not
 // silently allow traffic the policy may have meant to block. The
@@ -417,7 +433,7 @@ func sanitizeReason(s string) string {
 func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipeline.Action, stop bool) {
 	switch res.Decision {
 	case DecisionAllow:
-		pctx.Allow(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionAllow, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionDeny:
 		// Namespace CPEX-emitted codes under cpex.* so operator
@@ -428,12 +444,13 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 		if res.Code != "" {
 			code = "cpex." + sanitizeReason(res.Code)
 		}
-		return denyWithStatus(pctx, http.StatusForbidden, res.Reason, code, res.Reason), true
+		slog.Debug("cpex: policy denied", "code", code, "reason", res.Reason)
+		return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, res.Details), true
 	case DecisionModify:
-		pctx.Modify(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionObserve:
-		pctx.Observe(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionError:
 		reason := res.Reason
@@ -457,18 +474,23 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 func (p *CPEX) handleDecisionError(pctx *pipeline.Context, err error) pipeline.Action {
 	if p.cfg.FailOpen {
 		slog.Warn("cpex: error decision; allowing per fail_open=true", "error", err)
-		pctx.Observe(fmt.Sprintf("cpex error (fail_open): %v", err))
+		pctx.Observe("cpex error (fail_open)")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-	// Log the detailed error for operators; return a generic client message
-	// so internal CPEX/runtime details don't leak in the deny response.
+	// Log the detailed error for operators; record and return generic text
+	// so internal CPEX/runtime details don't leak in the deny response or
+	// the session API.
 	slog.Error("cpex: decision handling failed", "error", err)
 	return denyWithStatus(pctx, http.StatusBadGateway,
-		fmt.Sprintf("cpex error: %v", err),
+		"cpex.error",
 		"cpex.error",
 		"cpex decision handling failed",
+		nil,
 	)
 }
+
+// deniedMessage is the client-facing message of every policy deny.
+const deniedMessage = "request denied by policy"
 
 // denyWithStatus records a deny Invocation and returns a Reject carrying an
 // explicit HTTP status. It exists because CPEX violation codes are
@@ -479,7 +501,7 @@ func (p *CPEX) handleDecisionError(pctx *pipeline.Context, err error) pipeline.A
 // deny (an authorization decision) and 502 for a CPEX-internal error (an
 // upstream fault). recordReason is the machine-stable Invocation reason;
 // message becomes the Violation's human-readable reason.
-func denyWithStatus(pctx *pipeline.Context, status int, recordReason, code, message string) pipeline.Action {
-	pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: recordReason})
+func denyWithStatus(pctx *pipeline.Context, status int, recordReason, code, message string, details map[string]string) pipeline.Action {
+	pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: recordReason, Details: details})
 	return pipeline.DenyStatus(status, code, message)
 }

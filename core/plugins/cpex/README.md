@@ -247,6 +247,9 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
 | `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
+| `synthetic_egress` | `false` | present requests no parser claimed as calls to the tool `http_egress` (see below) |
+| `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on tool calls; empty turns it off |
+| `principal.header` | `x-user-token` | identity header the token is presented under; must not be `Authorization` |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
 inert. Configure succeeds and both phases return continue. `config` and
@@ -260,6 +263,56 @@ resolved inside the bypassed chain, so a spoofed Host must not skip CPEX.
 `bypass_paths` applies on both phases. Neither list accepts `*` or empty; to
 disable the plugin, remove it from the pipeline.
 
+### Plain egress as a tool call
+
+With `synthetic_egress: true`, a request no parser claimed (plaintext HTTP or a
+bridged HTTPS request) is presented to CPEX as a call to the tool `http_egress`,
+on the request phase. Its arguments:
+
+| Argument | Value |
+|---|---|
+| `method` | upper-case HTTP method |
+| `host` | lower-case host, port stripped |
+| `path` | URL path, never the query |
+| `body` | the first 8 KiB of the body, as UTF-8 |
+| `truncated` | whether the body was longer than the excerpt |
+| `content_encoding` | the lower-case `Content-Encoding`, empty when absent |
+
+An opaque `CONNECT` tunnel is presented with its method and host, an empty path
+and no body, so a host allowlist governs tunnels too. On a `tool:` route CEL
+reads the arguments as `args.<name>`:
+
+```yaml
+global:
+  pdp:
+    - kind: cel
+routes:
+  - tool: http_egress
+    authorization:
+      pre_invocation:
+        - cel:
+            expr: "args.host in allowed"
+            allowed: ["support.local", "github.com"]
+            on_deny: ["deny('host not allowed', 'egress_host')"]
+```
+
+The excerpt is policy input only. The invocation records its size and whether
+it was cut (`egress_excerpt_bytes`, `egress_truncated`), never its content. A
+policy that inspects bodies should deny when `truncated` is true or
+`content_encoding` is set, since it cannot see the rest.
+
+### Cortex-asserted principal
+
+`principal.token_file` lets Cortex assert who the caller is, for an agent that
+must not hold the credential. For requests presented as tool calls (MCP tools
+and `http_egress`) the token is added under `principal.header` to the headers
+CPEX identity resolution reads, so an `identity/jwt` plugin configured with that
+`header:` resolves the subject. The token is never written to the forwarded
+request and never added to inference traffic, and a caller's own copy of the
+header never reaches identity resolution. When the file cannot be read, Cortex
+logs a warning at startup and denies those tool calls with
+`cpex.principal_unavailable` until it can.
+
 ## Decisions and denials
 
 The plugin maps the CPEX outcome onto AuthBridge's five-value invocation
@@ -272,7 +325,9 @@ vocabulary:
 - **deny**: a sub-plugin returned a policy violation with a `cpex.<code>` code
   (`cpex.pii_detected`, `cpex.session_tainted_secret`, and so on). The plugin
   emits a `Reject`; how it appears on the wire is the listener's call, not the
-  plugin's (see below).
+  plugin's (see below). The response and the invocation carry only that code
+  and the message `request denied by policy`: the policy's own reason can quote
+  the request, so it goes to the debug log.
 - **modify**: policy changed the forwarded body or headers. Changes are
   applied, the request continues. A body rewrite of an inference request is
   supported on OpenAI chat requests only; one on any other dialect, or a

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -339,6 +340,7 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"fail_open", "worker_threads",
 		"bypass_hosts", "bypass_paths",
 		"fallback_identification", "session_source", "private_destinations",
+		"synthetic_egress", "principal",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)
@@ -413,12 +415,17 @@ func TestDispatch_DenyDecisionRejectsAndShortCircuits(t *testing.T) {
 	}
 	cfg := `{"hooks":{"on_request":["cmf.tool_pre_invoke","cmf.tool_post_invoke"]}}`
 	p := setupAndInit(t, fake, cfg)
-	a := p.OnRequest(context.Background(), &pipeline.Context{})
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	a := p.OnRequest(context.Background(), pctx)
 	if a.Type != pipeline.Reject {
 		t.Fatalf("Type = %d, want Reject", a.Type)
 	}
-	if a.Violation == nil || a.Violation.Code != "cpex.cedar_denied" || a.Violation.Reason != "policy says no" {
-		t.Fatalf("Violation = %#v, want code=cpex.cedar_denied reason=\"policy says no\"", a.Violation)
+	// CPEX's free-text reason reaches neither the client nor the record.
+	if a.Violation == nil || a.Violation.Code != "cpex.cedar_denied" || a.Violation.Reason != deniedMessage {
+		t.Fatalf("Violation = %#v, want code=cpex.cedar_denied reason=%q", a.Violation, deniedMessage)
+	}
+	if inv := pctx.Extensions.Invocations.Outbound; len(inv) != 1 || inv[0].Reason != "cpex.cedar_denied" {
+		t.Fatalf("invocations = %+v, want one with reason cpex.cedar_denied", inv)
 	}
 	// A policy deny is an authorization decision → 403, not the 500 a
 	// namespaced cpex.* code would otherwise default to via StatusFromCode.
@@ -763,4 +770,25 @@ func setupAndInit(t *testing.T, fake *FakeManager, raw string) *CPEX {
 		t.Fatalf("Init: %v", err)
 	}
 	return p
+}
+
+// Result details reach the Invocation; a deny's free-text reason does not.
+func TestDispatch_DenyRecordsDetailsNotReason(t *testing.T) {
+	details := map[string]string{"egress_excerpt_bytes": "12", "egress_truncated": "false"}
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "secret_in_body", Reason: "found AKIA1234", Details: details},
+		},
+	}
+	p := setupAndInit(t, fake, cfgOneRequestHook)
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	a := p.OnRequest(context.Background(), pctx)
+	if a.Type != pipeline.Reject || a.Violation.Code != "cpex.secret_in_body" || a.Violation.Reason != deniedMessage {
+		t.Fatalf("action = %+v", a.Violation)
+	}
+	inv := pctx.Extensions.Invocations.Outbound
+	if len(inv) != 1 || inv[0].Reason != "cpex.secret_in_body" || !reflect.DeepEqual(inv[0].Details, details) {
+		t.Fatalf("invocations = %+v", inv)
+	}
 }

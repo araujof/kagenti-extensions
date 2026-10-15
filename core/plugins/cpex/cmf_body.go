@@ -242,13 +242,15 @@ func identification(entityType, entityName, fallback string) (string, string) {
 //
 // Only MCP tool/prompt/resource calls and inference name an entity; A2A,
 // MCP protocol mechanics and unparsed traffic return ("", "") and take the
-// fallback identification (see identification).
+// fallback identification (see identification). With egress set, an
+// unparsed request is presented as a call to the tool http_egress instead
+// (see egressPart); its response keeps the opaque-text fallback.
 //
 // Splitting this from the cgo adapter keeps the MCP/inference/A2A → CMF
 // decision unit-testable under CGO_ENABLED=0; manager_cpex.go converts the
 // returned cmfParts into rcpex ContentParts and stamps the entity coords
 // onto Extensions.Meta.
-func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, entityType, entityName string) {
+func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cmfPart, entityType, entityName string) {
 	switch {
 	case pctx.Extensions.MCP != nil:
 		part := mcpToCMFPart(pctx.Extensions.MCP, isResponse, pctx.Body, pctx.ResponseBody)
@@ -264,6 +266,10 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, e
 
 	case pctx.Extensions.A2A != nil:
 		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody), "", ""
+
+	case egress && !isResponse:
+		part := egressPart(pctx)
+		return []cmfPart{part}, "tool", part.Name
 
 	default:
 		body := pctx.Body

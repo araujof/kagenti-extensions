@@ -111,7 +111,33 @@ type cpexConfig struct {
 	// Off by default; turn it on only for trusted policies on a trusted
 	// network, such as a local IdP in development.
 	PrivateDestinations bool `json:"private_destinations" default:"false" description:"Allow CPEX builtins to call loopback, private and link-local addresses (cloud metadata included). Default false."`
+
+	// SyntheticEgress presents a request no parser claimed as a call to the
+	// tool http_egress, so `tool: http_egress` routes govern plain HTTP
+	// egress. Its arguments are method, host, path, a bounded body excerpt,
+	// truncated and content_encoding; a CONNECT tunnel carries its host and
+	// method only. Off by default: such requests take the fallback
+	// identification instead.
+	SyntheticEgress bool `json:"synthetic_egress" default:"false" description:"Present requests no parser claimed as calls to the tool http_egress. Default false."`
+
+	// Principal makes Cortex assert the caller: the token in token_file is
+	// handed to CPEX identity resolution under header for requests presented
+	// as tool calls (MCP tools and http_egress). It is never written to the
+	// forwarded request and never added for inference, and a caller's own
+	// copy of header never reaches identity resolution.
+	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on tool calls; never forwarded."`
 }
+
+// principalConfig configures principal injection. An empty TokenFile turns
+// it off.
+type principalConfig struct {
+	TokenFile string `json:"token_file,omitempty" description:"File holding the caller token (a JWT). Empty turns principal injection off."`
+	Header    string `json:"header,omitempty" default:"x-user-token" description:"Identity header the token is presented under; the CPEX identity plugin reads it."`
+}
+
+// defaultPrincipalHeader is the identity header principal injection uses
+// when none is configured.
+const defaultPrincipalHeader = "x-user-token"
 
 // hooksConfig declares which CPEX hooks the AuthBridge plugin
 // invokes on each phase. Lists are evaluated in order; the plugin
@@ -159,6 +185,9 @@ func (c *cpexConfig) applyDefaults() {
 	if c.BypassHosts == nil {
 		c.BypassHosts = append([]string(nil), defaultBypassHosts...)
 	}
+	if c.Principal.TokenFile != "" && c.Principal.Header == "" {
+		c.Principal.Header = defaultPrincipalHeader
+	}
 	// c.BypassPaths is filled lazily from bypass.DefaultPatterns
 	// in plugin.go's Configure (avoids importing bypass here).
 }
@@ -186,6 +215,14 @@ func (c *cpexConfig) validate() error {
 	default:
 		return fmt.Errorf("session_source must be %q or %q, got %q",
 			sessionSourceHeader, sessionSourceResolved, c.SessionSource)
+	}
+	if c.Principal.TokenFile != "" {
+		switch h := strings.ToLower(strings.TrimSpace(c.Principal.Header)); {
+		case h == "", strings.ContainsAny(h, " \t:"):
+			return fmt.Errorf("principal.header %q is not a header name", c.Principal.Header)
+		case h == "authorization" || isProtected(h):
+			return fmt.Errorf("principal.header must not be %q", c.Principal.Header)
+		}
 	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must be >= 0, got %d", c.WorkerThreads)

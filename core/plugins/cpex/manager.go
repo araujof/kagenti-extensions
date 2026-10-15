@@ -63,11 +63,17 @@ type ManagerOptions struct {
 	// (CPEX picks based on CPU count).
 	WorkerThreads int
 
-	// FallbackIdentification, SessionSource and PrivateDestinations are
-	// the validated config values of the same names; see cpexConfig.
+	// FallbackIdentification, SessionSource, PrivateDestinations and
+	// SyntheticEgress are the validated config values of the same names;
+	// see cpexConfig.
 	FallbackIdentification string
 	SessionSource          string
 	PrivateDestinations    bool
+	SyntheticEgress        bool
+
+	// Principal is the Cortex-held caller token for identity resolution on
+	// tool calls, or nil when principal injection is off.
+	Principal *principalSource
 }
 
 // NewManager is defined in one of two build-tag-gated files:
@@ -149,10 +155,11 @@ type Result struct {
 	// Decision is the top-line outcome category.
 	Decision Decision
 
-	// Reason is a short human-readable summary suitable for the
-	// Invocation.Reason field. For Deny, this is the deciding
-	// sub-plugin's violation message; for Modify, a one-line summary
-	// of what changed; for Error, the error string.
+	// Reason is a short human-readable summary. For Deny, this is the
+	// deciding sub-plugin's violation message, which may quote request
+	// content: the plugin logs it at debug level and records only Code.
+	// For Modify, a one-line summary of what changed; for Error, the error
+	// string.
 	Reason string
 
 	// PluginsRun lists CPEX sub-plugin names that executed for this
@@ -169,6 +176,10 @@ type Result struct {
 	// outcome — e.g. "cedar.denied", "pii.redacted". Surfaces in
 	// Invocation.Code when present.
 	Code string
+
+	// Details is recorded as the Invocation's details. It must hold only
+	// values safe for the unauthenticated session API.
+	Details map[string]string
 }
 
 // SubPluginError is one CPEX sub-plugin's error report, lifted from

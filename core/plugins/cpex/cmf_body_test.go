@@ -544,7 +544,7 @@ func TestIdentification(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, et, en := pctxToCMFParts(tc.pctx, false)
+			_, et, en := pctxToCMFParts(tc.pctx, false, false)
 			et, en = identification(et, en, tc.fallback)
 			if et != tc.wantType || en != tc.wantName {
 				t.Errorf("identification = (%q,%q), want (%q,%q)", et, en, tc.wantType, tc.wantName)
@@ -583,7 +583,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Params: map[string]any{"name": "get_compensation", "arguments": map[string]any{"id": "E1"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Kind != cmfPartToolCall {
 			t.Fatalf("mcp parts: %+v", parts)
 		}
@@ -599,7 +599,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Messages: []pipeline.InferenceMessage{{Role: "user", Content: "hi"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Text != "hi" {
 			t.Fatalf("inference parts: %+v", parts)
 		}
@@ -615,7 +615,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Parts:  []pipeline.A2APart{{Kind: "text", Content: "yo"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Text != "yo" {
 			t.Fatalf("a2a parts: %+v", parts)
 		}
@@ -626,7 +626,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 
 	t.Run("none falls back to opaque text", func(t *testing.T) {
 		pctx := &pipeline.Context{Body: []byte("raw body")}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Kind != cmfPartText || parts[0].Text != "raw body" {
 			t.Fatalf("fallback parts: %+v", parts)
 		}
