@@ -149,7 +149,8 @@ still parses and reports the traffic as unpriced.
 ## `inference-router`
 
 Sends a coding agent's new sessions to the inference server chosen for it — a
-LiteLLM gateway, say, with its own URL and key — and keeps every session on the
+LiteLLM gateway or a local model server such as Ollama, with its own URL and key —
+and keeps every session on the
 server it started on, wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
 beyond going through the proxy. Routing is opt-in per agent: an agent not listed
@@ -267,8 +268,11 @@ decides:
   `server` and `pin` (`new`, `existing` or `none`).
 - **Models.** A routed request goes with the model the agent asked for: the router
   does not read the server's list to judge it, because a LiteLLM server serves
-  aliases it does not list. When the server refuses the model, the router records the refusal for an
-  hour and, through `pipeline.Resender`, has the forward proxy send the request
+  aliases it does not list. When the server refuses the model — LiteLLM's 403
+  `team_model_access_denied` or 400 `Invalid model name passed in model=`, Ollama's
+  404 or llama.cpp's 400 `model '<m>' not found`, or vLLM's 404 ``The model `<m>`
+  does not exist.``, where `<m>` is the name the request was sent with — the router
+  records the refusal for an hour and, through `pipeline.Resender`, has the forward proxy send the request
   again, once and before the agent sees anything, with the server's substitute:
   `main` for a request with tools, `helper` for one without, as the server's list
   resolves them. The re-sent request's row carries `modify/resent` with `server`,
