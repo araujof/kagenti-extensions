@@ -192,7 +192,26 @@ func (s *spendState) windowSpan() spendSpan {
 	return spendDrawerSpans[s.windowStepIndex()]
 }
 
-// pollInterval is how often THIS drawer selection refreshes: the cadence of the span it is
+// spanResolution asks the ring for a single bucket, and omits the parameter for a symbolic
+// window — the ledger serves those as one bucket and ignores the resolution entirely.
+func spanResolution(span spendSpan) time.Duration {
+	if _, ok := parseWindowSpan(spendSpanDefs[span].window); ok {
+		return spendResolution
+	}
+	return 0
+}
+
+// spendDrawerSpan is the span the drawer breaks down: on the agents pane THE PANE'S OWN WINDOW
+// (agentsSpan), so the rows and the breakdown under them answer for one span and `w` moves
+// both; everywhere else the drawer's own `w` cycle, which the agents pane leaves alone.
+func (m *model) spendDrawerSpan() spendSpan {
+	if m.pane == paneAgents {
+		return m.agentsSpan()
+	}
+	return m.spend.windowSpan()
+}
+
+// spendDrawerPollInterval is how often THIS drawer selection refreshes: the cadence of the span it is
 // showing.
 //
 // ONE CONSTANT FOR ALL FOUR WAS WRONG IN BOTH DIRECTIONS, and the hour is the case that shows
@@ -201,17 +220,8 @@ func (s *spendState) windowSpan() spendSpan {
 // that does not add up to the figure above it is the failure bandSpanCell's own doc argues
 // against. The month keeps its slow cadence, which is what the single constant was chosen for:
 // re-folding thirty-one day files every twenty seconds to redraw four rows.
-func (s *spendState) pollInterval() time.Duration {
-	return spendSpanDefs[s.windowSpan()].pollInterval()
-}
-
-// windowResolution asks the ring for a single bucket, and omits the parameter for a symbolic
-// window — the ledger serves those as one bucket and ignores the resolution entirely.
-func (s *spendState) windowResolution() time.Duration {
-	if _, ok := parseWindowSpan(s.window()); ok {
-		return spendResolution
-	}
-	return 0
+func (m *model) spendDrawerPollInterval() time.Duration {
+	return spendSpanDefs[m.spendDrawerSpan()].pollInterval()
 }
 
 // windowStepIndex resolves windowStep to a slice index, through the same wrap axis() uses.
@@ -282,7 +292,7 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 		// while the drawer beneath them breaks THE HIGHLIGHTED AGENT down by model, endpoint or
 		// agent — the endpoint axis is the server split the pane's COST column aggregates away,
 		// and COST beside SERVER invites reading one as spent on the other. The row is the same
-		// scope Enter would commit, but the drawer only READS it; see spendDrawerAgent.
+		// scope Enter would commit, but the drawer only READS it; see spendScopeAgent.
 		//
 		// IT USED TO REFUSE, on the argument that the pane was already the per-agent breakdown —
 		// true of the drawer's agent axis and nothing else, and written before the SERVER column
@@ -379,13 +389,19 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 	// span's cadence would show an empty breakdown for twenty seconds on the hour and five
 	// minutes on the month.
 	m.spend.drawer.invalidate()
-	return tea.Batch(m.fetchSpendDrawer(), spendDrawerTick(m.spend.drawer.tickGen, m.spend.pollInterval()))
+	return tea.Batch(m.fetchSpendDrawer(), spendDrawerTick(m.spend.drawer.tickGen, m.spendDrawerPollInterval()))
 }
 
-// syncSpendDrawerScope refetches the drawer when the scope it should be showing is not the
-// one it last asked for: the highlighted row on the agents pane, the committed scope
-// everywhere else (spendDrawerAgent). Expanded-gated and one comparison, so a caller can
-// run it on every keypress at no cost.
+// syncSpendScope restarts the band when the agent it should be showing is not the one it last
+// asked for, and refetches the drawer when its agent or span is not: the highlighted row and
+// the pane's window on the agents pane, the committed scope and the drawer's own cycle
+// everywhere else (spendScopeAgent, spendDrawerSpan). A few comparisons, so a caller can run
+// it on every keypress at no cost.
+//
+// THE BAND RESTARTS, blanking to em dashes until the new scope answers, as Enter's restart
+// does: its four figures are the old agent's until then, and a figure under the wrong agent
+// is the mislabel this whole surface is written against. Not without a client — there is no
+// band to restart on the pickers.
 //
 // PANE-BLIND BY DESIGN. There is no setPane choke point to hook — the pane is assigned in
 // twenty-odd places, the same fact spendDrawerReservesRows records — so the sites that
@@ -400,11 +416,15 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 // kill its poll chain — nothing re-arms that but `$` itself — and the old snapshot staying
 // on screen until the new one lands is the behaviour cycleSpendAxis already chose for its
 // axis change. The caption comes from the snapshot, so rows and caption lag together.
-func (m *model) syncSpendDrawerScope() tea.Cmd {
+func (m *model) syncSpendScope() tea.Cmd {
+	if m.client != nil && m.spendScopeAgent() != m.spend.bandAgent {
+		// startSpendPolling refetches an open drawer too, under the same agent.
+		return m.startSpendPolling()
+	}
 	if !m.spend.expanded {
 		return nil
 	}
-	if want := m.spendDrawerAgent(); want == m.spend.drawerAgent {
+	if m.spendScopeAgent() == m.spend.drawerAgent && m.spendDrawerSpan() == m.spend.drawerSpan {
 		return nil
 	}
 	return m.fetchSpendDrawer()
@@ -530,16 +550,16 @@ func spanLabelFor(window string) string {
 //
 // A ZERO lastFetch IS NOT STALE. Nothing has answered yet, which is a different state from a
 // wedged chain and is already visible: the drawer draws no rows.
-func (s *spendState) drawerAge(now time.Time) (time.Duration, bool) {
-	if s.drawer.lastFetch.IsZero() {
+func (m *model) drawerAge(now time.Time) (time.Duration, bool) {
+	if m.spend.drawer.lastFetch.IsZero() {
 		return 0, false
 	}
-	age := now.Sub(s.drawer.lastFetch)
-	return age, age > 2*s.pollInterval()
+	age := now.Sub(m.spend.drawer.lastFetch)
+	return age, age > 2*m.spendDrawerPollInterval()
 }
 
 func (m *model) drawerLabels() (usage.Group, string) {
-	axis, window := m.spendAxis(), spanLabelFor(m.spend.window())
+	axis, window := m.spendAxis(), spanLabelFor(spendSpanDefs[m.spendDrawerSpan()].window)
 	snap := m.spend.drawer.snap
 	if snap == nil {
 		return axis, window
@@ -575,7 +595,7 @@ func (m *model) drawerLabels() (usage.Group, string) {
 	}
 	// THE AGE RIDES ON THE LABEL, and only when the chain is late — the same place and the same
 	// condition as the band's, so "LAST 1H 6m" means one thing on both rows.
-	if age, stale := m.spend.drawerAge(time.Now()); stale {
+	if age, stale := m.drawerAge(time.Now()); stale {
 		window += " " + formatSpendAge(age)
 	}
 	return axis, window
