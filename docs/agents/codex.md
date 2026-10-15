@@ -135,18 +135,24 @@ how the `CODEX_CA_CERTIFICATE` mistake survived its first review.
 
 ## What Cortex shows for it
 
-**Its own agent.** Codex sends two product tokens, both folded to the canonical agent name
+**Its own agent.** Codex sends four product tokens, all folded to the canonical agent name
 `codex`, so its traffic gets its own row in agentop's agents pane instead of sharing
 `Other`:
 
 | User-Agent | Sent on |
 |---|---|
-| `codex_exec/<version> (<os>; <arch>) unknown` — sometimes with a trailing `(codex_exec; <version>)` comment | its inference (`/backend-api/codex/responses`) and most other backend calls |
+| `codex_exec/<version> (<os>; <arch>) <term>` — sometimes with a trailing `(codex_exec; <version>)` comment | its inference (`/backend-api/codex/responses`) and most other backend calls |
 | `codex-mcp-client/<version>` | its MCP client (`/backend-api/ps/mcp`) |
-| `codex-tui/<version> (<os>; <arch>) <term>` | the interactive TUI — i.e. plain `codex` — including its inference |
+| `codex-tui/<version> (<os>; <arch>) <term>` — sometimes with a trailing `(codex-tui; <version>)` comment | the interactive TUI — i.e. plain `codex` — including its inference |
 | `codex_cli_rs/<version> (<os>; <arch>) <term>` | anything sent before its app-server finishes initializing |
 
-The version is the field after the first slash in both. The MCP client folds to the same
+`<term>` is the `TERM` environment variable — the terminal type. It reads `unknown` under
+`codex exec`, which runs without a TTY, and the terminal's own name under the interactive
+TUI (`xterm-256color` on the captures these rows come from). Nothing reads this field:
+Cortex matches on the product token before the first slash, which is why a varying `TERM`
+does not split one agent into several rows.
+
+The version is the field after the first slash in all four. The MCP client folds to the same
 name deliberately: it is one agent's component, not a second agent. **Codex's telemetry
 exporter is not claimed** — it sends `OTel-OTLP-Exporter-Rust/<version>` to
 `ab.chatgpt.com`, which names a generic Rust crate rather than Codex, so it stays
