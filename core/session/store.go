@@ -1006,8 +1006,7 @@ type SessionSummary struct {
 	//
 	// GENERIC, NOT THE ROUTER'S: it says where a session's inference goes with or without the
 	// inference-router. agentop names a session's server from it, which is why the router refuses
-	// two servers on one host. A host[:port] as the request carried it, so compare it
-	// port-stripped and lowercased.
+	// two servers on one host. A host[:port] as the request carried it.
 	//
 	// CONTINUES ACROSS A RESTART WHERE A SESSION ARCHIVE RUNS, like Title: the archive's fold
 	// persists it, and a resumed session reports it until its own next inference request.

@@ -200,8 +200,7 @@ type Endpoint struct {
 	// Host is the lowercased host, with the port only when it is not the scheme's
 	// default. It is the redirect target's host.
 	Host string
-	// Hostname is the lowercased host without any port: what a request is matched
-	// to a server by, and what makes two servers the same host.
+	// Hostname is the lowercased host without any port.
 	Hostname string
 }
 
