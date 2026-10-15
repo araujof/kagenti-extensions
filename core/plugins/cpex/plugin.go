@@ -59,6 +59,7 @@ import (
 	"github.com/rossoctl/cortex/core/bypass"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/spiffe"
 )
 
 // CPEX is the AuthBridge plugin chassis around a CPEX PolicyEngine.
@@ -87,6 +88,32 @@ type CPEX struct {
 	// errNoCpexBuild otherwise). Tests inject a closure here to
 	// return a FakeManager and exercise Configure's full path.
 	newManager func(ManagerOptions) (Manager, error)
+
+	// spiffe is the process SPIFFE provider, set by the pipeline builder
+	// when the runtime config has a spiffe: block. testWorkloadJWT
+	// replaces it in tests.
+	provider        *spiffe.Provider
+	testWorkloadJWT spiffe.JWTSource
+}
+
+// SetSPIFFEProvider implements spiffe.ProviderConsumer.
+func (p *CPEX) SetSPIFFEProvider(prov *spiffe.Provider) { p.provider = prov }
+
+// workloadJWT returns the JWT-SVID source for audience, or nil when no
+// provider is wired in.
+func (p *CPEX) workloadJWT(audience string) spiffe.JWTSource {
+	if p.testWorkloadJWT != nil {
+		return p.testWorkloadJWT
+	}
+	if p.provider == nil || audience == "" {
+		return nil
+	}
+	src, err := p.provider.JWTSource(audience)
+	if err != nil {
+		slog.Warn("cpex: SPIFFE JWT source unavailable", "audience", audience, "error", err)
+		return nil
+	}
+	return src
 }
 
 // NewCPEX returns an unconfigured plugin. The registry calls this on
@@ -200,6 +227,7 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		PrivateDestinations:    c.PrivateDestinations,
 		SyntheticEgress:        c.SyntheticEgress,
 		Principal:              principal,
+		Workload:               newWorkloadSource(c.Workload, p.workloadJWT(c.Workload.Audience)),
 	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces

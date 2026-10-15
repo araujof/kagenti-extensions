@@ -111,7 +111,7 @@ func (c *cpexManager) HasHook(name string) bool {
 //   - BackgroundTasks (audit-logger and other async sub-plugins) are
 //     awaited in a fire-and-forget goroutine; errors land on the
 //     default slog handler with the request ID for correlation.
-func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.Context) (Result, error) {
+func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipeline.Context) (Result, error) {
 	// Phase is taken from the framework-set current phase, NOT inferred
 	// from body length: an empty-bodied response (HTTP 204, empty tool
 	// result) must still be treated as the response phase so response
@@ -151,7 +151,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		err  error
 	)
 	if hookName != rcpex.HookIdentityResolve && c.mgr.HasHooksFor(rcpex.HookIdentityResolve) {
-		headers, herr := c.requestIdentityHeaders(pctx, ext, isResponse)
+		headers, herr := c.requestIdentityHeaders(ctx, pctx, ext, isResponse)
 		if herr != nil {
 			return Result{
 				Decision: DecisionDeny,
@@ -204,7 +204,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	changed := false
 	if pres.ContinueProcessing {
 		var applyErr error
-		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), c.opts.Principal.headerName()); applyErr != nil {
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), c.opts.Principal.headerName(), c.opts.Workload.headerName()); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -235,7 +235,7 @@ type requestIdentity struct{ headers map[string]string }
 // phase reuses them, because by then a policy's assertions may have
 // stripped the caller's token from pctx.Headers, and the response is
 // resolved as the same caller either way.
-func (c *cpexManager) requestIdentityHeaders(pctx *pipeline.Context, ext *rcpex.Extensions, isResponse bool) (map[string]string, error) {
+func (c *cpexManager) requestIdentityHeaders(ctx context.Context, pctx *pipeline.Context, ext *rcpex.Extensions, isResponse bool) (map[string]string, error) {
 	if isResponse {
 		if st := pipeline.GetState[requestIdentity](pctx, identityStateKey); st != nil {
 			return st.headers, nil
@@ -246,6 +246,7 @@ func (c *cpexManager) requestIdentityHeaders(pctx *pipeline.Context, ext *rcpex.
 	if err != nil {
 		return nil, err
 	}
+	headers = c.opts.Workload.apply(ctx, headers, inject)
 	if !isResponse {
 		pipeline.SetState(pctx, identityStateKey, &requestIdentity{headers: headers})
 	}
@@ -803,9 +804,10 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 
 	if len(pctx.Headers) > 0 {
 		ext.Http = &rcpex.HttpExtension{
-			// The caller's copy of the principal header is not policy
-			// input; only the identity payload carries the principal.
-			RequestHeaders: withoutHeader(flattenHeaders(pctx.Headers), opts.Principal.headerName()),
+			// The caller's copies of the principal and workload headers
+			// are not policy input; only the identity payload carries them.
+			RequestHeaders: withoutHeader(withoutHeader(flattenHeaders(pctx.Headers),
+				opts.Principal.headerName()), opts.Workload.headerName()),
 		}
 	}
 

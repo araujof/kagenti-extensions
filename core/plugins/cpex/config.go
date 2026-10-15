@@ -129,6 +129,14 @@ type cpexConfig struct {
 	// requests. It is never written to the forwarded request, and a caller's
 	// own copy of header never reaches identity resolution.
 	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on outbound tool calls and inference requests; never forwarded."`
+
+	// Workload makes Cortex assert the calling workload: a JWT-SVID for
+	// audience, fetched from the SPIFFE provider, is handed to CPEX
+	// identity resolution under header on the same requests as the
+	// principal. It needs the runtime config's spiffe: block, is never
+	// written to the forwarded request, and a caller's own copy of header
+	// never reaches identity resolution.
+	Workload workloadConfig `json:"workload" description:"The pod's SPIFFE JWT-SVID for CPEX identity resolution (role: caller_workload) on outbound tool calls and inference requests; never forwarded."`
 }
 
 // principalConfig configures principal injection. An empty TokenFile turns
@@ -194,6 +202,9 @@ func (c *cpexConfig) applyDefaults() {
 	if c.Principal.TokenFile != "" && c.Principal.Header == "" {
 		c.Principal.Header = defaultPrincipalHeader
 	}
+	if c.Workload.Audience != "" && c.Workload.Header == "" {
+		c.Workload.Header = defaultWorkloadHeader
+	}
 	// c.BypassPaths is filled lazily from bypass.DefaultPatterns
 	// in plugin.go's Configure (avoids importing bypass here).
 }
@@ -228,6 +239,16 @@ func (c *cpexConfig) validate() error {
 			return fmt.Errorf("principal.header %q is not a header name", c.Principal.Header)
 		case h == "authorization" || isProtected(h):
 			return fmt.Errorf("principal.header must not be %q", c.Principal.Header)
+		}
+	}
+	if c.Workload.Audience != "" {
+		switch h := strings.ToLower(strings.TrimSpace(c.Workload.Header)); {
+		case h == "", strings.ContainsAny(h, " \t:"):
+			return fmt.Errorf("workload.header %q is not a header name", c.Workload.Header)
+		case h == "authorization" || isProtected(h):
+			return fmt.Errorf("workload.header must not be %q", c.Workload.Header)
+		case c.Principal.TokenFile != "" && h == strings.ToLower(strings.TrimSpace(c.Principal.Header)):
+			return fmt.Errorf("workload.header must differ from principal.header")
 		}
 	}
 	if c.WorkerThreads < 0 {

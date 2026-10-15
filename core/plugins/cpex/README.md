@@ -325,6 +325,8 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `synthetic_egress` | `false` | present requests no parser claimed as calls to the tool `http_egress` (see below) |
 | `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on outbound tool calls and inference requests; empty turns it off |
 | `principal.header` | `x-user-token` | identity header the token is presented under; must not be `Authorization` |
+| `workload.audience` | empty | audience of the pod's JWT-SVID that Cortex asserts as the calling workload; empty turns it off |
+| `workload.header` | `x-workload-token` | identity header the JWT-SVID is presented under; must not be `Authorization` or `principal.header` |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
 inert. Configure succeeds and both phases return continue. `config` and
@@ -406,6 +408,20 @@ forwarded request, and a caller's own copy of the header reaches neither
 identity resolution nor the `http` extension. When the file cannot be read,
 Cortex logs a warning at startup and denies those requests with
 `cpex.principal_unavailable` until it can.
+
+### Cortex-asserted workload
+
+`workload.audience` does the same for the calling workload: on the same
+requests, Cortex fetches the pod's JWT-SVID for that audience from the
+in-process SPIFFE provider and adds it under `workload.header`, so an
+`identity/jwt` plugin with `role: caller_workload` resolves the agent as
+itself and `delegate(..., subject: caller_workload)` can present the SVID
+as a client assertion. The sidecar shares the pod with the agent, so the
+pod's SVID is the agent's identity. It needs the runtime config's
+`spiffe:` block. Without one, or when a fetch fails, nothing is added and
+routes that authenticate by it deny. The SVID is never written to the
+forwarded request, and a caller's own copy of the header reaches neither
+identity resolution nor the `http` extension.
 
 ## Decisions and denials
 

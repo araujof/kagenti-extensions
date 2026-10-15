@@ -74,6 +74,10 @@ type ManagerOptions struct {
 	// Principal is the Cortex-held caller token for identity resolution on
 	// outbound tool calls and inference requests, or nil when principal injection is off.
 	Principal *principalSource
+
+	// Workload is the pod's SPIFFE JWT-SVID for identity resolution on the
+	// same requests, or nil when workload injection is off.
+	Workload *workloadSource
 }
 
 // NewManager is defined in one of two build-tag-gated files:
