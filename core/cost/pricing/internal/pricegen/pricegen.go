@@ -21,11 +21,28 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
-// AnthropicProvider is the litellm_provider value we keep. Only the first-party
-// Anthropic endpoint's rates are vendor list prices; the vertex_ai/ and bedrock/
-// mirrors carry their own, and mixing them under one "*" host scope would make the
-// bundled table's numbers depend on map iteration order.
-const AnthropicProvider = "anthropic"
+// AnthropicProvider and OpenAIProvider are the litellm_provider values we keep:
+// the first-party endpoints, whose rates are the vendor's own list prices.
+//
+// WHY THE PROVIDER AND NOT THE KEY NAME. Every model upstream appears once per
+// reseller — claude-opus-4-5 under six providers, gpt-6-luna under eight — and
+// the rates DIFFER between them (bedrock prices gpt-6-luna at 1.1e-07 against
+// openai's 1e-07). Those mirrors carry a key prefix (vertex_ai/, bedrock/,
+// azure/) but filtering on the prefix would be guessing at a naming convention;
+// the provider field is the row's own statement of whose price this is. Keeping
+// more than one provider per model under a single "*" host scope would make the
+// table's numbers depend on map iteration order, which is the hazard this
+// filter exists to prevent — and the reason it stays a strict allow-list rather
+// than becoming "everything except the obvious mirrors".
+const (
+	AnthropicProvider = "anthropic"
+	OpenAIProvider    = "openai"
+)
+
+// keepProvider reports whether a row's litellm_provider is one we bundle.
+func keepProvider(p string) bool {
+	return p == AnthropicProvider || p == OpenAIProvider
+}
 
 // contextThreshold is the one long-context breakpoint in scope. LiteLLM also
 // publishes _above_272k and _above_512k variants for other providers, and an
@@ -51,9 +68,9 @@ type modelInfo struct {
 	OutputAbove     *float64 `json:"output_cost_per_token_above_200k_tokens"`
 }
 
-// Filter reduces a full price map to the Anthropic-provider entries, so the
-// committed snapshot is kilobytes rather than the 2.3 MB upstream file, and stamps
-// the upstream commit into it under SnapshotCommitKey.
+// Filter reduces a full price map to the first-party entries of the providers
+// keepProvider names, so the committed snapshot is a fraction of the 2.8 MB
+// upstream file, and stamps the upstream commit into it under SnapshotCommitKey.
 //
 // Idempotent: filtering an already-filtered map is a no-op, which is what lets the
 // generator and the golden test run the same Entries transform over different
@@ -74,7 +91,7 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 		var header struct {
 			Provider string `json:"litellm_provider"`
 		}
-		if json.Unmarshal(body, &header) != nil || header.Provider != AnthropicProvider {
+		if json.Unmarshal(body, &header) != nil || !keepProvider(header.Provider) {
 			continue // sample_spec, non-model rows, and other providers
 		}
 		var mi modelInfo
@@ -82,13 +99,13 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 			// Provider-verified and still unusable: dropping it removes the row from
 			// the snapshot too, and nothing downstream can then notice it is gone.
 			// Upstream changing a cost field's JSON type is exactly how this arrives.
-			return nil, fmt.Errorf("pricegen: %s entry %q failed to decode, which would silently drop it from the snapshot: %w", AnthropicProvider, name, err)
+			return nil, fmt.Errorf("pricegen: %s entry %q failed to decode, which would silently drop it from the snapshot: %w", header.Provider, name, err)
 		}
 		_ = mi // decoded to prove it is usable; the raw body is what gets stored
 		keep[name] = body
 	}
 	if len(keep) == 0 {
-		return nil, fmt.Errorf("pricegen: no %s entries in the price map", AnthropicProvider)
+		return nil, fmt.Errorf("pricegen: no %s or %s entries in the price map", AnthropicProvider, OpenAIProvider)
 	}
 	if commit != "" {
 		stamp, err := json.Marshal(commit)
@@ -108,10 +125,11 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 //     already distinguishes claude-opus-4-1 ($15/Mtok input) from claude-opus-5
 //     ($5/Mtok), which the three hand-measured family globs it replaces priced
 //     identically — a 3x error on every opus-4-1 request.
-//   - One family GLOB row per family, carrying the newest member's rates, so a
-//     model released after this table was generated still prices instead of
-//     dropping out of the dollar total. Exact beats glob within a provenance
-//     level, so a known version always wins over its family's extrapolation.
+//   - One family GLOB row per Anthropic family, carrying the newest member's
+//     rates, so a model released after this table was generated still prices
+//     instead of dropping out of the dollar total. Exact beats glob within a
+//     provenance level, so a known version always wins over its family's
+//     extrapolation. OpenAI rows get no glob — see the gate in the loop below.
 //
 // The family rows are an extrapolation and are the reason provenance exists: they
 // are bundled, not authoritative, and an operator whose gateway disagrees pins it
@@ -137,7 +155,7 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 		var header struct {
 			Provider string `json:"litellm_provider"`
 		}
-		if json.Unmarshal(body, &header) != nil || header.Provider != AnthropicProvider {
+		if json.Unmarshal(body, &header) != nil || !keepProvider(header.Provider) {
 			continue // sample_spec, non-model rows, and other providers
 		}
 		var mi modelInfo
@@ -153,8 +171,8 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 	if len(skipped) > 0 {
 		// Everything reaching here is already provider-verified, so any failure is a
 		// row we meant to keep — no name heuristic needed to tell them apart.
-		return nil, fmt.Errorf("pricegen: %d %s entr(ies) failed to decode, which would silently drop them from the table: %s",
-			len(skipped), AnthropicProvider, strings.Join(skipped, "; "))
+		return nil, fmt.Errorf("pricegen: %d bundled-provider entr(ies) failed to decode, which would silently drop them from the table: %s",
+			len(skipped), strings.Join(skipped, "; "))
 	}
 
 	var out []pricing.Entry
@@ -171,7 +189,7 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 			continue // the generator's provenance stamp, not a model
 		}
 		mi := all[name]
-		if mi.Provider != AnthropicProvider {
+		if !keepProvider(mi.Provider) {
 			continue
 		}
 		rates, ok := ratesOf(mi)
@@ -184,7 +202,15 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 			Rates: rates,
 			Prov:  pricing.ProvBundled,
 		})
-		if fam, ver, dated := parseName(name); fam != "" {
+		// FAMILY GLOBS ARE ANTHROPIC-ONLY, and deliberately so. The glob template
+		// below embeds the literal "claude", and parseName's family extraction is
+		// shaped for Anthropic's naming: on an OpenAI key it returns the vendor
+		// token, so gpt-6-luna, gpt-6-sol and gpt-6-astra all report family "gpt"
+		// and would collapse into one row whose glob — "*claude-*gpt-*" — matches
+		// nothing at all. Extrapolating a model OpenAI has not released yet would
+		// need its own naming rule and its own evidence; an exact row per published
+		// model is what this provider gets until someone writes that.
+		if fam, ver, dated := parseName(name); fam != "" && mi.Provider == AnthropicProvider {
 			cur, seen := newest[fam]
 			if !seen {
 				newest[fam] = name
@@ -248,6 +274,28 @@ func ratesOf(mi modelInfo) (pricing.Rates, bool) {
 		if s {
 			r.Thresholds = []pricing.ContextThreshold{th}
 			break
+		}
+	}
+	// A ROW THE COST PIPELINE WOULD REFUSE IS NOT EMITTED, on the rate alone and so
+	// for every provider alike — see pricing.BundleableRate for why a bundled rate is
+	// held to a stricter bound than a configured one. Reported as unusable rather than
+	// as unpriced, which is the same answer a row with no rate at all gets: the model
+	// then shows up priceable-but-unpriced, where an operator who needs it adds a
+	// `pricing:` entry of their own.
+	//
+	// Checked here rather than at the two call sites so the family GLOB inherits it:
+	// a glob carries its newest member's rates, so a dear model that is dropped as an
+	// exact row must not reappear as its family's extrapolation.
+	for tier, isSet := range r.Set {
+		if isSet && !pricing.BundleableRate(r.Base[tier]) {
+			return pricing.Rates{}, false
+		}
+	}
+	for _, t := range r.Thresholds {
+		for tier, isSet := range t.Set {
+			if isSet && !pricing.BundleableRate(t.Rate[tier]) {
+				return pricing.Rates{}, false
+			}
 		}
 	}
 	return r, r.Base != [4]float64{} || len(r.Thresholds) > 0
