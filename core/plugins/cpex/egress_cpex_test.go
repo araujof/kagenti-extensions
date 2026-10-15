@@ -186,3 +186,21 @@ func TestEnginePrincipalMissingDenies(t *testing.T) {
 	wantReject(t, "http_egress without principal", p.OnRequest(context.Background(),
 		egressRequest("POST", "support.local", "/projects/A/reports", `{}`, nil)), "cpex.principal_unavailable")
 }
+
+// An inbound caller is never asserted as the Cortex-held principal, even
+// on a tool call.
+func TestEnginePrincipalNotInjectedInbound(t *testing.T) {
+	policy := strings.Replace(principalPolicy(), "tool: http_egress", "tool: get_secret", 1)
+	p := configuredEngine(t, map[string]any{
+		"config":    policy,
+		"principal": map[string]any{"token_file": writeToken(t, spikeJWT("alice", nil))},
+	}, HookToolPreInvoke)
+	ctx := context.Background()
+
+	wantContinue(t, "outbound tool call", p.OnRequest(ctx, toolCall("get_secret", nil)))
+	inbound := toolCall("get_secret", nil)
+	inbound.Direction = pipeline.Inbound
+	if a := p.OnRequest(ctx, inbound); a.Type != pipeline.Reject {
+		t.Fatalf("inbound tool call: action = %v, want reject (no principal)", a.Type)
+	}
+}

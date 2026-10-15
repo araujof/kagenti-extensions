@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // codePrincipalUnavailable is the violation code for a tool call that
@@ -61,20 +63,36 @@ func (p *principalSource) load() (string, error) {
 	return tok, nil
 }
 
+// headerName is the principal header, or "" when injection is off.
+func (p *principalSource) headerName() string {
+	if p == nil {
+		return ""
+	}
+	return p.header
+}
+
 var errPrincipalUnavailable = errors.New("principal token unavailable")
+
+// injectsPrincipal reports whether a request identified as entityType gets
+// the Cortex-held principal: only an outbound request, which the monitored
+// agent sends, presented as a tool call. An inbound caller is never
+// asserted as the principal.
+func injectsPrincipal(pctx *pipeline.Context, entityType string) bool {
+	return pctx.Direction == pipeline.Outbound && entityType == "tool"
+}
 
 // identityHeaders builds the header map handed to CPEX identity
 // resolution. With principal injection configured the caller's own copy
-// of the principal header is dropped, and a request presented as a tool
-// call gets the Cortex-held token in its place; errPrincipalUnavailable
-// means that token cannot be read and the request must be denied.
-func identityHeaders(h http.Header, asTool bool, p *principalSource) (map[string]string, error) {
+// of the principal header is dropped, and with inject set the
+// Cortex-held token takes its place; errPrincipalUnavailable means that
+// token cannot be read and the request must be denied.
+func identityHeaders(h http.Header, inject bool, p *principalSource) (map[string]string, error) {
 	out := lowerHeaders(h)
 	if p == nil {
 		return out, nil
 	}
 	delete(out, p.header)
-	if !asTool {
+	if !inject {
 		return out, nil
 	}
 	tok, ok := p.Token()
@@ -86,6 +104,24 @@ func identityHeaders(h http.Header, asTool bool, p *principalSource) (map[string
 	}
 	out[p.header] = tok
 	return out, nil
+}
+
+// withoutHeader returns m without the header name (case-insensitive),
+// leaving m itself unchanged.
+func withoutHeader(m map[string]string, name string) map[string]string {
+	if name == "" || len(m) == 0 {
+		return m
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if !strings.EqualFold(k, name) {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // lowerHeaders flattens http.Header into the lowercase-keyed single-value

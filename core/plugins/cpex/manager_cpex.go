@@ -151,8 +151,8 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		err  error
 	)
 	if hookName != rcpex.HookIdentityResolve && c.mgr.HasHooksFor(rcpex.HookIdentityResolve) {
-		asTool := ext.Meta != nil && ext.Meta.EntityType == "tool"
-		headers, herr := identityHeaders(pctx.Headers, asTool, c.opts.Principal)
+		inject := ext.Meta != nil && injectsPrincipal(pctx, ext.Meta.EntityType)
+		headers, herr := identityHeaders(pctx.Headers, inject, c.opts.Principal)
 		if herr != nil {
 			return Result{
 				Decision: DecisionDeny,
@@ -205,7 +205,7 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	changed := false
 	if pres.ContinueProcessing {
 		var applyErr error
-		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext)); applyErr != nil {
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, sentHeaders(ext), c.opts.Principal.headerName()); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -361,14 +361,16 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 // or a body rewritten. Labels do not count, and neither does a returned
 // header map or payload equal to what was sent, which CPEX 0.3.0 hands
 // back on every allowed call.
-func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string) (changed bool, err error) {
+func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool, sent map[string]string, protect ...string) (changed bool, err error) {
 	if len(pres.ModifiedExtensions) > 0 {
 		ext, err := pres.DeserializeExtensions()
 		if err != nil {
 			return false, fmt.Errorf("decode modified extensions: %w", err)
 		}
 		if ext != nil {
-			changed = applyExtensionChanges(pctx, ext, sent)
+			if changed, err = applyExtensionChanges(pctx, ext, sent, protect...); err != nil {
+				return false, err
+			}
 		}
 	}
 
@@ -546,14 +548,19 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 //   - Labels: merge-add. CPEX labels join the pctx label set; we
 //     don't remove labels other plugins set.
 //
-// It reports whether a header was written.
-func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string) (headersChanged bool) {
+// It reports whether a header was written. Headers named in protect are
+// never written; an invalid header write-back is an error and writes
+// nothing.
+func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string, protect ...string) (headersChanged bool, err error) {
 	if ext.Http != nil && len(ext.Http.RequestHeaders) > 0 {
 		if pctx.Headers == nil {
 			pctx.Headers = http.Header{}
 		}
 		var dropped []string
-		headersChanged, dropped = applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders)
+		headersChanged, dropped, err = applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders, protect...)
+		if err != nil {
+			return false, err
+		}
 		if len(dropped) > 0 {
 			slog.Warn("cpex: dropped header write-back to protected headers", "headers", dropped)
 		}
@@ -574,7 +581,7 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent m
 			}
 		}
 	}
-	return headersChanged
+	return headersChanged, nil
 }
 
 // buildCMF builds a CMF MessagePayload + Extensions from a
@@ -733,7 +740,9 @@ func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcp
 
 	if len(pctx.Headers) > 0 {
 		ext.Http = &rcpex.HttpExtension{
-			RequestHeaders: flattenHeaders(pctx.Headers),
+			// The caller's copy of the principal header is not policy
+			// input; only the identity payload carries the principal.
+			RequestHeaders: withoutHeader(flattenHeaders(pctx.Headers), opts.Principal.headerName()),
 		}
 	}
 

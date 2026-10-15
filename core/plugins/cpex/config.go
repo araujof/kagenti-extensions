@@ -121,8 +121,8 @@ type cpexConfig struct {
 	SyntheticEgress bool `json:"synthetic_egress" default:"false" description:"Present requests no parser claimed as calls to the tool http_egress. Default false."`
 
 	// Principal makes Cortex assert the caller: the token in token_file is
-	// handed to CPEX identity resolution under header for requests presented
-	// as tool calls (MCP tools and http_egress). It is never written to the
+	// handed to CPEX identity resolution under header for outbound requests
+	// presented as tool calls (MCP tools and http_egress). It is never written to the
 	// forwarded request and never added for inference, and a caller's own
 	// copy of header never reaches identity resolution.
 	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on tool calls; never forwarded."`

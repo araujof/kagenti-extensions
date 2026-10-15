@@ -307,9 +307,10 @@ policy that inspects bodies should deny when `truncated` is true or
 must not hold the credential. For requests presented as tool calls (MCP tools
 and `http_egress`) the token is added under `principal.header` to the headers
 CPEX identity resolution reads, so an `identity/jwt` plugin configured with that
-`header:` resolves the subject. The token is never written to the forwarded
+`header:` resolves the subject. Only outbound requests get it: an inbound caller
+is never asserted as the principal. The token is never written to the forwarded
 request and never added to inference traffic, and a caller's own copy of the
-header never reaches identity resolution. When the file cannot be read, Cortex
+header reaches neither identity resolution nor the `http` extension. When the file cannot be read, Cortex
 logs a warning at startup and denies those tool calls with
 `cpex.principal_unavailable` until it can.
 
@@ -333,9 +334,12 @@ vocabulary:
   supported on OpenAI chat requests only; one on any other dialect, or a
   changed tool result, is an error that `fail_open` governs. Request headers are written back as a diff against
   those sent to CPEX, so an assertion can strip or replace a header. Headers
-  never sent (Cookie, API keys) and `host`, `content-length`,
-  `transfer-encoding`, `connection`, `proxy-*` and `x-authbridge-*` are never
-  written; such writes are dropped and logged by name.
+  never sent (Cookie, API keys), the hop-by-hop and framing headers (`host`,
+  `content-length`, `transfer-encoding`, `connection`, `keep-alive`, `te`,
+  `trailer`, `upgrade`), `proxy-*`, `x-authbridge-*` and `principal.header`
+  are never written; such writes are dropped and logged by name. A returned
+  header name or value that is invalid on the wire (a CR or LF, say) is an
+  error that `fail_open` governs, and nothing is written.
 - **observe**: audit-only outcome, recorded, request continues.
 
 **How a rejection is rendered.** The plugin sets the decision and a status

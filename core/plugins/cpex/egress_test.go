@@ -192,3 +192,43 @@ func TestConfigure_EgressAndPrincipal(t *testing.T) {
 		}
 	}
 }
+
+// The principal is asserted only on outbound requests Cortex presents as
+// a tool call; an inbound caller never gets it.
+func TestInjectsPrincipal(t *testing.T) {
+	cases := []struct {
+		dir        pipeline.Direction
+		entityType string
+		want       bool
+	}{
+		{pipeline.Outbound, "tool", true},
+		{pipeline.Outbound, entityTypeLLM, false},
+		{pipeline.Outbound, globalEntityType, false},
+		{pipeline.Outbound, "prompt", false},
+		{pipeline.Outbound, "", false},
+		{pipeline.Inbound, "tool", false},
+		{pipeline.Inbound, entityTypeLLM, false},
+	}
+	for _, c := range cases {
+		if got := injectsPrincipal(&pipeline.Context{Direction: c.dir}, c.entityType); got != c.want {
+			t.Errorf("injectsPrincipal(%v, %q) = %v, want %v", c.dir, c.entityType, got, c.want)
+		}
+	}
+}
+
+func TestWithoutHeader(t *testing.T) {
+	m := map[string]string{"X-User-Token": "spoofed", "Accept": "a"}
+	if got := withoutHeader(m, "x-user-token"); len(got) != 1 || got["Accept"] != "a" {
+		t.Fatalf("got %v", got)
+	}
+	if _, ok := m["X-User-Token"]; !ok {
+		t.Fatal("input mutated")
+	}
+	if got := withoutHeader(m, ""); len(got) != 2 {
+		t.Fatalf("empty name: %v", got)
+	}
+	var nilSource *principalSource
+	if nilSource.headerName() != "" {
+		t.Fatal("nil source has a header name")
+	}
+}
