@@ -80,3 +80,21 @@ func TestEngineToolResultCountWithoutResults(t *testing.T) {
 	req.Extensions.Inference.ToolResults = nil
 	wantContinue(t, "no tool results", p.OnRequest(context.Background(), req))
 }
+
+// With the step's code in observe_codes, the inference request carrying
+// the secret is forwarded and the session is still tainted.
+func TestEngineToolResultTaintWithoutDeny(t *testing.T) {
+	p := configuredEngine(t, map[string]any{
+		"config":           toolResultTaintPolicy,
+		"synthetic_egress": true,
+		"observe_codes":    []string{"secret_in_tool_result"},
+	}, HookLLMInput, HookToolPreInvoke)
+	ctx := context.Background()
+	leaky := anthropicToolResultRequest("s1")
+	leaky.Extensions.Inference.ToolResults[0].Content = "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
+	wantContinue(t, "secret tool result", p.OnRequest(ctx, leaky))
+
+	e := egressRequest("POST", "support.local", "/projects/A/reports", `{"r":"ok"}`, http.Header{"X-Session-Id": {"s1"}})
+	e.Identity = claimsIdentity{sub: "alice"}
+	wantReject(t, "egress after taint", p.OnRequest(ctx, e), "cpex.session_tainted")
+}

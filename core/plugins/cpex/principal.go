@@ -15,6 +15,10 @@ import (
 // needs the Cortex-held principal when its token file cannot be read.
 const codePrincipalUnavailable = "principal_unavailable"
 
+// codeDelegationUnavailable is the violation code for an allowed result
+// whose delegate() step minted a credential the host cannot read.
+const codeDelegationUnavailable = "delegation_unavailable"
+
 // principalSource holds the caller token principal injection presents to
 // CPEX identity resolution. The token lives only here and in the identity
 // payload handed to CPEX; it is never written to pctx.

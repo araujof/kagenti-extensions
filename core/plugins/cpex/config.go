@@ -137,6 +137,14 @@ type cpexConfig struct {
 	// written to the forwarded request, and a caller's own copy of header
 	// never reaches identity resolution.
 	Workload workloadConfig `json:"workload" description:"The pod's SPIFFE JWT-SVID for CPEX identity resolution (role: caller_workload) on outbound tool calls and inference requests; never forwarded."`
+
+	// ObserveCodes lists policy violation codes the plugin records as
+	// observe instead of enforcing. CPEX keeps the labels the denying
+	// step set, so a step can taint a session on content without blocking
+	// the request: PPE 0.5.0 has no other conditional taint, since a CEL
+	// step that is false always denies. Steps after the denying one do
+	// not run. Codes the plugin itself emits cannot be listed.
+	ObserveCodes []string `json:"observe_codes" description:"Policy violation codes recorded as observe instead of enforced; the labels the denying step set still apply."`
 }
 
 // principalConfig configures principal injection. An empty TokenFile turns
@@ -264,6 +272,15 @@ func (c *cpexConfig) validate() error {
 			return fmt.Errorf("hooks.on_response: empty hook name")
 		}
 	}
+	for _, code := range c.ObserveCodes {
+		n := observeCode(code)
+		switch {
+		case n == "cpex.unspecified" || strings.ContainsAny(code, "*?"):
+			return fmt.Errorf("observe_codes: %q is not a violation code", code)
+		case pluginCodes[n]:
+			return fmt.Errorf("observe_codes: %q is emitted by the plugin, not by policy", code)
+		}
+	}
 	for _, p := range c.BypassHosts {
 		if _, err := path.Match(p, ""); err != nil {
 			return fmt.Errorf("invalid bypass_hosts pattern %q: %w", p, err)
@@ -283,6 +300,21 @@ func (c *cpexConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+// observeCode normalizes an observe_codes entry to the namespaced code
+// a deny carries, with or without its "cpex." prefix.
+func observeCode(code string) string {
+	return "cpex." + sanitizeReason(strings.TrimPrefix(strings.TrimSpace(code), "cpex."))
+}
+
+// pluginCodes are deny codes the plugin emits itself; they guard against
+// forwarding a request CPEX cannot vouch for, so they are never observed.
+var pluginCodes = map[string]bool{
+	"cpex." + codePrincipalUnavailable:  true,
+	"cpex." + codeDelegationUnavailable: true,
+	"cpex." + codeAmbiguousRequest:      true,
+	"cpex." + codeUnnamedEntity:         true,
 }
 
 // resolveYAML returns the CPEX YAML string the operator supplied —

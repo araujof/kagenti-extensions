@@ -792,3 +792,64 @@ func TestDispatch_DenyRecordsDetailsNotReason(t *testing.T) {
 		t.Fatalf("invocations = %+v", inv)
 	}
 }
+
+// A deny whose code is in observe_codes is recorded as observe and the
+// chain continues; the session labels the denying step set stay with CPEX.
+func TestDispatch_ObserveCodeContinues(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookLLMInput, HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookLLMInput:      {Decision: DecisionDeny, Code: "secret_in_tool_result", Reason: "found AKIA1234"},
+			HookToolPreInvoke: {Decision: DecisionAllow},
+		},
+	}
+	cfg := `{"hooks":{"on_request":["cmf.llm_input","cmf.tool_pre_invoke"]},"observe_codes":["secret_in_tool_result"]}`
+	p := setupAndInit(t, fake, cfg)
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	if a := p.OnRequest(context.Background(), pctx); a.Type != pipeline.Continue {
+		t.Fatalf("Type = %d, want Continue", a.Type)
+	}
+	if len(fake.Invokes) != 2 {
+		t.Fatalf("Invokes = %d, want 2 (an observed code does not stop the chain)", len(fake.Invokes))
+	}
+	inv := pctx.Extensions.Invocations.Outbound
+	if len(inv) != 2 || inv[0].Action != pipeline.ActionObserve || inv[0].Reason != "cpex.secret_in_tool_result" {
+		t.Fatalf("invocations = %+v, want observe cpex.secret_in_tool_result first", inv)
+	}
+}
+
+func TestDispatch_ObserveCodesLeaveOtherDenies(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "egress_host"},
+		},
+	}
+	p := setupAndInit(t, fake, `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"observe_codes":["cpex.secret_in_tool_result"]}`)
+	if a := p.OnRequest(context.Background(), &pipeline.Context{}); a.Type != pipeline.Reject || a.Violation.Code != "cpex.egress_host" {
+		t.Fatalf("want Reject cpex.egress_host, got %#v", a)
+	}
+}
+
+// An approval wait is not a deny to observe.
+func TestDispatch_ObserveCodesKeepSuspension(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "elicitation_pending", Elicitation: &Elicitation{ID: "e1"}},
+		},
+	}
+	p := setupAndInit(t, fake, `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"observe_codes":["elicitation_pending"]}`)
+	if a := p.OnRequest(context.Background(), &pipeline.Context{}); a.Type != pipeline.Reject {
+		t.Fatalf("want the suspension to reject, got %#v", a)
+	}
+}
+
+func TestConfigure_RejectsBadObserveCodes(t *testing.T) {
+	for _, codes := range []string{`[""]`, `["delegation_unavailable"]`, `["cpex.principal_unavailable"]`, `["*"]`} {
+		p := setupFake(&FakeManager{})
+		if err := p.Configure([]byte(`{"observe_codes":` + codes + `}`)); err == nil {
+			t.Errorf("observe_codes %s: want error", codes)
+		}
+	}
+}

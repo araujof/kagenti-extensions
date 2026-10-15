@@ -261,6 +261,10 @@ routes:
 A CEL step allows when its expression is true and denies when it is false, so
 this step taints the session and denies the inference request together; a
 later `http_egress` route can then deny on `security.labels contains "secret"`.
+To taint without blocking the request, list the code in the plugin's
+`observe_codes` (`observe_codes: [secret_in_tool_result]`): the deny is
+recorded as `observe`, the request is forwarded, and the label stays. Steps
+after the denying one do not run, so make it the route's last step.
 
 Caller identity lives in `SecurityExtension.Subject`. Policies read it from
 `security.subject`, not `agent.agent_id`. The `agent` slot models the agent's own
@@ -327,6 +331,7 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `principal.header` | `x-user-token` | identity header the token is presented under; must not be `Authorization` |
 | `workload.audience` | empty | audience of the pod's JWT-SVID that Cortex asserts as the calling workload; empty turns it off |
 | `workload.header` | `x-workload-token` | identity header the JWT-SVID is presented under; must not be `Authorization` or `principal.header` |
+| `observe_codes` | empty | policy violation codes recorded as observe instead of enforced; the labels the denying step set still apply (see below). Plugin-emitted codes are refused |
 
 A `cpex` plugin with no hooks, no config, and no config file is installed but
 inert. Configure succeeds and both phases return continue. `config` and

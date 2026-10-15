@@ -82,6 +82,10 @@ type CPEX struct {
 	// request; the goroutine-safe scan happens via matchesAnyHost.
 	bypassHosts []string
 
+	// observeCodes holds the namespaced deny codes recorded as observe
+	// rather than enforced (observe_codes).
+	observeCodes map[string]bool
+
 	// newManager is the Manager constructor used by Configure. When
 	// nil — the production default — Configure calls the
 	// package-level NewManager (real cpex adapter when -tags cpex,
@@ -195,6 +199,13 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	}
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
+	p.observeCodes = nil
+	for _, code := range c.ObserveCodes {
+		if p.observeCodes == nil {
+			p.observeCodes = map[string]bool{}
+		}
+		p.observeCodes[observeCode(code)] = true
+	}
 
 	// bypass_hosts is honored on the outbound phase only and ignored on the
 	// inbound reverse-proxy phase, where the Host header is attacker-
@@ -486,6 +497,10 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 			code = "cpex." + sanitizeReason(res.Code)
 		}
 		slog.Debug("cpex: policy denied", "code", code, "reason", res.Reason)
+		if p.observeCodes[code] {
+			pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: code, Details: res.Details})
+			return pipeline.Action{Type: pipeline.Continue}, false
+		}
 		return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, res.Details), true
 	case DecisionModify:
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: res.Reason, Details: res.Details})

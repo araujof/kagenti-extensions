@@ -264,10 +264,6 @@ func messageEgressDetails(msg *rcpex.Message) map[string]string {
 	return nil
 }
 
-// codeDelegationUnavailable is the violation code for an allowed result
-// whose delegate() step minted a credential the host cannot read.
-const codeDelegationUnavailable = "delegation_unavailable"
-
 // delegatedTokensWithheld reports whether a delegate() step granted a
 // token on this invocation. CPEX 0.3.0 returns only the token's metadata
 // (audience, outbound header) in raw_credentials.delegated_tokens; the
