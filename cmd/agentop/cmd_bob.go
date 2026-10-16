@@ -1404,10 +1404,11 @@ func (c bobCommand) enable() int {
 	if ideChanges && ide.blockNote != "" {
 		fmt.Fprint(c.stdout, ide.blockNote)
 	}
-	// Not gated on shellChanges: a note is set exactly when the half will NOT
+	// Not gated on shellChanges: a finding is set exactly when the half will NOT
 	// write, which is when shellChanges is false. With editor-half changes
 	// pending, this is the only line that says the rc file was left alone.
-	if shell.note != "" {
+	// leftAlone, not note: a plain absence is not a finding.
+	if shell.leftAlone() {
 		fmt.Fprintln(c.stdout, shell.note)
 	}
 	if ideChanges && len(ide.edits) > 0 {
@@ -1534,7 +1535,7 @@ func (c bobCommand) applyEnableEditor(p *bobEnablePlan) int {
 func (c bobCommand) enableReport(ide *bobEnablePlan, shell bobShellPlan, ideChanges, shellChanges bool, ideTotal, shellTotal int) {
 	fmt.Fprintln(c.stdout)
 	switch {
-	case ideTotal == 0 && shellTotal == 0 && shell.note == "":
+	case ideTotal == 0 && shellTotal == 0 && !shell.leftAlone():
 		fmt.Fprintln(c.stdout, "Enabled.")
 	case ideTotal == 0 && ideChanges:
 		// The shell half failed, was skipped, or was left alone with a finding
@@ -1840,11 +1841,11 @@ func (c bobCommand) disable() int {
 	}
 
 	// --- Findings, then the one prompt ---
-	// shell.note is not gated on shellChanges: a note is set exactly when the
-	// half will NOT write, which is when shellChanges is false — and with
-	// editor-half changes pending, this is the only line that says the rc file
-	// was left alone.
-	hasFindings := (ide != nil && len(ide.notes) > 0) || (ideChanges && ide.guessing) || shell.note != ""
+	// shell.leftAlone, not shellChanges and not note alone: a finding is set
+	// exactly when the half will NOT write (so shellChanges is false), and a
+	// plain absence is a note that is not a finding. With editor-half changes
+	// pending, this is the only line that says the rc file was left alone.
+	hasFindings := (ide != nil && len(ide.notes) > 0) || (ideChanges && ide.guessing) || shell.leftAlone()
 	if hasFindings {
 		fmt.Fprintln(c.stdout)
 	}
@@ -1863,7 +1864,7 @@ func (c bobCommand) disable() int {
 		fmt.Fprintf(c.stdout, "Note: %s is not readable, so %q is judged by shape alone — a loopback\n"+
 			"  proxy, which is what agentop writes.\n", c.cortexCfgPath, bobProxyKey)
 	}
-	if shell.note != "" {
+	if shell.leftAlone() {
 		fmt.Fprintln(c.stdout, shell.note)
 	}
 	if !c.yes && !bobConfirm(c.stdout) {
@@ -1887,12 +1888,14 @@ func (c bobCommand) disable() int {
 	// --- The report ---
 	fmt.Fprintln(c.stdout)
 	switch {
-	case ideTotal == 0 && shellTotal == 0 && shell.note == "":
+	case ideTotal == 0 && shellTotal == 0 && !shell.leftAlone():
 		fmt.Fprintln(c.stdout, "Disabled — IBM Bob no longer routes through Cortex.")
 	case ideTotal == 0 && ideChanges:
 		// The shell half failed, was skipped, or was left alone with a finding
 		// printed above; in every one of those bob() may still be in the rc
-		// file, and the headline must not claim otherwise.
+		// file, and the headline must not claim otherwise. A plain absence is
+		// not any of those: nothing of the shell half's was there to remove,
+		// so a full disable happened.
 		fmt.Fprintln(c.stdout, "Disabled the editor half.")
 	case shellTotal == 0 && shellChanges:
 		fmt.Fprintln(c.stdout, "Disabled the shell half.")

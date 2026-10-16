@@ -214,9 +214,23 @@ type bobShellPlan struct {
 	// already is the requested state already holding — nothing to do, and not a
 	// finding either.
 	already bool
-	// note is a finding printed before the prompt when nothing will be written:
-	// an unrecognised or duplicated block, left alone with the reason.
+	// note is what the half says when it will not write. Two kinds, told apart
+	// by already: a FINDING (already false) — an unrecognised or duplicated
+	// block, left alone with the reason, which the merged command must show
+	// beside any prompt, because it is the one line that says the rc file was
+	// left alone — and PLAIN ABSENCE (already true) — "not enabled, nothing to
+	// do", which belongs in the nothing-to-do arm alone: with the other half
+	// changing the same file, printing "nothing to do" above an Apply? prompt
+	// contradicts the preview under it.
 	note string
+}
+
+// leftAlone is whether the note is a finding: a block agentop declined to
+// touch, as opposed to the requested state simply holding already. The merged
+// command's preview and report key on this, not on note alone, because both
+// kinds of note exist and only one of them narrows a headline.
+func (p bobShellPlan) leftAlone() bool {
+	return p.note != "" && !p.already
 }
 
 // bobShellEnablePlan computes what enable would do to the rc file: append the
@@ -257,11 +271,12 @@ func bobShellEnablePlan(path string) (bobShellPlan, error) {
 
 // bobShellDisablePlan computes what disable would do to the rc file: remove the
 // block, or nothing. The error is a failure to read the file; a file that does
-// not exist holds nothing of ours, which is a finding and not a failure.
+// not exist holds nothing of ours, which is the already state — reported, not
+// failed, and not a finding either.
 func bobShellDisablePlan(path string) (bobShellPlan, error) {
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return bobShellPlan{path: path, note: fmt.Sprintf("Not enabled in %s (no such file). Nothing to do.", path)}, nil
+		return bobShellPlan{path: path, already: true, note: fmt.Sprintf("Not enabled in %s (no such file). Nothing to do.", path)}, nil
 	}
 	if err != nil {
 		return bobShellPlan{}, err
@@ -293,7 +308,9 @@ func bobShellDisablePlan(path string) (bobShellPlan, error) {
 				"\n  %s\n  ...\n  %s",
 			path, bobShellMarkerStart, bobShellMarkerEnd)}, nil
 	}
-	return bobShellPlan{path: path, note: fmt.Sprintf("Not enabled in %s. Nothing to do.", path)}, nil
+	// Plain absence, same as no file at all: the requested state holds, so the
+	// note is for the nothing-to-do arm — not a finding (see bobShellPlan.note).
+	return bobShellPlan{path: path, already: true, note: fmt.Sprintf("Not enabled in %s. Nothing to do.", path)}, nil
 }
 
 // apply writes the plan's change to the file as it is NOW, not as the plan read

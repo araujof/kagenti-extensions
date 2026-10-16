@@ -2259,6 +2259,64 @@ func TestBob_ShellFindingsSurviveEditorChangesPending(t *testing.T) {
 	})
 }
 
+// The other side of the findings rule: a half whose requested state already
+// holds has nothing to report. Disable's plain-absence notes — "Not enabled in
+// X. Nothing to do." — say the shell half's work is already done, so with
+// editor-half changes pending they are not findings: printing "Nothing to do."
+// above an Apply? prompt contradicts the preview, and narrowing the headline to
+// "Disabled the editor half." takes a full, successful disable and describes it
+// as half of one. The note still prints in the nothing-to-do arm, where the
+// whole command has nothing to change.
+func TestBob_ShellAbsenceIsNotAFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string // "" means no rc file at all
+	}{
+		{name: "rc file holds nothing of ours", content: "export EDITOR=vim\n"},
+		{name: "no rc file at all"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, cfg := fixture(t, `{"`+bobProxyKey+`": "http://127.0.0.1:47600"}`)
+			var out, errb bytes.Buffer
+			c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
+			if tc.content != "" {
+				if err := os.WriteFile(c.shellRC, []byte(tc.content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if code := c.disable(); code != 0 {
+				t.Fatalf("exit = %d, want 0 — the disable succeeded outright: %s%s",
+					code, out.String(), errb.String())
+			}
+			if strings.Contains(out.String(), "Nothing to do.") {
+				t.Errorf("the shell half's plain absence is reported as a finding:\n%s", out.String())
+			}
+			if !strings.Contains(out.String(), "Disabled — IBM Bob no longer routes through Cortex.") {
+				t.Errorf("a full disable is not reported as one:\n%s", out.String())
+			}
+		})
+	}
+
+	// The absence note itself is not gone — it belongs in the nothing-to-do arm,
+	// where the whole command has nothing to change. Asserted on the rc-naming
+	// form, because the arm's closing line ("Not enabled. Nothing to do.")
+	// satisfies a looser "Not enabled" on its own.
+	t.Run("the note still prints when nothing at all is to do", func(t *testing.T) {
+		settings, cfg := fixture(t, `{}`)
+		var out, errb bytes.Buffer
+		c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
+		if err := os.WriteFile(c.shellRC, []byte("export EDITOR=vim\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := c.disable(); code != 0 {
+			t.Fatalf("exit = %d: %s%s", code, out.String(), errb.String())
+		}
+		if !strings.Contains(out.String(), "Not enabled in "+c.shellRC) {
+			t.Errorf("the shell half's absence note is not reported:\n%s", out.String())
+		}
+	})
+}
+
 // A skipped editor half is 1, like bobNotInstalled: the half's change did not
 // happen, and bobCombine must not let the shell half's success read as the whole
 // command's. Base set the code in runBob's skip arm; the merge moved the skip
