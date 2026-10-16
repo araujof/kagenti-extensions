@@ -96,8 +96,11 @@ info "version=$CPEX_FFI_VERSION abi=$CPEX_FFI_ABI target=$CPEX_FFI_TARGET dest=$
 pinned="$(awk -v f="$TARBALL" '$2 == f {print $1}' "$CPEX_FFI_SHA256_FILE")"
 [[ -n "$pinned" ]] || err "no pinned digest for $TARBALL in $CPEX_FFI_SHA256_FILE"
 
-# A previous verified run leaves VERSION, FFI_ABI and the library together.
+# A previous verified run leaves VERSION, FFI_ABI and the library together,
+# with .pinned-sha256 naming the digest of the tarball they came from. A
+# cache without it, or from a tarball pinned differently, is fetched again.
 if [[ -f "$CPEX_FFI_DEST/VERSION" && -f "$CPEX_FFI_DEST/FFI_ABI" && -f "$CPEX_FFI_DEST/libcpex_ffi.a" ]] &&
+    [[ -f "$CPEX_FFI_DEST/.pinned-sha256" && "$(tr -d '[:space:]' <"$CPEX_FFI_DEST/.pinned-sha256")" == "$pinned" ]] &&
     [[ "$(manifest_version "$CPEX_FFI_DEST")" == "$CPEX_FFI_VERSION" ]] &&
     [[ "$(tr -d '[:space:]' <"$CPEX_FFI_DEST/FFI_ABI")" == "$CPEX_FFI_ABI" ]]; then
     info "already present; skipping download"
@@ -160,6 +163,7 @@ got_version="$(manifest_version "$STAGE")"
 got_abi="$(tr -d '[:space:]' <"$STAGE/FFI_ABI")"
 [[ "$got_abi" == "$CPEX_FFI_ABI" ]] || err "FFI_ABI mismatch: tarball says '$got_abi', expected '$CPEX_FFI_ABI' (bump CPEX_FFI_ABI and the Go module together)"
 
+echo "$pinned" >"$STAGE/.pinned-sha256"
 mv "$STAGE" "$CPEX_FFI_DEST"
 STAGE=""
 info "installed libcpex_ffi.a (VERSION=$got_version FFI_ABI=$got_abi)"
