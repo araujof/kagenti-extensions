@@ -47,7 +47,7 @@ func TestBobEnable_MacOSWritesBothKeysTheBlockAndTheRecord(t *testing.T) {
 	_, ca := bobWanted(cfg, t.TempDir())
 	ran := stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s%s", code, out.String(), errb.String())
 	}
 	doc := bobDoc(t, settings)
@@ -70,7 +70,7 @@ func TestBobEnable_MacOSWritesBothKeysTheBlockAndTheRecord(t *testing.T) {
 	if *ran != 1 {
 		t.Errorf("probe ran %d times, want once", *ran)
 	}
-	for _, want := range []string{"Checked:", "reopen it from the Dock or Spotlight", "bobide"} {
+	for _, want := range []string{"reopen it from the Dock or Spotlight", "bobide"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output omits %q:\n%s", want, out.String())
 		}
@@ -89,7 +89,7 @@ func TestBobEnable_MacOSCreatesAMissingSettingsFile(t *testing.T) {
 	_, ca := bobWanted(cfg, t.TempDir())
 	stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s%s", code, out.String(), errb.String())
 	}
 	doc := bobDoc(t, settings)
@@ -118,15 +118,16 @@ func TestBobRoundTrip_MacOSIsByteIdentical(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			want, ca := bobWanted(cfg, t.TempDir())
+			_, ca := bobWanted(cfg, t.TempDir())
 			stubProbe(t, ca, nil)
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+			c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+			if code := c.enable(); code != 0 {
 				t.Fatalf("enable exit %d: %s%s", code, out.String(), errb.String())
 			}
 			out.Reset()
 			errb.Reset()
-			if code := bobDisable(settings, cfg, want, ca, l, true, &out, &errb); code != 0 {
+			if code := c.disable(); code != 0 {
 				t.Fatalf("disable exit %d: %s%s", code, out.String(), errb.String())
 			}
 			if got := mustRead(t, settings); got != bobHandFormatted {
@@ -155,17 +156,18 @@ func TestBobRoundTrip_MacOSIsByteIdentical(t *testing.T) {
 func TestBobDisable_MacOSLeavesTheUsersOwnFalse(t *testing.T) {
 	settings, cfg := fixture(t, `{"http.systemCertificates": false}`)
 	l := macLaunch(t)
-	want, ca := bobWanted(cfg, t.TempDir())
+	_, ca := bobWanted(cfg, t.TempDir())
 	stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+	if code := c.enable(); code != 0 {
 		t.Fatalf("enable exit %d: %s%s", code, out.String(), errb.String())
 	}
 	if _, err := os.Stat(l.statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("recorded ownership of a value the user set: %v", err)
 	}
 	out.Reset()
-	if code := bobDisable(settings, cfg, want, ca, l, true, &out, &errb); code != 0 {
+	if code := c.disable(); code != 0 {
 		t.Fatalf("disable exit %d: %s%s", code, out.String(), errb.String())
 	}
 	if v, ok := bobDoc(t, settings)[bobSysCertsKey]; !ok || v != false {
@@ -181,16 +183,17 @@ func TestBobDisable_MacOSLeavesTheUsersOwnFalse(t *testing.T) {
 func TestBobDisable_MacOSLeavesAValueChangedSinceEnable(t *testing.T) {
 	settings, cfg := fixture(t, "{}")
 	l := macLaunch(t)
-	want, ca := bobWanted(cfg, t.TempDir())
+	_, ca := bobWanted(cfg, t.TempDir())
 	stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+	if code := c.enable(); code != 0 {
 		t.Fatalf("enable exit %d: %s", code, errb.String())
 	}
 	if err := bobWriteKey(settings, bobSysCertsKey, true); err != nil {
 		t.Fatal(err)
 	}
-	if code := bobDisable(settings, cfg, want, ca, l, true, &out, &errb); code != 0 {
+	if code := c.disable(); code != 0 {
 		t.Fatalf("disable exit %d: %s", code, errb.String())
 	}
 	if v := bobDoc(t, settings)[bobSysCertsKey]; v != true {
@@ -212,7 +215,7 @@ func TestBobEnable_MacOSRefusesAChosenSystemCertificates(t *testing.T) {
 			ran := stubProbe(t, "", nil)
 			asked := noPrompt(t, true)
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, l, false, &out, &errb); code != 1 {
+			if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 1 {
 				t.Errorf("exit %d, want 1:\n%s%s", code, out.String(), errb.String())
 			}
 			if !strings.Contains(errb.String(), bobSysCertsKey) {
@@ -248,7 +251,7 @@ func TestBobEnable_MacOSWritesTheBlockBeforeTheSettings(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 1 {
+	if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 1 {
 		t.Fatalf("exit %d with an unwritable settings directory, want 1", code)
 	}
 	if !strings.Contains(mustRead(t, l.rcPath), bobLaunchBlock(ca)) {
@@ -267,7 +270,10 @@ func TestBobEnable_MacOSReportsTheProbe(t *testing.T) {
 		want    []string
 		wantNot []string
 	}{
-		{name: "set to the CA", value: "CA", want: []string{"Checked:"}, wantNot: []string{"WARNING"}},
+		// Success is SILENCE on a fresh enable: "Enabled." followed by nothing reads
+		// as verified, and the already-enabled arm is where the probe's answer is
+		// the point of the run.
+		{name: "set to the CA", value: "CA", want: []string{"Enabled."}, wantNot: []string{"WARNING", "Checked:"}},
 		{name: "not set", value: "", want: []string{"WARNING", "does not set", "~/.bash_profile"}},
 		{name: "set to something else", value: "/elsewhere.pem", want: []string{"WARNING", "/elsewhere.pem", "something after the block"}},
 		{name: "probe failed", err: errors.New("bash did not finish"), want: []string{"Not checked: bash did not finish"}, wantNot: []string{"WARNING", "Checked:"}},
@@ -282,7 +288,7 @@ func TestBobEnable_MacOSReportsTheProbe(t *testing.T) {
 			}
 			stubProbe(t, v, tc.err)
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+			if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 			for _, w := range tc.want {
@@ -307,13 +313,15 @@ func TestBobEnable_MacOSAlreadyEnabledStillProbes(t *testing.T) {
 	_, ca := bobWanted(cfg, t.TempDir())
 	ran := stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+	if code := c.enable(); code != 0 {
 		t.Fatalf("first enable exit %d: %s", code, errb.String())
 	}
 	beforeRC, beforeSettings := mustRead(t, l.rcPath), mustRead(t, settings)
 	out.Reset()
 	asked := noPrompt(t, true)
-	if code := bobEnable(settings, cfg, l, false, &out, &errb); code != 0 {
+	c.yes = false
+	if code := c.enable(); code != 0 {
 		t.Fatalf("second enable exit %d: %s", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "Already enabled") {
@@ -339,7 +347,7 @@ func TestBobEnable_MacOSUnknownShellPrintsTheBlock(t *testing.T) {
 	_, ca := bobWanted(cfg, t.TempDir())
 	stubProbe(t, ca, nil)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, l, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if !strings.Contains(out.String(), bobLaunchBlock(ca)) {
@@ -354,7 +362,7 @@ func TestBobEnable_MacOSUnknownShellPrintsTheBlock(t *testing.T) {
 // nor disable touches it.
 func TestBobLaunchBlock_EditedOrDuplicatedIsLeftAlone(t *testing.T) {
 	_, cfg := fixture(t, "")
-	want, ca := bobWanted(cfg, t.TempDir())
+	_, ca := bobWanted(cfg, t.TempDir())
 	edited := "\n" + bobLaunchMarkerStart + "\nexport NODE_EXTRA_CA_CERTS=/mine.pem\n" + bobLaunchMarkerEnd + "\n"
 	for name, rc := range map[string]string{
 		"edited":     edited,
@@ -368,10 +376,11 @@ func TestBobLaunchBlock_EditedOrDuplicatedIsLeftAlone(t *testing.T) {
 			}
 			stubProbe(t, ca, nil)
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, l, true, &out, &errb); code != 0 {
+			c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+			if code := c.enable(); code != 0 {
 				t.Fatalf("enable exit %d: %s", code, errb.String())
 			}
-			if code := bobDisable(settings, cfg, want, ca, l, true, &out, &errb); code != 0 {
+			if code := c.disable(); code != 0 {
 				t.Fatalf("disable exit %d: %s", code, errb.String())
 			}
 			if mustRead(t, l.rcPath) != rc {
@@ -384,17 +393,54 @@ func TestBobLaunchBlock_EditedOrDuplicatedIsLeftAlone(t *testing.T) {
 	}
 }
 
+// Both halves write the SAME rc file on macOS, so this is the test of the
+// shared-file apply: enable's two blocks must both land, and disable must take
+// both out. Until the applies re-read the file at write time, the second
+// whole-file write silently dropped the first half's block — status then
+// reported the CA-trust block missing right after a successful enable. Found
+// live rather than by the suite, because bobHalf deliberately gives the halves
+// separate scratch files; this test points them at the one file, as runBob does
+// on macOS.
+func TestBobEnableDisable_SharedRCFileKeepsBothBlocks(t *testing.T) {
+	settings, cfg := fixture(t, "{}")
+	l := macLaunch(t)
+	_, ca := bobWanted(cfg, t.TempDir())
+	stubProbe(t, ca, nil)
+	var out, errb bytes.Buffer
+	c := bobHalf(t, l, settings, cfg, true, &out, &errb)
+	c.shellRC = l.rcPath // the one file both halves write, as on macOS
+
+	if code := c.enable(); code != 0 {
+		t.Fatalf("enable exit %d: %s%s", code, out.String(), errb.String())
+	}
+	got := mustRead(t, l.rcPath)
+	if !strings.Contains(got, bobLaunchBlock(ca)) {
+		t.Errorf("the CA-trust block did not survive the shell half's write:\n%s", got)
+	}
+	if !strings.Contains(got, bobShellBlock) {
+		t.Errorf("the bob function did not land:\n%s", got)
+	}
+
+	out.Reset()
+	if code := c.disable(); code != 0 {
+		t.Fatalf("disable exit %d: %s%s", code, out.String(), errb.String())
+	}
+	if got := mustRead(t, l.rcPath); got != "" {
+		t.Errorf("disable left bytes behind in the shared rc file: %q", got)
+	}
+}
+
 // The off switch works whatever state Bob is in: with no settings file at all, the
 // block enable wrote still comes out.
 func TestBobDisable_MacOSWithNoSettingsFileStillRemovesTheBlock(t *testing.T) {
 	settings, cfg := fixture(t, "")
 	l := macLaunch(t)
-	want, ca := bobWanted(cfg, t.TempDir())
+	_, ca := bobWanted(cfg, t.TempDir())
 	if err := os.WriteFile(l.rcPath, []byte("export EDITOR=vim\n"+bobLaunchBlock(ca)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, l, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, l, settings, cfg, true, &out, &errb).disable(); code != 0 {
 		t.Fatalf("exit %d: %s%s", code, out.String(), errb.String())
 	}
 	if got := mustRead(t, l.rcPath); got != "export EDITOR=vim\n" {
@@ -433,8 +479,8 @@ func TestBobStatus_MacOSNeedsAllThree(t *testing.T) {
 				}
 			}
 			ran := stubProbe(t, ca, nil)
-			var out bytes.Buffer
-			if code := bobStatus(settings, cfg, want, ca, l, &out); code != 0 {
+			var out, errb bytes.Buffer
+			if code := bobHalf(t, l, settings, cfg, false, &out, &errb).status(); code != 0 {
 				t.Fatalf("exit %d", code)
 			}
 			if gotYes := strings.HasPrefix(out.String(), bobStatusYes+"\n"); gotYes != tc.wantYes {

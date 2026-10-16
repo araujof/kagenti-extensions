@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +92,10 @@ type bobLaunch struct {
 	// macOS turns the whole mechanism on. runtime.GOOS in production; a field so the
 	// macOS paths are tested on the Linux CI runners too.
 	macOS bool
+	// home is the user's home directory, for abbreviating the paths the findings
+	// name: a report line that reads ~/Library/... stays a line, where the full
+	// path wraps past the edge of a terminal and takes its sentence with it.
+	home string
 	// shell is $SHELL, which picks the rc file and is what the probe runs.
 	shell string
 	// rcPath is the rc file to edit, symlink-resolved. Empty when rcErr says why
@@ -110,37 +113,22 @@ type bobLaunch struct {
 }
 
 // resolveBobLaunch maps $SHELL and $HOME to a bobLaunch, applying bobshell's rules for
-// which file and how far to follow a link — bobShellRCPath and rcTarget themselves,
-// so the two commands always pick the same file and refuse the same arrangements.
+// which file and how far to follow a link — bobShellResolve itself, so the two halves
+// always pick the same file and refuse the same arrangements.
 func resolveBobLaunch(home, shell string) bobLaunch {
 	l := bobLaunch{
 		macOS:     runtime.GOOS == "darwin",
+		home:      home,
 		shell:     shell,
 		statePath: filepath.Join(home, bobStateRel),
 	}
 	if !l.macOS {
 		return l
 	}
-	path, err := bobShellRCPath(shell, home)
-	if err != nil {
-		l.rcErr = err
-		return l
-	}
-	target, hops, err := rcTarget(path)
-	switch {
-	// The same three-way split runBobShell makes, and for its reasons: an absent file
-	// at hop 0 is normal (enable creates it), a missing target one hop in is a
-	// dangling link, and any other error is agentop failing to look.
-	case err != nil && !(hops == 0 && errors.Is(err, os.ErrNotExist)):
-		if !errors.Is(err, os.ErrNotExist) {
-			l.rcReadErr = fmt.Errorf("cannot read %s: %w", path, err)
-		} else {
-			l.rcErr = fmt.Errorf("cannot follow %s: %w", path, err)
-		}
-	case hops > maxRCSymlinkHops:
-		l.rcErr = fmt.Errorf("%s is a symlink chain deeper than the %d agentop will follow", path, maxRCSymlinkHops)
-	default:
-		l.rcPath = target
+	path, advise, readErr := bobShellResolve(home, shell)
+	l.rcErr, l.rcReadErr = advise, readErr
+	if advise == nil && readErr == nil {
+		l.rcPath = path
 	}
 	return l
 }
@@ -249,36 +237,48 @@ var bobProbeLaunch = func(shell string) (string, error) {
 	return string(rest[:end]), nil
 }
 
-// bobReportProbe runs the probe and says what it found. Advisory: the settings and
-// the block are written either way, and a failed check is a reason to look, not to
-// undo.
-func bobReportProbe(l bobLaunch, caPath string, stdout io.Writer) {
+// reportProbe runs the probe and says what it found. Advisory: the settings and
+// the block are written either way, and a failed check is a reason to look, not
+// to undo.
+//
+// verbose is the already-enabled arm, where the probe's answer IS the point of
+// the re-run — "a re-run of enable is how someone asks whether it is working".
+// Otherwise only a finding is printed: a fresh enable that verified cleanly says
+// nothing, because "Enabled." followed by silence reads as verified.
+func (c bobCommand) reportProbe(caPath string, verbose bool) {
+	l := c.launch
 	if l.shell == "" {
-		fmt.Fprint(stdout, "Not checked: $SHELL is not set, so agentop cannot start your shell the way\n"+
-			"  IBM Bob does.\n\n")
+		if verbose {
+			fmt.Fprint(c.stdout, "Not checked: $SHELL is not set, so agentop cannot start your shell the way\n"+
+				"  IBM Bob does.\n\n")
+		}
 		return
 	}
 	got, err := bobProbeLaunch(l.shell)
 	switch {
 	case err != nil:
-		fmt.Fprintf(stdout, "Not checked: %v.\n\n", err)
+		// Always said, even quiet: a check that could not run is a finding, not
+		// a success — "Enabled." over silence would read as verified.
+		fmt.Fprintf(c.stdout, "Not checked: %v.\n\n", err)
 	case got == caPath:
-		fmt.Fprintf(stdout, "Checked: your login shell, started the way IBM Bob starts it, sets\n"+
-			"  %s=%s.\n\n", envCACerts, caPath)
+		if verbose {
+			fmt.Fprintf(c.stdout, "Checked: your login shell, started the way IBM Bob starts it, sets\n"+
+				"  %s=%s.\n\n", envCACerts, caPath)
+		}
 	case got == "":
-		fmt.Fprintf(stdout, "WARNING: your login shell, started the way IBM Bob starts it, does not set\n"+
+		fmt.Fprintf(c.stdout, "WARNING: your login shell, started the way IBM Bob starts it, does not set\n"+
 			"  %s, so Bob will not trust Cortex's CA.\n", envCACerts)
 		if filepath.Base(l.rcPath) == ".bashrc" {
-			fmt.Fprint(stdout, "  bash starts it as a LOGIN shell, which reads ~/.bash_profile and not\n"+
+			fmt.Fprint(c.stdout, "  bash starts it as a LOGIN shell, which reads ~/.bash_profile and not\n"+
 				"  ~/.bashrc. Source ~/.bashrc from ~/.bash_profile — the usual arrangement — or\n"+
 				"  move the block there.\n\n")
 		} else {
-			fmt.Fprint(stdout, "  Make sure the block is in a file your login shell reads.\n\n")
+			fmt.Fprint(c.stdout, "  Make sure the block is in a file your login shell reads.\n\n")
 		}
 	default:
 		// Something later in the startup files sets the variable again. Naming the
 		// value is the useful part: it is the user's own export, and they can find it.
-		fmt.Fprintf(stdout, "WARNING: your login shell, started the way IBM Bob starts it, sets\n"+
+		fmt.Fprintf(c.stdout, "WARNING: your login shell, started the way IBM Bob starts it, sets\n"+
 			"  %s=%s, not Cortex's %s — something after the block sets it again.\n\n",
 			envCACerts, got, caPath)
 	}
@@ -287,24 +287,18 @@ func bobReportProbe(l bobLaunch, caPath string, stdout io.Writer) {
 // bobLaunchCheck is status's read of the launch half, from files alone: whether
 // http.systemCertificates is false and whether the block is in the rc file. It never
 // runs the probe — status writes nothing and runs nothing, and only enable starts the
-// user's shell — so "the block is there" is as far as it can say, and its line says so.
+// user's shell — so "the block is there" is as far as it can say.
 //
-// ok is both halves in place. problem is the first missing one, for the status
-// table's single detail line; lines is every finding, for bob status's paragraph.
-func bobLaunchCheck(l bobLaunch, caPath string, doc map[string]any) (ok bool, lines []string, problem string) {
-	fail := func(line string) {
-		lines = append(lines, line)
-		if problem == "" {
-			problem = line
-		}
-	}
+// ok is both halves in place. problems is every finding, for the status report's
+// indented lines; the status table's row takes only the first, as its detail.
+func bobLaunchCheck(l bobLaunch, caPath string, doc map[string]any) (ok bool, problems []string) {
+	fail := func(line string) { problems = append(problems, line) }
 	sysOK := false
 	switch v, present := doc[bobSysCertsKey]; {
 	case !present:
 		fail(fmt.Sprintf("%q is unset, so Bob's extensions do not read Cortex's CA", bobSysCertsKey))
 	case v == false:
 		sysOK = true
-		lines = append(lines, fmt.Sprintf("%q=false", bobSysCertsKey))
 	default:
 		fail(fmt.Sprintf("%q=%v; Bob's extensions read Cortex's CA only with it false", bobSysCertsKey, v))
 	}
@@ -316,21 +310,20 @@ func bobLaunchCheck(l bobLaunch, caPath string, doc map[string]any) (ok bool, li
 	case l.rcErr != nil:
 		fail(fmt.Sprintf("%v, so agentop has not looked for the cortex bob block", l.rcErr))
 	default:
+		rc := tildePath(l.home, l.rcPath)
 		b, err := os.ReadFile(l.rcPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			fail(fmt.Sprintf("cannot read %s: %v", l.rcPath, err))
+			fail(fmt.Sprintf("cannot read %s: %v", rc, err))
 			break
 		}
 		switch copies, edited := bobRCBlockState(string(b), bobLaunchBlock(caPath)); {
 		case copies > 0:
 			blockOK = true
-			lines = append(lines, fmt.Sprintf("the cortex bob block is in %s; enable checks that your", l.rcPath),
-				"login shell reads it")
 		case edited:
-			fail(fmt.Sprintf("%s has a cortex bob block that is not the one agentop writes", l.rcPath))
+			fail(fmt.Sprintf("%s has a cortex bob block that is not the one agentop writes", rc))
 		default:
-			fail(fmt.Sprintf("the cortex bob block is not in %s", l.rcPath))
+			fail(fmt.Sprintf("the cortex bob block is not in %s", rc))
 		}
 	}
-	return sysOK && blockOK, lines, problem
+	return sysOK && blockOK, problems
 }
