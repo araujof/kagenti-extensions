@@ -68,7 +68,7 @@ func bobDoc(t *testing.T, path string) map[string]any {
 func TestBobEnable_WritesHTTPProxy(t *testing.T) {
 	settings, cfg := fixture(t, "{}")
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if got := bobDoc(t, settings)[bobProxyKey]; got != "http://127.0.0.1:47600" {
@@ -125,7 +125,7 @@ func TestBobEnable_ChangesOneLineAndNoOtherByte(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -190,11 +190,11 @@ func TestBobEnableDisable_RoundTripsByteForByte(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("enable: exit %d: %s", code, errb.String())
 	}
 	proxy, caPath := bobWanted(cfg, t.TempDir())
-	if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, errb.String())
 	}
 
@@ -351,7 +351,7 @@ func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
 			proxy, caPath := bobWanted(cfg, t.TempDir())
 
 			var out, errb bytes.Buffer
-			if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
+			if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 
@@ -390,7 +390,7 @@ func TestBobDisable_IgnoresTheKeyNameInsideValuesAndNesting(t *testing.T) {
 	proxy, caPath := bobWanted(cfg, t.TempDir())
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -454,7 +454,7 @@ func TestBobEnable_PreservesEverythingElse(t *testing.T) {
 	before := bobDoc(t, settings)
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -490,7 +490,7 @@ func TestBobEnable_PreservesEverythingElse(t *testing.T) {
 func TestBobEnable_IsIdempotent(t *testing.T) {
 	settings, cfg := fixture(t, "{}")
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("first run: exit %d: %s", code, errb.String())
 	}
 	first, err := os.ReadFile(settings)
@@ -501,7 +501,7 @@ func TestBobEnable_IsIdempotent(t *testing.T) {
 	asked := noPrompt(t, false) // would decline; must not be consulted at all
 	out.Reset()
 	errb.Reset()
-	if code := bobEnable(settings, cfg, false, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb); code != 0 {
 		t.Fatalf("second run: exit %d: %s", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "Already enabled") {
@@ -529,7 +529,7 @@ func TestBobEnable_RefusesAForeignProxy(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 1 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(errb.String(), "proxy.corp.example.com:3128") {
@@ -570,7 +570,7 @@ func TestBobEnable_DerivesPortAndCAFromConfig(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+			if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 			if got := bobDoc(t, settings)[bobProxyKey]; got != tc.wantProxy {
@@ -599,7 +599,7 @@ func TestBobEnable_RefusesADisabledBridge(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 1 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
 		t.Fatalf("exit = %d, want 1: %s", code, errb.String())
 	}
 	if _, err := os.Stat(settings + ".bak"); err == nil {
@@ -617,7 +617,7 @@ func TestBobEnable_RejectsCommentedSettings(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 1 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(errb.String(), "comment") {
@@ -641,7 +641,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13, "http.proxy": "http://127.0.0.1:47600"}`)
 		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
 			t.Fatalf("exit %d: %s", code, errb.String())
 		}
 		doc := bobDoc(t, settings)
@@ -661,7 +661,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -677,7 +677,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
 		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		if !strings.Contains(out.String(), "Not enabled") {
@@ -693,7 +693,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -756,7 +756,7 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 	// unattended one: without it, a fix that dropped the prompt entirely would pass.
 	asked := noPrompt(t, true)
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, false, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, false, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if *asked != 1 {
@@ -807,7 +807,7 @@ func TestBobStatus_ThreeStates(t *testing.T) {
 
 			var out bytes.Buffer
 			want, ca := bobWanted(cfg, t.TempDir())
-			if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+			if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
 				t.Fatalf("exit = %d, want 0 — a report is not a verdict", code)
 			}
 
@@ -887,7 +887,7 @@ func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
 
 			var out bytes.Buffer
 			want, ca := bobWanted(cfg, t.TempDir())
-			if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+			if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
 
@@ -919,7 +919,7 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	settings, cfg := fixture(t, `{"http.proxy": "http://127.0.0.1:47699"}`)
 	var out bytes.Buffer
 	want, ca := bobWanted(cfg, t.TempDir())
-	if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+	if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "47699") || !strings.Contains(out.String(), "47600") {
@@ -939,7 +939,7 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	// value, in which case the bare advice becomes true and this stops objecting.
 	var enableOut, enableErr bytes.Buffer
 	noPrompt(t, true) // enable must not block on a prompt if it gets that far
-	if code := bobEnable(settings, cfg, true, &enableOut, &enableErr); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &enableOut, &enableErr); code != 0 {
 		// enable refuses, so the detail lines must not present it as the whole fix.
 		// The bare sentence is the exact shape that was wrong.
 		if strings.Contains(out.String(), "run `agentop configure bob enable` to move it") {
@@ -965,7 +965,7 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 		asked := noPrompt(t, false)
 
 		var out, errb bytes.Buffer
-		if code := bobEnable(settings, cfg, false, &out, &errb); code != exitDeclined {
+		if code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb); code != exitDeclined {
 			t.Fatalf("exit = %d, want %d", code, exitDeclined)
 		}
 		if *asked != 1 {
@@ -990,7 +990,7 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 
 		var out, errb bytes.Buffer
 		want, ca := bobWanted(cfg, t.TempDir())
-		if code := bobDisable(settings, cfg, want, ca, false, &out, &errb); code != exitDeclined {
+		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, false, &out, &errb); code != exitDeclined {
 			t.Fatalf("exit = %d, want %d", code, exitDeclined)
 		}
 		after, err := os.ReadFile(settings)
@@ -1077,13 +1077,10 @@ func TestBob_TrustMessageQuotesPaths(t *testing.T) {
 	dir := t.TempDir()
 	spaced := filepath.Join(dir, "Application Support", "ca.crt")
 	for name, got := range map[string]string{
-		"trust":   bobTrustNote(spaced),
-		"untrust": bobUntrustNote(spaced),
-		"verify":  bobVerifyNote(spaced),
+		"trust":         bobTrustNote(spaced),
+		"untrust macOS": bobUntrustNote(spaced, true),
+		"untrust other": bobUntrustNote(spaced, false),
 	} {
-		if got == "" {
-			continue // non-darwin verify note
-		}
 		if strings.Contains(got, spaced) && !strings.Contains(got, shellQuote(spaced)) {
 			t.Errorf("%s note contains the bare path, unquoted:\n%s", name, got)
 		}
@@ -1099,14 +1096,9 @@ func TestBob_TrustMessageQuotesPaths(t *testing.T) {
 // `delete-certificate -c authbridge-tls-bridge-ca` would not reverse it. This pins the
 // deviation so it cannot be "corrected" back to the request's wording.
 func TestBob_TrustMessageNamesCaCrtNotBundle(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("the keychain commands are darwin-only")
-	}
 	ca := filepath.Join(t.TempDir(), "ca.crt")
 	for name, got := range map[string]string{
-		"trust":   bobTrustNote(ca),
-		"untrust": bobUntrustNote(ca),
-		"verify":  bobVerifyNote(ca),
+		"untrust": bobUntrustNote(ca, true),
 	} {
 		for _, line := range strings.Split(got, "\n") {
 			if !strings.Contains(line, "security ") {
@@ -1119,8 +1111,8 @@ func TestBob_TrustMessageNamesCaCrtNotBundle(t *testing.T) {
 	}
 	// And the undo command has to name the keychain it added to, or a System-keychain
 	// add is not undone by it.
-	if !strings.Contains(bobUntrustNote(ca), bobSystemKeychain) {
-		t.Errorf("the untrust command does not name the keychain:\n%s", bobUntrustNote(ca))
+	if !strings.Contains(bobUntrustNote(ca, true), bobSystemKeychain) {
+		t.Errorf("the untrust command does not name the keychain:\n%s", bobUntrustNote(ca, true))
 	}
 }
 
@@ -1301,11 +1293,11 @@ func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
 			var code int
 			switch verb {
 			case "enable":
-				code = bobEnable(settings, cfg, true, &out, &errb)
+				code = bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb)
 			case "disable":
-				code = bobDisable(settings, cfg, want, ca, true, &out, &errb)
+				code = bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb)
 			case "status":
-				code = bobStatus(settings, cfg, want, ca, &out)
+				code = bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
 			}
 
 			// status reports; the two writers fail. Both are "refused" — the
@@ -1362,7 +1354,7 @@ func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
 func TestBob_ADuplicateOfAnotherKeyIsNotRefused(t *testing.T) {
 	settings, cfg := fixture(t, `{"editor.fontSize": 13, "editor.fontSize": 14}`)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0: %s", code, errb.String())
 	}
 	if got := bobDoc(t, settings)[bobProxyKey]; got == nil {
@@ -1398,7 +1390,7 @@ func TestBobDisable_LeavesACredentialBearingProxyAlone(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error: %s", code, errb.String())
 	}
 
@@ -1460,7 +1452,7 @@ func TestBob_EnableDisableRoundTripOnANon476xxPort(t *testing.T) {
 	}
 
 	var enOut, enErr bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &enOut, &enErr); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &enOut, &enErr); code != 0 {
 		t.Fatalf("enable exit %d: %s", code, enErr.String())
 	}
 	got, _ := bobDoc(t, settings)[bobProxyKey].(string)
@@ -1472,7 +1464,7 @@ func TestBob_EnableDisableRoundTripOnANon476xxPort(t *testing.T) {
 	// the address enable derived it from.
 	want, ca := bobWanted(cfg, t.TempDir())
 	var disOut, disErr bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, true, &disOut, &disErr); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &disOut, &disErr); code != 0 {
 		t.Fatalf("disable exit %d: %s", code, disErr.String())
 	}
 	if _, ok := bobDoc(t, settings)[bobProxyKey]; ok {
@@ -1559,44 +1551,34 @@ func TestBobProxyIsListening(t *testing.T) {
 	}
 }
 
-// The printed undo must actually undo the printed change. This is the reported bug:
-// enable prints `add-trusted-cert -d -r trustRoot`, which writes trust settings to the
-// ADMIN domain, and disable printed only `delete-certificate -t`, whose own usage text
-// says it removes the certificate and "user trust settings" — a different domain. So a
-// user who ran both was left with admin-domain trustRoot settings for a certificate
-// that no longer existed, and no printed command had removed them.
+// The printed undo must actually undo the change earlier versions of enable printed.
+// Those printed `add-trusted-cert -d -r trustRoot`, which writes trust settings to the
+// ADMIN domain, and disable once printed only `delete-certificate -t`, whose own usage
+// text says it removes the certificate and "user trust settings" — a different domain.
+// So a user who ran both was left with admin-domain trustRoot settings for a
+// certificate that no longer existed, and no printed command had removed them.
 //
-// Asserted as a pairing rather than as a literal, so the two messages cannot drift
-// apart again: whatever flag enable uses to WRITE trust, disable must name the
-// command that removes it from the same domain.
-func TestBobTrustNoteAndUndoCoverTheSameDomain(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skipf("the keychain commands are darwin-only; this GOOS prints distro guidance")
-	}
+// enable no longer prints the add on macOS — the launch environment replaced it — but
+// people who ran it still need the undo, so the undo is pinned against the exact
+// command those versions printed.
+func TestBobUntrustNoteUndoesTheEarlierKeychainAdd(t *testing.T) {
 	ca := "/tmp/ca.crt"
-	trust, untrust := bobTrustNote(ca), bobUntrustNote(ca)
+	const earlierAdd = "sudo security add-trusted-cert -d -r trustRoot -k " + bobSystemKeychain + " /tmp/ca.crt"
+	untrust := bobUntrustNote(ca, true)
 
-	// What enable writes.
-	if !strings.Contains(trust, "add-trusted-cert -d") {
-		t.Fatalf("enable no longer writes admin-domain trust, so this test is judging the wrong thing:\n%s", trust)
-	}
 	// The undo for exactly that, with -d repeated. Without the -d, remove-trusted-cert
 	// works on the user domain, which the add never touched.
-	if !strings.Contains(untrust, "remove-trusted-cert -d") {
+	if !strings.Contains(earlierAdd, "add-trusted-cert -d") || !strings.Contains(untrust, "remove-trusted-cert -d") {
 		t.Errorf("the undo does not remove admin-domain trust settings:\n%s", untrust)
 	}
 	// And the certificate itself, from the keychain the add named. A delete that
 	// defaults to the login keychain does not undo a System-keychain add.
-	if !strings.Contains(untrust, "delete-certificate") {
-		t.Errorf("the undo never deletes the certificate:\n%s", untrust)
+	if !strings.Contains(untrust, "delete-certificate") || !strings.Contains(untrust, bobSystemKeychain) {
+		t.Errorf("the undo does not delete the certificate from %s:\n%s", bobSystemKeychain, untrust)
 	}
-	if !strings.Contains(trust, bobSystemKeychain) || !strings.Contains(untrust, bobSystemKeychain) {
-		t.Errorf("the two messages do not name the same keychain:\nadd:\n%s\nundo:\n%s", trust, untrust)
-	}
-	// The bug's exact signature: delete-certificate -t as the ONLY trust-removing
-	// step. Pinned directly so a regression names itself.
-	if strings.Contains(untrust, "delete-certificate") && !strings.Contains(untrust, "remove-trusted-cert") {
-		t.Error("the undo is delete-certificate alone again, which leaves admin-domain trust behind")
+	// Conditional, because this version of enable never asked for the add.
+	if !strings.Contains(untrust, "If an earlier agentop") {
+		t.Errorf("the undo reads as though this enable made a keychain change:\n%s", untrust)
 	}
 }
 
@@ -1808,7 +1790,7 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 
 			asked := noPrompt(t, true)
 			var out, errb bytes.Buffer
-			code := bobDisable(settings, cfg, want, ca, tc.yes, &out, &errb)
+			code := bobDisable(settings, cfg, want, ca, bobLaunch{}, tc.yes, &out, &errb)
 
 			if code != tc.wantCode {
 				t.Errorf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, tc.wantCode, out.String(), errb.String())
@@ -1913,7 +1895,7 @@ func TestBobEnable_ReplacesADifferentSpellingOfTheSameListener(t *testing.T) {
 	noPrompt(t, true)
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	// Not "Already enabled": the values differ, so this must be a write.
@@ -1952,130 +1934,173 @@ func mustRead(t *testing.T, path string) string {
 	return string(b)
 }
 
-// No settings document means IBM Bob has not saved settings here, and all three verbs
-// must say so rather than act.
+// A missing settings.json is not a missing Bob. IBM Bob writes the file the first time a
+// setting changes, so a Bob that has run on every default has none — and enable refused
+// exactly that user with "IBM Bob has not saved settings here". What says Bob has run is
+// its User directory, which it creates on first launch. Each shape below pins what the
+// three verbs do with it, on a fresh fixture per verb so one verb's write cannot become
+// the next one's input.
 //
-// The three shapes are one test because readSettings maps every one of them to the same
-// empty map, which is what made this worth fixing: before bobNoDocument, `null` and a
-// missing file produced byte-identical output, and enable on `null` printed what it
-// would set, prompted, wrote a .bak, and only then failed inside bobSetKey.
-//
-// Subtest names deliberately carry no flag spelling. bobNotInstalled interpolates
-// settingsPath into its message, t.TempDir() names its directory after the subtest, so a
-// name containing "--yes" would make an assertion on that string match the path instead
-// of the prose — which has already silently defeated one mutation in this file's history.
-func TestBobVerbs_RefuseWithoutASettingsDocument(t *testing.T) {
+// Subtest names deliberately carry no flag spelling. bobNotInstalled interpolates the
+// path into its message, t.TempDir() names its directory after the subtest, so a name
+// containing "--settings" would make an assertion on that string match the path
+// instead of the prose — which has already silently defeated one mutation in this
+// file's history.
+func TestBobVerbs_SettingsDocumentShapes(t *testing.T) {
+	type expect struct {
+		code   int
+		has    []string
+		hasNot []string
+	}
 	for _, tc := range []struct {
-		name, body string
-		write      bool
+		name string
+		// setup returns the settings path to use, given a fixture's.
+		setup                   func(t *testing.T, settings string) string
+		enable, disable, status expect
+		// created: enable leaves a settings file holding the proxy.
+		created bool
 	}{
-		{name: "absent", write: false},
-		{name: "empty", body: "", write: true},
-		{name: "only the null literal", body: "null\n", write: true},
+		{
+			name:    "absent in Bob's directory",
+			setup:   func(t *testing.T, settings string) string { return settings },
+			created: true,
+			enable:  expect{code: 0, has: []string{"No backup is made"}},
+			disable: expect{code: 0, has: []string{"does not exist; nothing to remove there", "Nothing to do"}},
+			status:  expect{code: 0, has: []string{bobStatusNo, "does not exist yet"}, hasNot: []string{bobStatusUnknown}},
+		},
+		{
+			name: "empty",
+			setup: func(t *testing.T, settings string) string {
+				if err := os.WriteFile(settings, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return settings
+			},
+			created: true,
+			enable:  expect{code: 0},
+			disable: expect{code: 0, has: []string{"sets no", "Nothing to do"}},
+			status:  expect{code: 0, has: []string{bobStatusNo}, hasNot: []string{bobStatusUnknown, "does not exist yet"}},
+		},
+		{
+			name: "no Bob directory",
+			setup: func(t *testing.T, settings string) string {
+				return filepath.Join(filepath.Dir(settings), "IBM Bob", "User", "settings.json")
+			},
+			enable:  expect{code: 1, has: []string{"has not run here", "Nothing to enable", "Start IBM Bob", "--settings"}},
+			disable: expect{code: 0, has: []string{"has not run here; nothing to remove there", "Nothing to do"}},
+			status:  expect{code: 0, has: []string{bobStatusUnknown}, hasNot: []string{bobStatusYes, bobStatusNo}},
+		},
+		{
+			name: "only the null literal",
+			setup: func(t *testing.T, settings string) string {
+				if err := os.WriteFile(settings, []byte("null\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return settings
+			},
+			enable:  expect{code: 1, has: []string{"holds only `null`", "Nothing to enable"}},
+			disable: expect{code: 0, has: []string{"holds only `null`", "Nothing to do"}},
+			status:  expect{code: 0, has: []string{bobStatusUnknown}, hasNot: []string{bobStatusYes, bobStatusNo}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// fixture skips the write on "", which is the absent case; the other two
-			// need the file to exist, so they are written here.
-			settings, cfg := fixture(t, "")
-			if tc.write {
-				if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
-					t.Fatal(err)
+			check := func(t *testing.T, got int, text string, e expect) {
+				t.Helper()
+				if got != e.code {
+					t.Errorf("exit = %d, want %d\n%s", got, e.code, text)
+				}
+				for _, w := range e.has {
+					if !strings.Contains(text, w) {
+						t.Errorf("output omits %q:\n%s", w, text)
+					}
+				}
+				for _, w := range e.hasNot {
+					if strings.Contains(text, w) {
+						t.Errorf("output has %q:\n%s", w, text)
+					}
 				}
 			}
 
-			for _, verb := range []struct {
-				what string
-				run  func(stdout, stderr io.Writer) int
-			}{
-				{"enable", func(o, e io.Writer) int { return bobEnable(settings, cfg, true, o, e) }},
-				{"disable", func(o, e io.Writer) int {
-					want, ca := bobWanted(cfg, t.TempDir())
-					return bobDisable(settings, cfg, want, ca, true, o, e)
-				}},
-			} {
-				t.Run(verb.what, func(t *testing.T) {
-					asked := noPrompt(t, true)
-					var out, errb bytes.Buffer
-					if code := verb.run(&out, &errb); code != 1 {
-						t.Errorf("exit = %d, want 1\n%s%s", code, out.String(), errb.String())
-					}
-					// The refusal must name the verb it is refusing, so the two are
-					// not one message with the wrong word in it.
-					if !strings.Contains(errb.String(), "Nothing to "+verb.what) {
-						t.Errorf("does not say what it will not do: %q", errb.String())
-					}
-					// Naming the way out, on both routes: make Bob write the file, or
-					// point at one it does use.
-					for _, want := range []string{"Start IBM Bob", "--settings"} {
-						if !strings.Contains(errb.String(), want) {
-							t.Errorf("the refusal omits %q: %q", want, errb.String())
-						}
-					}
-					// The failure being closed: no prompt, and no .bak. Promising a
-					// write and then failing inside the writer is the exact shape
-					// this gate exists to prevent.
+			t.Run("enable", func(t *testing.T) {
+				base, cfg := fixture(t, "")
+				settings := tc.setup(t, base)
+				asked := noPrompt(t, true)
+				before, beforeErr := os.ReadFile(settings)
+				var out, errb bytes.Buffer
+				code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb)
+				check(t, code, out.String()+errb.String(), tc.enable)
+				if !tc.created {
+					// A refusal: no prompt, nothing written, no directory conjured up.
 					if *asked != 0 {
 						t.Errorf("prompted %d times before refusing", *asked)
+					}
+					after, afterErr := os.ReadFile(settings)
+					if !bytes.Equal(before, after) || (beforeErr == nil) != (afterErr == nil) {
+						t.Error("changed the settings file for a refusal")
+					}
+					if _, err := os.Stat(filepath.Dir(settings)); beforeErr != nil && err == nil {
+						t.Error("created Bob's directory for a refusal")
 					}
 					if _, err := os.Stat(settings + ".bak"); err == nil {
 						t.Error("wrote a .bak for a refusal")
 					}
-					// An error is not an answer: nothing on stdout.
-					if out.Len() != 0 {
-						t.Errorf("stdout not empty: %q", out.String())
-					}
-				})
-			}
-
-			t.Run("status", func(t *testing.T) {
-				var out bytes.Buffer
-				// Exit 0: reporting that it cannot tell is a successful report, the
-				// same rule the other two status verdicts follow.
+					return
+				}
+				if got := bobDoc(t, settings)[bobProxyKey]; got != "http://127.0.0.1:47600" {
+					t.Errorf("%s = %v after enable, want the config's proxy", bobProxyKey, got)
+				}
+			})
+			t.Run("disable", func(t *testing.T) {
+				base, cfg := fixture(t, "")
+				settings := tc.setup(t, base)
+				noPrompt(t, true)
+				before, beforeErr := os.ReadFile(settings)
+				var out, errb bytes.Buffer
 				want, ca := bobWanted(cfg, t.TempDir())
-				if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
-					t.Errorf("exit = %d, want 0", code)
+				code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb)
+				check(t, code, out.String()+errb.String(), tc.disable)
+				after, afterErr := os.ReadFile(settings)
+				if !bytes.Equal(before, after) || (beforeErr == nil) != (afterErr == nil) {
+					t.Errorf("disable changed a file holding nothing of agentop's")
 				}
-				if !strings.Contains(out.String(), bobStatusUnknown) {
-					t.Errorf("does not report the status as unknown:\n%s", out.String())
-				}
-				// The distinction the whole change turns on: "unknown" must not be
-				// dressed as a verdict about Bob's settings. Both of the other two
-				// answers are claims this run cannot make.
-				for _, wrong := range []string{bobStatusYes, bobStatusNo} {
-					if strings.Contains(out.String(), wrong) {
-						t.Errorf("also printed a verdict it cannot support (%q):\n%s", wrong, out.String())
-					}
-				}
+			})
+			t.Run("status", func(t *testing.T) {
+				base, cfg := fixture(t, "")
+				settings := tc.setup(t, base)
+				var out bytes.Buffer
+				want, ca := bobWanted(cfg, t.TempDir())
+				code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
+				check(t, code, out.String(), tc.status)
 			})
 		})
 	}
 }
 
-// The three document shapes must not be reported identically. Their being
-// indistinguishable is what made the old behaviour hard to see: a missing --settings
-// path and a null document produced the same output, so a typo looked like a working
-// run against an unconfigured Bob.
+// The two shapes status cannot judge must not be reported identically. Their being
+// indistinguishable is what made the old behaviour hard to see: a --settings typo and a
+// null document produced the same output, so a typo looked like a working run against
+// an unconfigured Bob.
 func TestBobStatus_DistinguishesWhyThereIsNoDocument(t *testing.T) {
 	seen := map[string]string{}
 	for _, tc := range []struct {
 		name, body string
-		write      bool
+		nodir      bool
 	}{
-		{name: "absent", write: false},
-		{name: "empty", body: "", write: true},
-		{name: "only the null literal", body: "null\n", write: true},
+		{name: "no Bob directory", nodir: true},
+		{name: "only the null literal", body: "null\n"},
 	} {
 		settings, cfg := fixture(t, "")
-		if tc.write {
-			if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
-				t.Fatal(err)
-			}
+		if tc.nodir {
+			settings = filepath.Join(filepath.Dir(settings), "missing", "settings.json")
+		} else if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
 		}
 		var out bytes.Buffer
 		want, ca := bobWanted(cfg, t.TempDir())
-		bobStatus(settings, cfg, want, ca, &out)
+		bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
 		// The path varies per subtest, so compare only the reason line's prose.
 		reason := strings.TrimSpace(strings.TrimPrefix(out.String(), bobStatusUnknown))
+		reason = strings.TrimPrefix(reason, filepath.Dir(settings))
 		reason = strings.TrimPrefix(reason, settings)
 		if prev, dup := seen[reason]; dup {
 			t.Errorf("%s reports identically to %s: %q", tc.name, prev, reason)

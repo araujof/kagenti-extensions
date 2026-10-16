@@ -112,8 +112,8 @@ func configureStatusFuncs() []func(home string) configureStatus {
 				// has not looked at a file and must not report as though it had.
 				return configureStatus{Agent: "bob", State: configureUnknown, Detail: err.Error()}
 			}
-			wantProxy, _ := bobWanted(cfg, home)
-			return bobState(settings, cfg, wantProxy)
+			wantProxy, caPath := bobWanted(cfg, home)
+			return bobState(settings, cfg, wantProxy, resolveBobLaunch(home, os.Getenv("SHELL")), caPath)
 		},
 		func(string) configureStatus { return bobShellState() },
 		func(home string) configureStatus {
@@ -279,7 +279,12 @@ func claudeCodeStateFrom(settingsPath string, doc map[string]any, err error) con
 // configureOff, because it is the one "no" that is about Cortex: something configured
 // this and the port moved. bobStatus prints two paragraphs about that case; this is
 // the one-word version of them.
-func bobState(settingsPath, cortexCfgPath, wantProxy string) configureStatus {
+//
+// On macOS, bobOurs is configureOn only with the launch half in place too —
+// http.systemCertificates false and the shell block present (bobLaunchCheck). Without
+// them the proxy is set but Bob's extensions cannot read Cortex's CA, which is a
+// Cortex configuration started and not finished: configurePartial.
+func bobState(settingsPath, cortexCfgPath, wantProxy string, launch bobLaunch, caPath string) configureStatus {
 	row := func(s configureState, detail string) configureStatus {
 		return configureStatus{Agent: "bob", State: s, Detail: detail}
 	}
@@ -306,7 +311,7 @@ func bobState(settingsPath, cortexCfgPath, wantProxy string) configureStatus {
 		// identical case, and the distinction this table exists to draw.
 		return row(configureUnknown, err.Error())
 	}
-	return bobStateFrom(settingsPath, doc, cortexCfgPath, wantProxy)
+	return bobStateFrom(settingsPath, doc, cortexCfgPath, wantProxy, launch, caPath)
 }
 
 // bobStateFrom is bobState over a settings document already read.
@@ -322,7 +327,7 @@ func bobState(settingsPath, cortexCfgPath, wantProxy string) configureStatus {
 // question about the FILE rather than about a document — whether it exists at all, and
 // whether it defines the key twice, which a decoded map can no longer answer. bobStatus
 // asks those two itself, before this, and answers them in its own words.
-func bobStateFrom(settingsPath string, doc map[string]any, cortexCfgPath, wantProxy string) configureStatus {
+func bobStateFrom(settingsPath string, doc map[string]any, cortexCfgPath, wantProxy string, launch bobLaunch, caPath string) configureStatus {
 	row := func(s configureState, detail string) configureStatus {
 		return configureStatus{Agent: "bob", State: s, Detail: detail}
 	}
@@ -335,6 +340,11 @@ func bobStateFrom(settingsPath string, doc map[string]any, cortexCfgPath, wantPr
 	}
 	switch bobOwns(existing, wantProxy) {
 	case bobOurs:
+		if launch.macOS {
+			if ok, _, problem := bobLaunchCheck(launch, caPath, doc); !ok {
+				return row(configurePartial, problem)
+			}
+		}
 		return row(configureOn, fmt.Sprintf("%q=%s", bobProxyKey, existing))
 	case bobUnknown:
 		return row(configureUnknown, fmt.Sprintf("%q=%s is a loopback proxy, but %s is not readable",
