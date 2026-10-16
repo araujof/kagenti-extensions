@@ -770,6 +770,21 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// detail viewport pages too.
 		return m.pageActivePane(msg)
 
+	case "x":
+		// Erase the row under the cursor, after a confirmation: the highlighted session on the
+		// sessions pane, every session of the highlighted agent on the agents pane — on All agents,
+		// everything, which is X's confirmation. Off the footer, like X — the `?` overlay names it.
+		if m.client == nil {
+			return nil
+		}
+		switch m.pane {
+		case paneSessions:
+			return m.openSessionErase()
+		case paneAgents:
+			return m.openAgentErase()
+		}
+		return nil
+
 	case "X":
 		// Clear all history, after a confirmation. Capital, and off the footer like `A`: a
 		// destructive key should not be one stray press of a common letter, nor advertised on

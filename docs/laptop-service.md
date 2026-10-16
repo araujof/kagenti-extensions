@@ -367,7 +367,18 @@ curl -X DELETE http://localhost:47601/v1/sessions
 # {"sessions":12,"archivedSessions":340,"bytes":81234567}
 ```
 
-The clear is refused — a 403 saying why — unless the request names a loopback host
+**One session, or one agent's.** `x` on the sessions pane erases the highlighted session, and
+`x` on the agents pane every session of the highlighted agent — on *All agents*, everything, as
+`X` does. Each asks first and keeps the cost ledger. An agent still using a session brings it
+back with its next request, and the conversation with it, since every request re-sends it.
+From a script:
+
+```sh
+curl -X DELETE http://localhost:47601/v1/sessions/<id>
+# {"sessions":1,"archivedSessions":1,"bytes":18234567}, or a 404 when this Cortex holds no such session
+```
+
+Either is refused — a 403 saying why — unless the request names a loopback host
 (`localhost`, `127.0.0.1` or `[::1]`), carries no `Origin` header, and reaches a proxy bound to
 loopback only, as a local install is. Those are the checks that keep a web page you visit from
 erasing your history through the unauthenticated API. If the disk half fails, memory is still

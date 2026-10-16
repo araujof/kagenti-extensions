@@ -1,16 +1,13 @@
 # IBM Bob
 
-IBM Bob is a VS Code fork; `agentop configure bob` routes it through Cortex via the VS Code proxy setting.
-
-## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
-
 IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
-configure bob enable` writes exactly one flat, top-level key into Bob's user
-settings:
+configure bob enable` writes it as a flat, top-level key in Bob's user settings,
+and on macOS one more key beside it:
 
 ```json
 {
-  "http.proxy": "http://127.0.0.1:47600"
+  "http.proxy": "http://127.0.0.1:47600",
+  "http.systemCertificates": false
 }
 ```
 
@@ -20,42 +17,84 @@ nested `"env"` block. The address is read from `listener.forward_proxy_addr` in
 `~/.cortex/config.yaml` on every run, so a moved port or an IPv6 loopback
 produces the right value rather than a hardcoded 47600.
 
-Nothing else in the file changes, and that is meant literally: the key is spliced
+Nothing else in the file changes, and that is meant literally: the keys are spliced
 into the existing bytes rather than re-serialized from a parsed document, so your
 key order, your indent width, your inline arrays and your blank lines between
 groups all survive untouched. A settings.json is hand-curated and often lives in
 a dotfiles repo, where a diff that alphabetizes and reflows the whole file is
-worse than the setting is worth. `disable` takes the line back out the same way,
+worse than the setting is worth. `disable` takes the lines back out the same way,
 so enable-then-disable returns the file byte-for-byte.
 
 ```sh
-agentop configure bob enable      # write the key, print the CA trust command
-agentop configure bob disable     # remove the key, print the optional undo
+agentop configure bob enable      # write the settings (and, on macOS, the shell block)
+agentop configure bob disable     # remove what enable wrote
 agentop configure bob status      # report, and act on nothing
 ```
 
-`enable` and `disable` show the one-line change and ask before writing, keep a
-`.bak` of the file as it was first found, and take `--yes` for unattended use.
-Declined — or with no terminal to ask on — they write nothing and exit **3**, the
-same convention as `configure claude-code` and `configure bobshell`. `--settings
-PATH` and `--config PATH` override either file. Restart Bob afterwards: whether
-it re-reads a proxy change live is unverified, so the message says restart rather
-than guess.
+`enable` and `disable` show every change and ask once before writing, keep a
+`.bak` of the settings file as it was first found, and take `--yes` for unattended
+use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
+the same convention as `configure claude-code` and `configure bobshell`.
+`--settings PATH` and `--config PATH` override either file.
 
-### Certificate trust is printed, never performed
+### Trusting Cortex's CA without the keychain (macOS)
 
 The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
-CA or every HTTPS request fails. Installing a root CA is a machine-wide change
-needing `sudo`, and a tool that silently escalates to do it is not what anyone
-wants — so `enable` prints the exact command and stops:
+CA or Cortex cannot read its requests. Bob's model calls leave from its extension
+host's `fetch`, which is Node, and Node trusts `NODE_EXTRA_CA_CERTS` — but VS
+Code's proxy layer hands that `fetch` an explicit CA list (Node's bundled roots
+plus the keychain) whenever `http.systemCertificates` is on, and an explicit list
+*replaces* Node's default store, dropping `NODE_EXTRA_CA_CERTS` with it. So on
+macOS `enable` makes two changes, and neither touches the keychain:
 
-```sh
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/.cortex/ca/ca.crt
-```
+- **`"http.systemCertificates": false`**, which leaves `fetch` on Node's default
+  store. `enable` adds it only when the key is absent, and records that it did in
+  `~/.cortex/bob-state.json`; a `true`, or any value you chose, is refused rather
+  than overwritten. `disable` removes it only when that record says agentop added
+  it and it is still `false`, so a `false` you set yourself is never taken out.
+- **A block in your shell's rc file** that exports `NODE_EXTRA_CA_CERTS` for IBM
+  Bob only. Started from the Dock or Spotlight, Bob has no terminal to inherit
+  from, so it runs your login shell once (`$SHELL -i -l -c`) with
+  `VSCODE_RESOLVING_ENVIRONMENT=1` set and copies that shell's environment into
+  its extension host. The block tests that variable *and* Bob's bundle id, so a
+  terminal, or another VS Code fork resolving its own environment, never sees it:
 
-`disable` prints the undo, which is **two** commands rather than one, and says
-it is safe to leave the certificate in place:
+  ```sh
+  # >>> cortex agentop (bob) >>>
+  # IBM Bob reads this when it starts from the Dock or Spotlight, so it trusts Cortex.
+  if [ "$VSCODE_RESOLVING_ENVIRONMENT" = 1 ] && [ "$__CFBundleIdentifier" = com.ibm.software.bob ]; then
+    export NODE_EXTRA_CA_CERTS=/Users/you/.cortex/ca/ca.crt
+  fi
+  # <<< cortex agentop (bob) <<<
+  ```
+
+  The file, and every rule for editing it, is `configure bobshell`'s: `~/.zshrc`
+  for zsh, `~/.bashrc` for bash, followed through one symlink, written
+  atomically, and removed by `disable` only when it is exactly what `enable`
+  wrote. Any other shell, a dangling link, or a deeper chain gets the block
+  printed to place yourself.
+
+A block in a file your login shell never reads fails silently — Bob just goes back
+to being passed through unread — so `enable` then starts your shell the way Bob
+does and says what it found. The usual miss is bash: its login shell reads
+`~/.bash_profile`, not `~/.bashrc`, and the fix is to source one from the other.
+`status` reports both changes from the files alone and runs nothing.
+
+Quit Bob and reopen it from the Dock or Spotlight afterwards. A Bob started from a
+terminal (`bobide`) takes that terminal's environment instead and never runs the
+block.
+
+The cost of `http.systemCertificates: false` is that Bob's extensions stop reading
+the keychain. Everything Cortex decrypts is unaffected — Cortex presents its own
+certificate — but a host Cortex passes through unread whose certificate chains to
+a root trusted *only* in the keychain (some company-internal CAs) fails from Bob's
+extensions. Bob's own UI and webviews are Chromium, trust only the keychain, and
+are not affected by any of this: they stay passed through unread.
+
+Earlier versions of `enable` printed a `sudo security add-trusted-cert` command
+for the System keychain instead. `disable` still prints its undo — two commands,
+because `delete-certificate` alone leaves the admin-domain trust settings the add
+wrote:
 
 ```sh
 sudo security remove-trusted-cert -d ~/.cortex/ca/ca.crt
@@ -63,27 +102,11 @@ sudo security delete-certificate -c authbridge-tls-bridge-ca \
   -t /Library/Keychains/System.keychain
 ```
 
-`delete-certificate` alone does not undo the `add-trusted-cert` above it. The add
-writes trust settings to the **admin** domain (that is what its `-d` selects);
-`delete-certificate -t` removes the certificate and, per its own usage text,
-*user* trust settings — a different domain, so the admin-domain trust survives it.
-`remove-trusted-cert -d` is the documented inverse of the add, and its `-d` has to
-be repeated for the same reason. The keychain is named on the delete because an
-add to the System keychain is not undone by a delete that defaults to the login
-one.
-
-On macOS, `status` suggests `security verify-cert` without running it. Off
-macOS it suggests nothing: there is no portable check to name, and `enable` and
-`disable` already carry the trust-store guidance for those platforms — naming
-the usual Debian and Fedora routes and saying plainly that the exact step
-depends on the distribution.
-
-It is `ca.crt` — the single bridge CA — and deliberately **not** the
-`bundle.crt` in the same directory, which holds the bridge CA *plus* every
-platform root and exists for tools whose CA setting *replaces* the trust store
-(`SSL_CERT_FILE` and friends, as `agentop exec` sets). The keychain is additive,
-so `-r trustRoot` on the bundle would install explicit machine-wide root trust
-for every public CA in it, and the undo above would not take that back.
+Off macOS, `enable` prints how to add `ca.crt` to the system trust store — the
+usual Debian and Fedora routes, saying plainly that the step depends on the
+distribution — because that needs `sudo` and agentop does not escalate on its own.
+It is `ca.crt`, the single bridge CA, and deliberately **not** the `bundle.crt`
+beside it, which holds every platform root as well.
 
 ### What it knows, and what it does not
 
@@ -97,8 +120,8 @@ only scheme `enable` writes. The loopback spellings are folded together
 while the settings file names `127.0.0.1`, and a hand-typed address must not be
 called someone else's proxy.
 
-That is still not a record agentop keeps — there is no state file, so ownership is
-re-decided from the value each time.
+That is not a record agentop keeps: ownership of `http.proxy` is re-decided from
+the value each time. `http.systemCertificates` is the exception — see below.
 
 Ownership has three answers, not two. A value that matches is **ours**; a
 corporate proxy, or a non-string value, is **not ours** and is left alone by both
@@ -125,14 +148,16 @@ A settings file with comments in it is refused, not rewritten. VS Code permits
 them; the strict JSON reader here does not, and silently stripping a user's
 comments to add one key is the wrong trade.
 
-`enable` and `disable` need a settings document to already exist: a path that is
-missing, empty, or holds only `null` means IBM Bob has not saved settings there,
-and both refuse rather than creating a file at a path nothing reads. The refusal
-names the path, and `--settings` if it is the wrong one. `status` reports the
-Cortex status as unknown there, saying which of the three it found.
+A missing `settings.json` is normal. Bob writes the file only the first time a
+setting changes, so a Bob still on its defaults has none. What says Bob has run is
+its `User` directory, which it creates on first launch: with the directory there,
+`enable` creates the file and `status` reports Bob as not configured. With the
+directory missing too — a `--settings` typo, or the wrong machine — `enable`
+refuses and names the flag, and `status` reports the Cortex status as unknown. A
+file holding only `null` is refused the same way. `disable` never fails on any of
+these: there is simply nothing to remove from that file.
 
 Only macOS's settings location is known (`~/Library/Application Support/IBM
 Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
-

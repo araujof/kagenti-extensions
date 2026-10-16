@@ -263,14 +263,15 @@ cases, and what `status` does and does not know are in
 ## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
 
 ```sh
-agentop configure bob enable     # write http.proxy into Bob's user settings
-agentop configure bob status
-agentop configure bob disable
+agentop configure bob enable      # write the settings (and, on macOS, the shell block)
+agentop configure bob disable     # remove what enable wrote
+agentop configure bob status      # report, and act on nothing
 ```
 
-Bob is a VS Code fork, so `enable` writes one flat, top-level `http.proxy` key
-into its user settings, spliced into the existing bytes without re-serializing.
-Certificate trust is printed, never performed. The details are in
+Bob is a VS Code fork, so `enable` writes a flat, top-level `http.proxy` key
+into its user settings, spliced into the existing bytes without re-serializing
+— and on macOS one more key beside it, plus a guarded block in your shell's rc
+file, so Bob can trust Cortex's CA without the keychain. The details are in
 [bob.md](../../docs/agents/bob.md).
 
 ## Routing OpenCode through Cortex (`agentop configure opencode`)
@@ -1044,6 +1045,7 @@ Layered on top of all of them:
 | `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
+| `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, everything, as `X`. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `X` |
 | `s` | events | toggle hiding exchanges no plugin acted on (default: shown; a request and its response are hidden or shown together; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |

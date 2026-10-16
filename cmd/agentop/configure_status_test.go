@@ -238,7 +238,7 @@ func TestBobState_FourStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, cfg := fixture(t, tc.settings)
 			want, _ := bobWanted(cfg, t.TempDir())
-			got := bobState(settings, cfg, want)
+			got := bobState(settings, cfg, want, bobLaunch{}, "")
 			if got.Agent != "bob" {
 				t.Errorf("Agent = %q, want bob", got.Agent)
 			}
@@ -249,15 +249,28 @@ func TestBobState_FourStates(t *testing.T) {
 	}
 
 	// The two uncertainties, which are bob's own and the reason bobStatusUnknown
-	// exists: with no settings document there is nothing to make a claim about, and
-	// with no Cortex config a loopback value cannot be judged either way.
-	t.Run("no settings document", func(t *testing.T) {
+	// exists: with no Bob to have written a settings document there is nothing to make
+	// a claim about, and with no Cortex config a loopback value cannot be judged either
+	// way.
+	t.Run("no Bob directory", func(t *testing.T) {
 		dir := t.TempDir()
 		_, cfg := fixture(t, "")
 		want, _ := bobWanted(cfg, dir)
-		got := bobState(filepath.Join(dir, "absent.json"), cfg, want)
+		got := bobState(filepath.Join(dir, "missing", "settings.json"), cfg, want, bobLaunch{}, "")
 		if got.State != configureUnknown {
 			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
+		}
+	})
+
+	// A settings file Bob has not written yet, in a directory Bob has created, is not
+	// an uncertainty: it is a Bob running on its defaults, which is not routed.
+	t.Run("no settings file yet", func(t *testing.T) {
+		dir := t.TempDir()
+		_, cfg := fixture(t, "")
+		want, _ := bobWanted(cfg, dir)
+		got := bobState(filepath.Join(dir, "absent.json"), cfg, want, bobLaunch{}, "")
+		if got.State != configureOff {
+			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureOff, got.Detail)
 		}
 	})
 
@@ -270,7 +283,7 @@ func TestBobState_FourStates(t *testing.T) {
 		// situation the same way, in its own words, and the two disagreed until now.
 		settings, cfg := fixture(t, `{"http.proxy": "http://127.0.0.1:47600", "http.proxy": "http://127.0.0.1:47600"}`)
 		want, _ := bobWanted(cfg, t.TempDir())
-		got := bobState(settings, cfg, want)
+		got := bobState(settings, cfg, want, bobLaunch{}, "")
 		if got.State != configureUnknown {
 			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
 		}
@@ -282,7 +295,7 @@ func TestBobState_FourStates(t *testing.T) {
 		// identical case.
 		settings, cfg := fixture(t, `{not json`)
 		want, _ := bobWanted(cfg, t.TempDir())
-		got := bobState(settings, cfg, want)
+		got := bobState(settings, cfg, want, bobLaunch{}, "")
 		if got.State != configureUnknown {
 			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
 		}
@@ -293,7 +306,7 @@ func TestBobState_FourStates(t *testing.T) {
 		absent := filepath.Join(t.TempDir(), "absent.yaml")
 		// bobWanted over a config that is not there returns an empty proxy, which is
 		// what makes bobOwns answer bobUnknown.
-		got := bobState(settings, absent, "")
+		got := bobState(settings, absent, "", bobLaunch{}, "")
 		if got.State != configureUnknown {
 			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
 		}
@@ -806,14 +819,14 @@ func TestStatusAndTableAgree(t *testing.T) {
 				settings, cfg := fixture(t, tc.settings)
 				want, ca := bobWanted(cfg, t.TempDir())
 				var out bytes.Buffer
-				if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+				if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
 					t.Fatalf("exit = %d", code)
 				}
 				first := strings.SplitN(out.String(), "\n", 2)[0]
 				if (first == bobStatusYes) != tc.wantYes {
 					t.Errorf("first line = %q, wantYes = %v", first, tc.wantYes)
 				}
-				if (bobState(settings, cfg, want).State == configureOn) != tc.wantYes {
+				if (bobState(settings, cfg, want, bobLaunch{}, "").State == configureOn) != tc.wantYes {
 					t.Errorf("state and paragraph disagree for %s", tc.name)
 				}
 			})
