@@ -835,18 +835,19 @@ Hooks:
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
 
-- `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
-  matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
-  needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
-  build), `core/storage/redis`, and the three `demos/*` modules.
+- `go vet ./...` **is** a gate, on 8 of the 12 modules: `core`, both
+  `scripts/*`, the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
+  matrix, and `cmd/cortex-cpex`. That last one needs CGO and a pinned
+  `libcpex_ffi.a`, so it is not in the matrix: the `go-ci-cpex` job fetches the
+  library and vets it, and `core/plugins/cpex`, with `-tags cpex`. Not vetted
+  anywhere: `core/storage/redis` and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
   checkout and exits 0, so formatting drift cannot fail a build.
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `core`, where `go fmt` demonstrably runs on
 every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
-touched one of the five unvetted modules.
+touched one of the four unvetted modules.
 
 ## Languages and Tech Stack
 
@@ -1033,8 +1034,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   touched. **Always give `gofmt` a path** — a bare `gofmt -l` reads stdin, scans
   nothing and exits 0.
 - **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
-  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
-  the 12 modules — see the Pre-commit Hooks section for which five are uncovered.
+  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 8 of
+  the 12 modules — see the Pre-commit Hooks section for which four are uncovered.
   See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `core` one
   does, so each module resolves its own `replace` directives instead of pulling in
