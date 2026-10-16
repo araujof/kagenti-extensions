@@ -374,8 +374,12 @@ A request a parser claimed is denied before CPEX sees it when its JSON body has
 an object with a repeated key or two keys equal under case folding
 (`cpex.ambiguous_request`): the parsers match keys case-insensitively and keep
 the last repeat, a server may not, and policy would judge a different request
-from the one the server runs. Inside tool arguments and schemas only exact
-repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
+from the one the server runs. Case folding counts only in the objects the
+parsers decode into structs: the request envelope, JSON-RPC `params`, the A2A
+message and its parts, inference `messages[]` and content blocks, Responses
+`input[]` items, and tool definitions. Everywhere else (tool arguments and
+schemas, A2A data parts, `metadata`, `response_format`) only exact repeats
+count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
 taking the global identification. Neither denial is subject to `fail_open`.
 

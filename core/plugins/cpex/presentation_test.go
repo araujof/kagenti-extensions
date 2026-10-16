@@ -34,6 +34,22 @@ func TestAmbiguousJSON(t *testing.T) {
 		`{"input":{"Path":"/a","path":"/b"}}`:                                                 false,
 		`{"messages":[{"content":[{"type":"tool_use","input":{"ID":1,"id":2}}]}]}`:            false,
 		`{"params":{"arguments":{"list":[{"Path":"/a","path":"/b"}]}}}`:                       false,
+		// Keys inside data objects are not struct fields, so only exact
+		// repeats count there.
+		`{"model":"m","messages":[],"response_format":{"type":"json_schema","json_schema":{"schema":{"properties":{"ID":{},"id":{}}}}}}`: false,
+		`{"model":"m","input":[],"text":{"format":{"type":"json_schema","schema":{"properties":{"ID":{},"id":{}}}}}}`:                    false,
+		`{"method":"message/send","params":{"message":{"parts":[{"kind":"data","data":{"ID":1,"id":2}}]}}}`:                              false,
+		`{"model":"m","metadata":{"User":"a","user":"b"}}`:                                                                               false,
+		`{"tools":[{"type":"function","function":{"parameters":{"properties":{"ID":{},"id":{}}}}}]}`:                                     false,
+		`{"model":"m","metadata":{"user":"a","user":"b"}}`:                                                                               true,
+		// The envelopes the parsers decode into structs fold.
+		`{"method":"message/send","params":{"message":{"parts":[{"kind":"text","Kind":"data"}]}}}`:   true,
+		`{"method":"message/send","params":{"message":{"role":"user","Role":"agent"}}}`:              true,
+		`{"messages":[{"content":[{"type":"text","text":"a","Text":"b"}]}]}`:                         true,
+		`{"messages":[{"content":[{"type":"tool_result","content":[{"type":"text","Type":"x"}]}]}]}`: true,
+		`{"input":[{"type":"message","content":[{"type":"input_text","text":"a","TEXT":"b"}]}]}`:     true,
+		`{"input":[{"tools":[{"tools":[{"name":"a","Name":"b"}]}]}]}`:                                true,
+		`{"tools":[{"type":"function","function":{"name":"a","Name":"b"}}]}`:                         true,
 	}
 	for body, want := range cases {
 		if got := ambiguousJSON([]byte(body)); got != want {

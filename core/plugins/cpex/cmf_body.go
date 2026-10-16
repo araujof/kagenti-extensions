@@ -287,16 +287,20 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 }
 
 // ambiguousJSON reports whether body is not valid JSON, or has an object
-// with a repeated key or two keys equal under Unicode case folding. Inside
-// free-form objects (tool schemas and arguments, which every side decodes
-// as a map) only exact repeats count.
+// with a repeated key, or two keys equal under Unicode case folding in an
+// object the parsers decode into Go structs (see shapeOf). Everywhere else
+// (tool schemas and arguments, A2A data parts, metadata, response formats)
+// keys are data, which every side decodes as a map, so only exact repeats
+// count there.
 func ambiguousJSON(body []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	type frame struct {
 		keys      map[string]struct{} // nil for an array
 		expectKey bool
 		lastKey   string
-		freeForm  bool
+		// shape is the object's own shape, or for an array the shape of
+		// the objects it holds.
+		shape jsonShape
 	}
 	var stack []*frame
 	for {
@@ -314,20 +318,19 @@ func ambiguousJSON(body []byte) bool {
 		if d, ok := tok.(json.Delim); ok {
 			switch d {
 			case '{', '[':
-				f := &frame{expectKey: d == '{'}
+				f := &frame{expectKey: d == '{', shape: shapeEnvelope}
 				if d == '{' {
 					f.keys = map[string]struct{}{}
 				}
-				if top != nil {
-					f.freeForm = top.freeForm
-					if top.keys != nil {
-						// Only an object under a free-form key is free-form. An
-						// array there (a Responses API input) holds protocol
-						// items whose fields the parsers decode case-insensitively.
-						_, free := freeFormKeys[strings.ToLower(top.lastKey)]
-						f.freeForm = f.freeForm || (free && d == '{')
-						top.expectKey = false
-					}
+				switch {
+				case top == nil:
+				case top.keys != nil:
+					f.shape = shapeOf(top.shape, top.lastKey, d == '[')
+					top.expectKey = false
+				case d == '{':
+					f.shape = top.shape
+				default:
+					f.shape = shapeData // an array in an array
 				}
 				stack = append(stack, f)
 			default:
@@ -347,7 +350,7 @@ func ambiguousJSON(body []byte) bool {
 		}
 		key, _ := tok.(string)
 		k := key
-		if !top.freeForm {
+		if top.shape != shapeData {
 			k = foldKey(key)
 		}
 		if _, dup := top.keys[k]; dup {
@@ -359,15 +362,74 @@ func ambiguousJSON(body []byte) bool {
 	}
 }
 
-// freeFormKeys name values whose object keys are data rather than fields:
-// tool schemas and arguments. They apply to object values only.
-var freeFormKeys = map[string]struct{}{
-	"arguments":         {},
-	"input":             {},
-	"input_schema":      {},
-	"inputschema":       {},
-	"parameters":        {},
-	"structuredcontent": {},
+// jsonShape names an object the parsers decode into a Go struct, whose
+// fields encoding/json matches case-insensitively. shapeData is any other
+// object.
+type jsonShape int
+
+const (
+	shapeData          jsonShape = iota
+	shapeEnvelope                // the body: JSON-RPC or an inference request
+	shapeParams                  // JSON-RPC params (MCP, A2A)
+	shapeA2AMessage              // A2A params.message
+	shapeA2APart                 // A2A message part
+	shapeMessage                 // inference messages[] item
+	shapeBlock                   // inference content block, Responses content part
+	shapeItem                    // Responses input[] item
+	shapeToolNamespace           // Responses input[].tools[] namespace
+	shapeTool                    // inference tools[] item, Responses tool def
+	shapeFunction                // OpenAI tools[].function
+)
+
+// member is the shape of the value under one key of a struct-decoded
+// object: an object of that shape, or (list) an array of such objects.
+type member struct {
+	shape jsonShape
+	list  bool
+}
+
+// shapeTransitions maps a struct-decoded object's shape and the folded key
+// of one of its members to the shape of the value under that key. Members
+// not listed, and values of the other kind (an object where an array is
+// decoded, or the reverse, which the parsers do not decode as structs), are
+// data.
+var shapeTransitions = func() map[jsonShape]map[string]member {
+	obj := func(s jsonShape) member { return member{shape: s} }
+	list := func(s jsonShape) member { return member{shape: s, list: true} }
+	t := map[jsonShape]map[string]member{
+		shapeEnvelope: {
+			"params":   obj(shapeParams),
+			"messages": list(shapeMessage),
+			"input":    list(shapeItem),
+			"tools":    list(shapeTool),
+			"system":   list(shapeBlock),
+		},
+		shapeParams:        {"message": obj(shapeA2AMessage)},
+		shapeA2AMessage:    {"parts": list(shapeA2APart)},
+		shapeMessage:       {"content": list(shapeBlock)},
+		shapeBlock:         {"content": list(shapeBlock)},
+		shapeItem:          {"content": list(shapeBlock), "output": list(shapeBlock), "tools": list(shapeToolNamespace)},
+		shapeToolNamespace: {"tools": list(shapeTool)},
+		shapeTool:          {"function": obj(shapeFunction)},
+	}
+	folded := make(map[jsonShape]map[string]member, len(t))
+	for shape, members := range t {
+		folded[shape] = make(map[string]member, len(members))
+		for k, v := range members {
+			folded[shape][foldKey(k)] = v
+		}
+	}
+	return folded
+}()
+
+// shapeOf is the shape of the object, or with list of the objects in the
+// array, under key in an object of shape parent.
+func shapeOf(parent jsonShape, key string, list bool) jsonShape {
+	m, ok := shapeTransitions[parent][foldKey(key)]
+	if !ok || m.list != list {
+		return shapeData
+	}
+	return m.shape
 }
 
 // foldKey maps s to a key equal for exactly the strings strings.EqualFold
