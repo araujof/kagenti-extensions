@@ -107,7 +107,8 @@ files and runs nothing.
 
 On a platform where IBM Bob's settings path is not known (any but macOS, unless
 --settings names a file), the editor half is skipped with a note and the shell
-half still runs: the rc file is where it always was.
+half still runs: the rc file is where it always was, and the exit code is 1 —
+the skipped half's change did not happen.
 
 Comments: VS Code permits them in settings.json and this command does not. It
 reads the file as strict JSON and refuses a commented one by name rather than
@@ -1018,7 +1019,14 @@ func bobWriteKeys(path string, edits []bobEdit) error {
 //
 // The "nothing else changes" half of the old prose moved to the merged preview's
 // own closing line; what is left here is only the backup claim.
-func bobBackupNote(settingsPath string) string {
+//
+// home is for display only — the paths the note names are abbreviated the way
+// every other line of the report is — while settingsPath is the REAL path and
+// the one that gets statted. Handing this function the abbreviated form instead
+// made the stat fail on every default layout, where settings.json lives under
+// $HOME: no promise on the first write, and no warning when an earlier run's
+// .bak is the copy that survives.
+func bobBackupNote(home, settingsPath string) string {
 	// The splice claim is a literal one: bobWriteKey splices a single member in
 	// or out of the existing bytes, so key order, indentation, inline arrays and
 	// blank-line grouping all survive. Pinned byte-for-byte by
@@ -1027,17 +1035,17 @@ func bobBackupNote(settingsPath string) string {
 	// The same sentence appears in claude-code's enable, where it still goes through the
 	// shared writeSettings and therefore still overstates what happens. Not changed here:
 	// that is a different command's behaviour and out of this change's scope.
-	bak := settingsPath + ".bak"
+	bakReal, bakShow := settingsPath+".bak", tildePath(home, settingsPath+".bak")
 	if _, err := os.Stat(settingsPath); err != nil {
 		// Covers a missing file and an unreadable one alike: in both cases this run
 		// will not produce a .bak, which is the only thing being claimed. Reached by
 		// enable on a Bob that has never saved a setting.
 		return ""
 	}
-	if _, err := os.Stat(bak); err == nil {
-		return "Note: " + bak + " already exists and holds the file as first found, not as it is now.\n"
+	if _, err := os.Stat(bakReal); err == nil {
+		return "Note: " + bakShow + " already exists and holds the file as first found, not as it is now.\n"
 	}
-	return "A copy of the original is kept as " + bak + ".\n"
+	return "A copy of the original is kept as " + bakShow + ".\n"
 }
 
 // bobDuplicateKey reports whether the settings file names either key this command
@@ -1319,8 +1327,13 @@ func planBobEnable(settingsPath, cortexCfgPath string, launch bobLaunch, stderr 
 func (c bobCommand) enable() int {
 	// --- The plans: everything both halves would change, before anything is ---
 	var ide *bobEnablePlan
+	// 1 when the editor half is skipped, like bobNotInstalled: the half's change
+	// did not happen, and bobCombine must not let the shell half's success read
+	// as the whole command's. runBob has already said why on stderr.
 	ideCode := 0
-	if !c.ideSkip {
+	if c.ideSkip {
+		ideCode = 1
+	} else {
 		ide, ideCode = planBobEnable(c.settingsPath, c.cortexCfgPath, c.launch, c.stderr)
 	}
 	var shell bobShellPlan
@@ -1391,11 +1404,14 @@ func (c bobCommand) enable() int {
 	if ideChanges && ide.blockNote != "" {
 		fmt.Fprint(c.stdout, ide.blockNote)
 	}
-	if shellChanges && shell.note != "" {
+	// Not gated on shellChanges: a note is set exactly when the half will NOT
+	// write, which is when shellChanges is false. With editor-half changes
+	// pending, this is the only line that says the rc file was left alone.
+	if shell.note != "" {
 		fmt.Fprintln(c.stdout, shell.note)
 	}
 	if ideChanges && len(ide.edits) > 0 {
-		fmt.Fprint(c.stdout, bobBackupNote(tildePath(c.home, c.settingsPath)))
+		fmt.Fprint(c.stdout, bobBackupNote(c.home, c.settingsPath))
 	}
 	fmt.Fprintln(c.stdout, "Nothing else in the files changes.")
 	if !c.yes && !bobConfirm(c.stdout) {
@@ -1518,10 +1534,12 @@ func (c bobCommand) applyEnableEditor(p *bobEnablePlan) int {
 func (c bobCommand) enableReport(ide *bobEnablePlan, shell bobShellPlan, ideChanges, shellChanges bool, ideTotal, shellTotal int) {
 	fmt.Fprintln(c.stdout)
 	switch {
-	case ideTotal == 0 && shellTotal == 0:
+	case ideTotal == 0 && shellTotal == 0 && shell.note == "":
 		fmt.Fprintln(c.stdout, "Enabled.")
 	case ideTotal == 0 && ideChanges:
-		// The shell half failed or was skipped; its reason is above on stderr.
+		// The shell half failed, was skipped, or was left alone with a finding
+		// printed above; in every one of those it did not act, and the headline
+		// claims only the half that did.
 		fmt.Fprintln(c.stdout, "Enabled the editor half.")
 	case shellTotal == 0 && shellChanges:
 		fmt.Fprintln(c.stdout, "Enabled the shell half.")
@@ -1739,8 +1757,12 @@ func (c bobCommand) disable() int {
 
 	// --- The plans ---
 	var ide *bobDisablePlan
+	// 1 when the editor half is skipped — the same rule as enable's, for the
+	// same reason: the half's change did not happen.
 	ideCode := 0
-	if !c.ideSkip {
+	if c.ideSkip {
+		ideCode = 1
+	} else {
 		ide, ideCode = planBobDisable(c.settingsPath, c.cortexCfgPath, wantProxy, caPath, c.launch, c.yes, c.stderr)
 	}
 	var shell bobShellPlan
@@ -1818,7 +1840,11 @@ func (c bobCommand) disable() int {
 	}
 
 	// --- Findings, then the one prompt ---
-	hasFindings := (ide != nil && len(ide.notes) > 0) || (ideChanges && ide.guessing) || (shellChanges && shell.note != "")
+	// shell.note is not gated on shellChanges: a note is set exactly when the
+	// half will NOT write, which is when shellChanges is false — and with
+	// editor-half changes pending, this is the only line that says the rc file
+	// was left alone.
+	hasFindings := (ide != nil && len(ide.notes) > 0) || (ideChanges && ide.guessing) || shell.note != ""
 	if hasFindings {
 		fmt.Fprintln(c.stdout)
 	}
@@ -1837,7 +1863,7 @@ func (c bobCommand) disable() int {
 		fmt.Fprintf(c.stdout, "Note: %s is not readable, so %q is judged by shape alone — a loopback\n"+
 			"  proxy, which is what agentop writes.\n", c.cortexCfgPath, bobProxyKey)
 	}
-	if hasFindings && shellChanges && shell.note != "" {
+	if shell.note != "" {
 		fmt.Fprintln(c.stdout, shell.note)
 	}
 	if !c.yes && !bobConfirm(c.stdout) {
@@ -1861,9 +1887,12 @@ func (c bobCommand) disable() int {
 	// --- The report ---
 	fmt.Fprintln(c.stdout)
 	switch {
-	case ideTotal == 0 && shellTotal == 0:
+	case ideTotal == 0 && shellTotal == 0 && shell.note == "":
 		fmt.Fprintln(c.stdout, "Disabled — IBM Bob no longer routes through Cortex.")
 	case ideTotal == 0 && ideChanges:
+		// The shell half failed, was skipped, or was left alone with a finding
+		// printed above; in every one of those bob() may still be in the rc
+		// file, and the headline must not claim otherwise.
 		fmt.Fprintln(c.stdout, "Disabled the editor half.")
 	case shellTotal == 0 && shellChanges:
 		fmt.Fprintln(c.stdout, "Disabled the shell half.")

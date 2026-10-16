@@ -1612,9 +1612,17 @@ func TestBobUntrustNoteUndoesTheEarlierKeychainAdd(t *testing.T) {
 // the absence of the claim that would be wrong there, because a message that says
 // everything says nothing.
 func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
+	// home is the settings file's directory, so the note's DISPLAY path is the
+	// tilde abbreviation while the stat sees the real one — both spellings the
+	// merged preview hands this function in production.
+	note := func(t *testing.T, path string) string {
+		t.Helper()
+		return bobBackupNote(filepath.Dir(path), path)
+	}
+
 	t.Run("no existing file: nothing to promise", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "settings.json")
-		got := bobBackupNote(path)
+		got := note(t, path)
 		// Nothing at all: the preview already shows the path enable creates, and a
 		// "no backup" line for a file that does not exist is noise before the one
 		// question that matters.
@@ -1628,8 +1636,8 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got := bobBackupNote(path)
-		if !strings.Contains(got, "kept as "+path+".bak") {
+		got := note(t, path)
+		if !strings.Contains(got, "kept as ~/settings.json.bak") {
 			t.Errorf("does not promise the backup it will make:\n%s", got)
 		}
 		if strings.Contains(got, "No backup is made") || strings.Contains(got, "already exists") {
@@ -1645,7 +1653,7 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 		if err := os.WriteFile(path+".bak", []byte(`{"original": true}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got := bobBackupNote(path)
+		got := note(t, path)
 		if !strings.Contains(got, "already exists") {
 			t.Errorf("does not say the existing backup is left alone:\n%s", got)
 		}
@@ -1667,7 +1675,7 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			promised := strings.Contains(bobBackupNote(path), "copy of the original is kept")
+			promised := strings.Contains(note(t, path), "copy of the original is kept")
 			if err := writeSettings(path, map[string]any{"http.proxy": "http://127.0.0.1:47600"}); err != nil {
 				t.Fatal(err)
 			}
@@ -2187,6 +2195,163 @@ func TestBob_DeclinedPromptDeclinesBothHalves(t *testing.T) {
 	if err == nil {
 		t.Errorf("shell half: a declined prompt still wrote the rc file:\n%s", b)
 	}
+}
+
+// The shell half's findings are not conditional on the other half having nothing
+// to do. A bobshell block agentop declines to touch (hand-edited, duplicated) is
+// a note set exactly when the half will NOT write — so it can never ride the
+// shellChanges arm, which requires a write. With editor-half changes pending,
+// that used to leave the note unprinted and the headline claiming both halves,
+// and a disable could say "IBM Bob no longer routes through Cortex" while bob()
+// was still in the rc file. The note is a finding, not a failure — base's own
+// command exited 0 on it — so the exit code stays 0; only the claim had to
+// narrow to the half that acted.
+func TestBob_ShellFindingsSurviveEditorChangesPending(t *testing.T) {
+	t.Run("enable: an edited block is named, the headline claims only the editor half", func(t *testing.T) {
+		settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
+		var out, errb bytes.Buffer
+		c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
+		edited := "\n" + bobShellMarkerStart + "\n# hand-edited since agentop wrote it\n" + bobShellMarkerEnd + "\n"
+		if err := os.WriteFile(c.shellRC, []byte(edited), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := c.enable(); code != 0 {
+			t.Fatalf("exit = %d, want 0 — a left-alone block is a finding, not a failure: %s%s",
+				code, out.String(), errb.String())
+		}
+		if !strings.Contains(out.String(), "already has a cortex bobshell block") {
+			t.Errorf("the shell half's finding is not shown:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "Enabled the editor half.") {
+			t.Errorf("the headline does not say which half was enabled:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "\nEnabled.\n") {
+			t.Errorf("the headline claims the shell half too:\n%s", out.String())
+		}
+		// The edited block must still be there, untouched.
+		got, err := os.ReadFile(c.shellRC)
+		if err != nil || string(got) != edited {
+			t.Errorf("the rc file changed:\n%s", got)
+		}
+	})
+
+	t.Run("disable: duplicated blocks are named, the headline claims only the editor half", func(t *testing.T) {
+		settings, cfg := fixture(t, `{"`+bobProxyKey+`": "http://127.0.0.1:47600"}`)
+		var out, errb bytes.Buffer
+		c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
+		doubled := strings.Repeat(bobShellBlock, 2)
+		if err := os.WriteFile(c.shellRC, []byte(doubled), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := c.disable(); code != 0 {
+			t.Fatalf("exit = %d, want 0 — a left-alone block is a finding, not a failure: %s%s",
+				code, out.String(), errb.String())
+		}
+		if !strings.Contains(out.String(), "has 2 copies of the cortex bobshell block") {
+			t.Errorf("the shell half's finding is not shown:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "Disabled the editor half.") {
+			t.Errorf("the headline does not say which half was disabled:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "no longer routes through Cortex") {
+			t.Errorf("the headline claims the shell half too — bob() is still in the file:\n%s", out.String())
+		}
+	})
+}
+
+// A skipped editor half is 1, like bobNotInstalled: the half's change did not
+// happen, and bobCombine must not let the shell half's success read as the whole
+// command's. Base set the code in runBob's skip arm; the merge moved the skip
+// into bobCommand and dropped it, so off macOS — the only place the skip fires —
+// enable and disable exited 0 with a headline claiming more than ran.
+func TestBob_SkippedEditorHalfExitsOne(t *testing.T) {
+	_, cfg := fixture(t, "")
+	var out, errb bytes.Buffer
+	c := bobHalf(t, bobLaunch{}, "", cfg, true, &out, &errb)
+	c.ideSkip = true
+	if code := c.enable(); code != 1 {
+		t.Fatalf("enable exit = %d, want 1 — the editor half's change did not happen:\n%s%s",
+			code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "Enabled the shell half.") {
+		t.Errorf("the headline does not say which half was enabled:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "\nEnabled.\n") {
+		t.Errorf("the headline claims the editor half too:\n%s", out.String())
+	}
+
+	// The same rule on the off switch, where a script branching on the code is
+	// likeliest: disable's rc file holds exactly one block, so the shell half
+	// has real work and succeeds — and the code still carries the skip's 1.
+	var out2, errb2 bytes.Buffer
+	c2 := bobHalf(t, bobLaunch{}, "", cfg, true, &out2, &errb2)
+	c2.ideSkip = true
+	if err := os.WriteFile(c2.shellRC, []byte(bobShellBlock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := c2.disable(); code != 1 {
+		t.Fatalf("disable exit = %d, want 1 — the editor half's change did not happen:\n%s%s",
+			code, out2.String(), errb2.String())
+	}
+	if !strings.Contains(out2.String(), "Disabled the shell half.") {
+		t.Errorf("the headline does not say which half was disabled:\n%s", out2.String())
+	}
+}
+
+// The backup promise must survive the trip through the merged preview. The note
+// stats the file it is asked about, so handing it the tilde-abbreviated DISPLAY
+// path — the spelling every other line of the report uses — made the stat fail
+// on every default macOS layout, where settings.json lives under $HOME: no
+// promise on the first write, and no warning when a .bak from an earlier run is
+// the copy that survives. Driving bobBackupNote directly cannot see this; the
+// settings file has to sit under the command's home, the way it does for real.
+func TestBob_EnablePromisesTheBackupItWillMake(t *testing.T) {
+	run := func(t *testing.T, withBak bool) string {
+		t.Helper()
+		home := t.TempDir()
+		settings := filepath.Join(home, "settings.json")
+		if err := os.WriteFile(settings, []byte(`{"editor.fontSize": 13}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if withBak {
+			if err := os.WriteFile(settings+".bak", []byte(`{"original": true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, cfg := fixture(t, "")
+		var out, errb bytes.Buffer
+		c := bobCommand{
+			home:          home,
+			settingsPath:  settings,
+			cortexCfgPath: cfg,
+			launch:        bobLaunch{},
+			shellRC:       filepath.Join(home, ".zshrc"),
+			yes:           true,
+			stdout:        &out,
+			stderr:        &errb,
+		}
+		if code := c.enable(); code != 0 {
+			t.Fatalf("exit = %d: %s%s", code, out.String(), errb.String())
+		}
+		return out.String()
+	}
+
+	t.Run("first write: a copy is kept", func(t *testing.T) {
+		got := run(t, false)
+		if !strings.Contains(got, "A copy of the original is kept as ~/settings.json.bak") {
+			t.Errorf("no promise of the backup this write makes:\n%s", got)
+		}
+	})
+
+	t.Run("a .bak already exists: it is the one that survives", func(t *testing.T) {
+		got := run(t, true)
+		if !strings.Contains(got, "already exists and holds the file as first found") {
+			t.Errorf("does not say which state the surviving backup holds:\n%s", got)
+		}
+		if strings.Contains(got, "A copy of the original is kept") {
+			t.Errorf("promises a fresh copy it will not make:\n%s", got)
+		}
+	})
 }
 
 // The exit-code combination, as a table: the WORSE of the two halves wins, and a
