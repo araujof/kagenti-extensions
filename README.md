@@ -95,6 +95,8 @@ binaries. [Remove it](./docs/laptop-service.md#remove-it) has the details.
 
 ## Learn more
 
+- [All documentation](./docs/README.md) — the docs index, grouped by what you
+  are trying to do
 - [Running Cortex](./docs/laptop-service.md) — the service, how sessions are grouped,
   troubleshooting
 - [agentop](./cmd/agentop/README.md) — every pane, key and command

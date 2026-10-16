@@ -669,6 +669,23 @@ type SessionEvent struct {
 
 Wire format (`SessionEvent.MarshalJSON`) translates enums to strings and `Duration` to `DurationMs`. Round-trip stable — `json.Marshal(e) → json.Unmarshal → json.Marshal` is byte-identical. Tested at `pipeline/session_test.go:TestSessionEvent_JSONRoundTrip`.
 
+### Operator configuration (`session:`)
+
+The store's limits live under the top-level `session:` block. **None of it is
+hot-reloadable** — every consumer reads the block exactly once at startup, so
+an edit is refused by the reloader and takes effect on restart:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | The store (and implicitly the session API). `false` turns both off. |
+| `ttl` | *(never)* | How long a session survives after its last event. |
+| `max_events` | *(unset)* | FIFO per-session event cap. Unset by default: a trimmed store is lossy on exactly the sessions worth reading, and `?before=` paging (see [`session-api.md`](session-api.md)) keeps depth readable without it. With a session archive, a cap drops nothing a reader can no longer reach. |
+| `max_sessions` | `100` | How many sessions are kept, oldest-used evicted first. The only default bound on memory — `max_events` and `ttl` unset means one long-lived chatty session grows without limit. |
+| `id_headers` | *(known agent headers)* | Headers consulted, in order, for a client-supplied session id — defaults to the known coding-agent session headers when unset. |
+| `client_affinity` | *(auto)* | Pin a session to the client process that started it, so two agents sharing an id keep separate sessions. |
+| `process_attribution` | *(auto)* | Attribute traffic to the peer process holding the connection (`auto` / `on` / `off`). Needs `id_headers` non-empty, like `client_affinity`. |
+| `archive.*` | *(laptop only)* | The on-disk session history — see [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions). Turning the store off with the archive explicitly on is refused at load. |
+
 ---
 
 ## 8. Boundary: pipeline vs listener
@@ -714,6 +731,80 @@ independently.
 
 mTLS config changes require a pod restart (matches the listener-
 config reload boundary in §9 below).
+
+#### Operator configuration
+
+```yaml
+# authbridge-runtime-config ConfigMap (top-level)
+mtls:
+  mode: strict          # permissive | strict (omit block entirely for off)
+```
+
+`mode` is the only field the block carries; cert paths default to
+`/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` (the SPIFFE
+Provider's file mirror). Legacy `cert_file` / `key_file` / `bundle_file` keys
+are dropped at load.
+
+| Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
+|---|---|---|
+| (no `mtls` block) | Plaintext only. | Plaintext only. |
+| `permissive` (default when block present) | Byte-peek listener: TLS handshakes verified against the SPIRE trust bundle; plaintext callers served on the same port. ⚠️ Plaintext requests carry their full headers and bodies in the clear — including any `Authorization: Bearer ...` token already injected by `token-exchange`. Use only during rollout with cluster-network trust. | Plaintext — no TLS-wrap attempt. Matches envoy-sidecar's permissive and Istio's PeerAuthentication semantics (permissive is inbound-only). |
+| `strict` | TLS only — non-TLS callers get the connection closed. | TLS or fail: handshake failure is a hard error, no fallback. |
+
+In both modes, a successful TLS handshake that fails certificate verification
+is always a hard error.
+
+**Trust model:** any peer with a valid cert from the SPIRE trust bundle can
+talk to this sidecar. Per-caller policy / SPIFFE allowlists are out of scope;
+the trust bundle IS the policy. Plugins that want per-caller decisions read
+`pctx.PeerCert` and check the URI SAN.
+
+**Reload boundary:** a reload that adds the `mtls` block, removes it, or
+changes `mtls.mode` is refused rather than half-applied — the active pipeline
+keeps serving, `reloads_failed` increments, and `/reload/status` names
+`mtls.*` among the fields that need a restart. The inbound TLS listener and,
+under `strict`, the forward proxy's mTLS dialer are built once at boot, so no
+reload can reach them. The outbound chain's redirect check
+(`forwardproxy.Support`) refuses a `WritesDestination` plugin whenever an
+`mtls:` block is configured — under `strict` the dialer would nest TLS inside
+TLS; under `permissive` there is no dialer, so the refusal is broader than
+strictly needed and fails closed.
+
+**Mixed-mode note:** a *permissive* caller cannot reach a *strict* peer
+regardless of mode (its outbound is plaintext; the peer's strict inbound
+rejects it). Mixed-mode deployments need both ends compatible — both strict,
+both permissive, or one strict + the other permissive on inbound only.
+
+#### envoy-sidecar mTLS
+
+In envoy-sidecar mode the listeners live in Envoy, not the sidecar binary, so
+the top-level `mtls:` block is a no-op there. Equivalent semantics are
+configured at the Envoy data-plane level by extending the `envoy-config`
+ConfigMap with TLS blocks:
+
+| Mode | Inbound (`:15124`) | Outbound (`:15123`) |
+|---|---|---|
+| `disabled` | plaintext | plaintext |
+| `permissive` | `tls_inspector` listener filter + two filter chains: `transport_protocol: tls` chain terminates mTLS, `transport_protocol: raw_buffer` chain accepts plaintext | **plaintext** — no TLS-wrap attempt |
+| `strict` | `tls_inspector` + single TLS filter chain; plaintext drops at filter chain match | `UpstreamTlsContext` on the `original_destination` cluster: TLS-or-fail, blanket |
+
+X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
+`/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths proxy-sidecar's
+mTLS uses; the spiffe Provider's file-mirror in the `cortex-envoy` binary
+keeps them fresh on rotation. Inbound parity with proxy-sidecar is
+byte-identical observable semantics — the same outcome as proxy-sidecar's
+`tlssniff.Listener`, expressed as Envoy filter chains, matching Istio's
+PERMISSIVE/STRICT. Outbound is Istio-shaped: Envoy has no native primitive
+for "try TLS, fall back to plaintext on handshake failure" within an
+`ORIGINAL_DST` cluster, so permissive keeps outbound plaintext and strict
+does blanket TLS-or-fail. The operator's AgentRuntime CR `Spec.MTLSMode`
+flows through to a per-agent rendered envoy-config with the matching TLS
+blocks.
+
+> **This envoy-sidecar design has no end-to-end verification in-tree.** The
+> `demos/mtls/` demo that used to exercise it was retired as superseded.
+> Nothing in-tree exercises the Envoy filter chains — re-verify by hand after
+> changing them.
 
 The pipeline **does own**:
 - The `Plugin` interface contract.
@@ -772,7 +863,7 @@ curl http://localhost:9093/config               # now-active config
 | Plugin list (add / remove / reorder plugins) | ✅ | Pipeline is rebuilt from scratch |
 | A plugin's `config:` subtree (issuer, bypass paths, routes, JWKS URL, etc.) | ✅ | Plugin's `Configure` runs again with new bytes |
 | `mode` (`envoy-sidecar` / `proxy-sidecar`) | ❌ | Different wire protocol + listener set; refuse reload |
-| `listener.*` (ports) | ❌ | Bound sockets; refuse reload |
+| `listener.*` (ports, `skip_hosts`, interception addresses) | ❌ | Bound sockets and skip-host patterns are read at listener construction; refuse reload |
 | `session.*` (TTL, MaxEvents, MaxSessions, ID headers) | ❌ | Every consumer reads the block once at startup — `session.New(...)` in each `cmd` main, `forwardproxy.Server.SessionIDHeaders` assigned before `ListenAndServe`. There is no live object to reach; refuse reload |
 | `cost_ledger.*` (`enabled`, `dir`, `retention_days`) | ❌ | The ledger is a `*ledger.Writer` opened once at startup and handed to the session store as a `Recorder`. Refuse reload |
 | `mtls.*` (the block's presence and `mode`, the only field it carries) | ❌ | The inbound TLS listener and, under `strict`, the forward proxy's mTLS dialer are built once at startup, and the outbound chain is built for `forwardproxy.Support` of that state; refuse reload. Legacy `cert_file` / `key_file` / `bundle_file` keys are dropped at load, so an edit to them is neither applied nor refused |
@@ -792,6 +883,27 @@ For the unreloadable cases, `Status.LastError` names the field(s) that changed a
 **Validation guarantee: bad YAML never takes the pod down.** Any failure during Load / Validate / Build / Start results in the status being updated and the active pipeline continuing to serve traffic on the previous config. Only a successful end-to-end reload swaps the holders.
 
 **Non-reloadable choices elsewhere.** The in-memory session store, the cost ledger, the stat server, the session API server, and the reloader itself are all process-scoped — they live from startup to shutdown. A change to `session.enabled`, `cost_ledger.enabled`, `stats.address`, `listener.session_api_addr`, or the reloader's own knobs (drain window, debounce) requires a pod restart. `session.*`, `cost_ledger.*`, `listener.*` and `mtls.*` are refused outright, per the table above; `stats.address` and the reloader's own knobs are read once at construction, so an edit there is simply not seen.
+
+#### Skipping infrastructure hosts (`listener.skip_hosts`)
+
+`skip_hosts` lists infrastructure destinations — OTel collectors, metrics
+endpoints, log shippers — whose traffic should bypass the plugin pipeline
+**and** session recording entirely. A matched request is forwarded as a
+transparent proxy: no plugin runs, no event is appended.
+
+```yaml
+listener:
+  skip_hosts:
+    - "otel-collector.*.svc.cluster.local"
+    - "*.metrics.local"
+```
+
+Patterns use the same `.`-delimited glob semantics as `authproxy-routes`
+hosts; ports are stripped before matching. Any change requires a pod restart,
+like every other `listener.*` field. Do **not** add hosts here that need IBAC
+or token-exchange policy applied — bypass means bypass. It exists for traffic
+whose recording floods the session store and crowds out the user intent a
+guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
 
 ---
 

@@ -69,6 +69,31 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
 [`proxy-init`](../deploy/proxy-init/) and must match its `TRANSPARENT_PORT` /
 `INBOUND_TRANSPARENT_PORT`. A mismatch redirects traffic to a dead port.
 
+### Listener roles and interception (proxy-sidecar)
+
+- `listener.roles` — which proxies run in proxy-sidecar mode. Empty (the
+  default) runs **both** the reverse proxy (inbound) and the forward proxy
+  (outbound). Set a subset to run a single shape: `roles: [forward]` is
+  egress-only (the laptop TLS-bridge shape), `roles: [reverse]` is
+  inbound-only JWT validation. `reverse_proxy_backend` is required only when
+  the reverse role is active. Ignored outside proxy-sidecar mode.
+- `listener.inbound_interception` — how inbound traffic reaches the reverse
+  proxy's pipeline, with the reverse role active:
+  - `reverse-proxy` (default) — the operator binds the sidecar on the agent's
+    original port and relocates the agent to a free one ("port stealing"), so
+    the Service needs no patching. Forwards to `reverse_proxy_backend`.
+  - `transparent` — proxy-init PREROUTING-REDIRECTs inbound TCP to
+    `listener.transparent_inbound_addr` (`:8083` by default); the listener
+    recovers the port the client actually addressed via `SO_ORIGINAL_DST` and
+    forwards there over loopback. The agent keeps its own port and every port
+    it listens on is covered — not just the first declared one. Requires
+    proxy-init (`NET_ADMIN`) and is Linux-only.
+- `listener.transparent_proxy_addr` — the outbound transparent listener
+  (`:8082` by default in the proxy-sidecar / lite presets) that
+  enforce-redirect mode REDIRECTs the agent's bypass egress to. Binding it is
+  harmless when nothing is redirected to it — cooperative HTTP_PROXY
+  deployments simply never receive connections on it.
+
 **Envoy-sidecar (`cortex-envoy`):**
 
 | Port | Purpose |

@@ -244,7 +244,7 @@ only — `agentop cost` does not print it.
 
 ## Reading usage over HTTP
 
-`GET /v1/usage` on the session API (`:9094` in Kubernetes, `:47601` for the laptop
+`GET /v1/usage` on the [session API](session-api.md) (`:9094` in Kubernetes, `:47601` for the laptop
 install) is the aggregate behind `agentop cost`. Query parameters:
 
 | Parameter | Values | Notes |

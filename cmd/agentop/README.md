@@ -1,10 +1,11 @@
 # agentop
 
 Interactive terminal UI for inspecting AuthBridge's in-memory session store.
-`agentop` connects to the session API exposed by an AuthBridge sidecar
-(default `http://localhost:9094`, typically reached via `kubectl port-forward`)
-and lets you browse active sessions, follow a session's event stream live,
-and read individual events as pretty-printed JSON.
+`agentop` connects to the [session API](../../docs/session-api.md) exposed by
+an AuthBridge sidecar (default `http://localhost:9094`, typically reached via
+`kubectl port-forward`) and lets you browse active sessions, follow a
+session's event stream live, and read individual events as pretty-printed
+JSON.
 
 ## Install
 
