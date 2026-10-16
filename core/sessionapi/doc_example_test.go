@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -19,7 +20,18 @@ func TestDocExamplePromptContextMatchesWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read docs/session-api.md: %v", err)
 	}
-	m := regexp.MustCompile(`"promptContext": (\{[^}]*\}|-?\d+)`).FindSubmatch(raw)
+	// Anchor to the GET /v1/sessions section so a promptContext value elsewhere
+	// in the doc cannot silently re-target this test.
+	doc := string(raw)
+	sec := strings.Index(doc, "## `GET /v1/sessions`")
+	if sec < 0 {
+		t.Fatal("session-api.md has no GET /v1/sessions section")
+	}
+	scope := doc[sec:]
+	if next := strings.Index(scope[3:], "\n## "); next >= 0 {
+		scope = scope[:next+3]
+	}
+	m := regexp.MustCompile(`"promptContext": (\{[^}]*\}|-?\d+)`).FindSubmatch([]byte(scope))
 	if m == nil {
 		t.Fatal("session-api.md's GET /v1/sessions example carries no promptContext value")
 	}
