@@ -2108,3 +2108,82 @@ func TestBobStatus_DistinguishesWhyThereIsNoDocument(t *testing.T) {
 		seen[reason] = tc.name
 	}
 }
+
+// The merged command configures BOTH faces: the editor's settings.json and the
+// rc-file shell function. Each half's own behaviour is pinned by its own tests
+// (here for the editor, cmd_bobshell_test.go for the shell); what only the merged
+// command can lose is that it reaches both, so that is what this pins.
+func TestBob_EnableConfiguresEditorAndShellBoth(t *testing.T) {
+	home := fakeHome(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
+
+	var out, errb bytes.Buffer
+	code := runBob([]string{"enable", "--yes", "--settings", settings, "--config", cfg}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d: %s%s", code, out.String(), errb.String())
+	}
+	if got := bobDoc(t, settings)[bobProxyKey]; got != "http://127.0.0.1:47600" {
+		t.Errorf("editor half: %s = %v, want the config's proxy", bobProxyKey, got)
+	}
+	rc := filepath.Join(home, ".zshrc")
+	b, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatalf("shell half: no rc file at %s: %v", rc, err)
+	}
+	if !strings.Contains(string(b), bobShellBlock) {
+		t.Errorf("shell half: %s holds no bobshell block:\n%s", rc, b)
+	}
+}
+
+// A declined prompt in ONE half does not stop the other: the halves are
+// independent changes, and the user saying no to the editor write has not said
+// no to the rc file. The command still exits 3, because one of its two changes
+// did not happen — a script branching on the code must not read it as done.
+func TestBob_OneDeclinedHalfStillRunsTheOther(t *testing.T) {
+	home := fakeHome(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
+
+	// The editor's prompt answers no; the shell's answers yes.
+	savedEditor, savedShell := bobConfirm, bobShellConfirm
+	bobConfirm = func(string, string, io.Writer) bool { return false }
+	bobShellConfirm = func(string, string, io.Writer) bool { return true }
+	t.Cleanup(func() { bobConfirm, bobShellConfirm = savedEditor, savedShell })
+
+	var out, errb bytes.Buffer
+	code := runBob([]string{"enable", "--settings", settings, "--config", cfg}, &out, &errb)
+	if code != exitDeclined {
+		t.Fatalf("exit = %d, want %d — one of the two changes was declined", code, exitDeclined)
+	}
+	if bobDoc(t, settings)[bobProxyKey] != nil {
+		t.Error("editor half: a declined prompt still wrote the key")
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if err != nil || !strings.Contains(string(b), bobShellBlock) {
+		t.Errorf("shell half: the rc file was not written (%v):\n%s", err, b)
+	}
+}
+
+// The exit-code combination, as a table: the WORSE of the two halves wins, and a
+// failure outranks a declined prompt, which outranks success.
+func TestBobCombine(t *testing.T) {
+	for _, tc := range []struct {
+		ide, shell, want int
+	}{
+		{0, 0, 0},
+		{0, exitDeclined, exitDeclined},
+		{exitDeclined, 0, exitDeclined},
+		{1, 0, 1},
+		{0, 1, 1},
+		{1, exitDeclined, 1},
+		{exitDeclined, 1, 1},
+		{exitDeclined, exitDeclined, exitDeclined},
+		{2, 0, 2},
+		{0, 2, 2},
+	} {
+		if got := bobCombine(tc.ide, tc.shell); got != tc.want {
+			t.Errorf("bobCombine(%d, %d) = %d, want %d", tc.ide, tc.shell, got, tc.want)
+		}
+	}
+}

@@ -754,9 +754,9 @@ func planUnrouteBob(env *setupEnv) (removal, bool) {
 
 // planRemoveBobShell removes the bob shell function when the rc file holds the
 // block enable writes exactly once. A block that is not that, edited or there
-// twice, is the user's: bobshell disable leaves it, so this only says so, with a
+// twice, is the user's: `configure bob disable` leaves it, so this only says so, with a
 // ! row and the lines to delete by hand. The file is followed through one link,
-// as bobshell's verbs follow it, so the edit lands in a dotfiles repo's copy
+// as configure bob's shell half follows it, so the edit lands in a dotfiles repo's copy
 // rather than replacing the link.
 func planRemoveBobShell(env *setupEnv) (removal, bool) {
 	rc, err := bobShellRCPath(env.shell, env.home)
@@ -785,7 +785,7 @@ func planRemoveBobShell(env *setupEnv) (removal, bool) {
 	return removal{
 		label: "removed",
 		item:  checklist.Item{Verb: "remove", What: "the bob shell function", Where: env.tilde(rc)},
-		fix: remedy{agentop: "agentop configure bobshell disable",
+		fix: remedy{agentop: "agentop configure bob disable",
 			byHand: "delete the lines from \"" + bobShellMarkerStart + "\" to \"" + bobShellMarkerEnd + "\" in " + env.tilde(rc)},
 		run: func(*checklist.Running) (string, []string, error) {
 			var out, errb bytes.Buffer

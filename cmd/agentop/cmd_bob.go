@@ -41,7 +41,7 @@ const (
 	bobSystemKeychain = "/Library/Keychains/System.keychain"
 )
 
-const bobUsage = `agentop configure bob — route IBM Bob through Cortex via its settings.json
+const bobUsage = `agentop configure bob — route Bob, editor and shell both, through Cortex
 
 Usage:
   agentop configure bob enable  [--yes] [--settings PATH] [--config PATH]
@@ -55,14 +55,27 @@ Flags:
   --config PATH    Cortex config to read the proxy address from
                    (default ~/.cortex/config.yaml)
 
-IBM Bob is a VS Code fork, so it has a settings file and one flat key decides
-where its networking goes: "http.proxy". enable sets it to Cortex's forward
-proxy, read from ~/.cortex/config.yaml so the address always matches the proxy
-that is actually running. Every other setting is left exactly as it was, and the
-first write copies the original to settings.json.bak and never overwrites that
-copy. Bob writes settings.json only once a setting has changed, so on a Bob still
-on its defaults enable creates the file; it refuses only when Bob's settings
-directory is missing too, which means Bob has not run here.
+Bob is two faces of one agent and this command configures both:
+
+  the editor     IBM Bob is a VS Code fork, so it has a settings file and flat
+                 keys decide where its networking goes. enable sets "http.proxy"
+                 to Cortex's forward proxy, read from ~/.cortex/config.yaml so
+                 the address always matches the proxy that is actually running.
+                 Every other setting is left exactly as it was, and the first
+                 write copies the original to settings.json.bak and never
+                 overwrites that copy. Bob writes settings.json only once a
+                 setting has changed, so on a Bob still on its defaults enable
+                 creates the file; it refuses only when Bob's settings directory
+                 is missing too, which means Bob has not run here.
+  the shell      a "bob" function is appended to your shell's rc file (~/.zshrc
+                 for zsh, ~/.bashrc for bash) that runs "agentop exec -- bob", so
+                 typing "bob" runs through Cortex. Open a new terminal, or source
+                 the file, for it to take effect.
+
+The two halves run independently: each reports its own outcome, each prompts before
+its own write (--yes skips the prompts), and a refusal or failure in one does not
+stop the other. The exit code is the worse of the two — 1 if either half failed, 3
+if either prompt was declined, else 0.
 
 The proxy is only half of it: Bob must also trust Cortex's CA. On macOS enable
 does that without touching the keychain, in two more changes:
@@ -71,9 +84,9 @@ does that without touching the keychain, in two more changes:
       Node's own trust store, which takes NODE_EXTRA_CA_CERTS
   a block in your shell's rc file that exports NODE_EXTRA_CA_CERTS for IBM Bob
       only — Bob runs your login shell when it starts from the Dock or Spotlight
-      and takes its environment. The file is the one "configure bobshell" uses:
-      ~/.zshrc for zsh, ~/.bashrc for bash; any other shell gets the block
-      printed to place yourself.
+      and takes its environment. The file is the shell half's: ~/.zshrc for zsh,
+      ~/.bashrc for bash; any other shell gets the block printed to place
+      yourself.
 
 enable then starts your login shell the way Bob does to check the block is read,
 and warns if it is not — bash's login shell reads ~/.bash_profile, which has to
@@ -84,14 +97,15 @@ agentop does not do it for you.
 
 disable removes "http.proxy" ONLY when it points at Cortex — a corporate proxy,
 say, is reported and left alone — "http.systemCertificates" only when enable
-recorded adding it (in ~/.cortex/bob-state.json) and it is still false, and the
-block only when it is exactly what enable wrote. A missing settings.json is not an
-error: there is simply nothing to remove from it. status reports all three from
-the files and runs nothing.
+recorded adding it (in ~/.cortex/bob-state.json) and it is still false, and each
+rc block only when it is exactly what enable wrote: the launch-environment block
+and the shell half's "bob" function. A missing settings.json is not an error:
+there is simply nothing to remove from it. status reports all of it from the
+files and runs nothing.
 
-"agentop configure bobshell" is a different thing and the two are independent.
-That one defines a "bob" shell function so typing "bob" runs through Cortex;
-this one configures what the editor does on its own.
+On a platform where IBM Bob's settings path is not known (any but macOS, unless
+--settings names a file), the editor half is skipped with a note and the shell
+half still runs: the rc file is where it always was.
 
 Comments: VS Code permits them in settings.json and this command does not. It
 reads the file as strict JSON and refuses a commented one by name rather than
@@ -115,7 +129,21 @@ var bobConfirm = func(path, what string, stdout io.Writer) bool {
 	return confirm(stdout)
 }
 
-// runBob dispatches `agentop configure bob`. Returns the process exit code.
+// runBob dispatches `agentop configure bob`, the ONE command that configures both of
+// Bob's faces. Returns the process exit code.
+//
+// Bob is two faces of one agent — the IBM Bob editor and the "bob" shell function —
+// and this command configures both, in that order, each half reporting its own
+// outcome. They were two subcommands (`configure bob` and `configure bobshell`)
+// until 2026-10-15, when the agent converged on one name and one command; the shell
+// half's own entry point survives as runBobShell, which this calls, because its
+// verbs are independently testable that way and the tests already drive it.
+//
+// THE HALVES ARE INDEPENDENT BY DESIGN: a failure or a declined prompt in one does
+// not stop the other, because neither needs the other to work — the editor reads its
+// settings.json whatever the shell does, and the rc function is complete whatever
+// the settings say. What the caller learns is the WORSE of the two outcomes, so a
+// script that checks the exit code is not told "done" when half of it was not.
 func runBob(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, bobUsage)
@@ -124,7 +152,8 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 	action := args[0]
 	// Before anything else: --help asks for this command's usage, and reading it
 	// as an action name would send someone looking for the command list to the one
-	// branch that refuses to print it. Same split as bobshell's and claude-code's.
+	// branch that refuses to print it. Same split as the shell half's and
+	// claude-code's.
 	switch action {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, bobUsage)
@@ -186,34 +215,90 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 	if *cortexCfgPath == "" {
 		*cortexCfgPath = filepath.Join(home, cortexCfgRel)
 	}
+	// The editor half needs a settings path. Where the platform does not name one
+	// and --settings did not either, the half is SKIPPED with a note rather than
+	// failing the whole command: the shell half has no such dependency, and a user
+	// on a platform the editor half does not know must still be able to configure
+	// the function. The old single-purpose command exited 2 here; that was right
+	// when this command had nothing else to do, and wrong now that it does.
+	//
+	// idePrinted tracks whether the half put anything on stdout, for the separator
+	// below: a skipped enable/disable notes its skip on stderr, and stdout needs no
+	// separator in front of the shell half's report.
+	ideCode, idePrinted := 0, false
 	if *settingsPath == "" {
 		p, perr := bobSettingsPath(home)
 		if perr != nil {
-			// 2, not 1: the missing fact is one the caller can supply on the command
-			// line, which makes this a usage error rather than a failure. Unlike
-			// bobshell's off-platform arm there is no block of text to paste that
-			// would constitute an answer on its own.
-			fmt.Fprintf(stderr, "agentop: %v.\n  Pass --settings PATH to point at it.\n", perr)
-			return 2
+			switch action {
+			case "status":
+				// The same verdict bobStatus prints for a settings document it
+				// cannot treat as Bob's, on the same "report, don't fail" terms:
+				// status exits 0 so it stays usable in a shell conditional.
+				fmt.Fprintf(stdout, "%s\n  editor half: %v\n", bobStatusUnknown, perr)
+				idePrinted = true
+			default:
+				// 1, like bobNotInstalled: the half's change did not happen, and
+				// the note names the flag that would make it possible.
+				fmt.Fprintf(stderr, "agentop: %v.\n  The editor half is skipped; the shell half still runs. Pass\n  --settings PATH to configure the editor too.\n", perr)
+				ideCode = 1
+			}
+		} else {
+			*settingsPath = p
 		}
-		*settingsPath = p
 	}
-
-	// Resolved once, here, for all three verbs: the rc file status reads is the one
-	// enable writes and disable edits.
+	// Resolved once, here, for all three verbs: the rc file the editor half's
+	// launch-environment block is written to on macOS is the one the shell half's
+	// function block lives in too, so both halves see the same target.
 	launch := resolveBobLaunch(home, os.Getenv("SHELL"))
 
-	switch action {
-	case "enable":
-		// enable derives the CA path itself, from the config it already requires.
-		return bobEnable(*settingsPath, *cortexCfgPath, launch, yes, stdout, stderr)
-	case "disable":
-		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
-		return bobDisable(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, yes, stdout, stderr)
-	default:
-		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
-		return bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, stdout)
+	if *settingsPath != "" {
+		idePrinted = true
+		switch action {
+		case "enable":
+			// enable derives the CA path itself, from the config it already requires.
+			ideCode = bobEnable(*settingsPath, *cortexCfgPath, launch, yes, stdout, stderr)
+		case "disable":
+			wantProxy, caPath := bobWanted(*cortexCfgPath, home)
+			ideCode = bobDisable(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, yes, stdout, stderr)
+		default:
+			wantProxy, caPath := bobWanted(*cortexCfgPath, home)
+			ideCode = bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, launch, stdout)
+		}
 	}
+
+	// The shell half, separated by a blank line when the editor half printed
+	// anything, so the two reports read as two reports. runBobShell re-parses its
+	// own flags from a constructed argument list rather than taking parsed values,
+	// which keeps it the independently testable command it already was; only --yes
+	// is forwarded, the one flag it shares.
+	if idePrinted {
+		fmt.Fprintln(stdout)
+	}
+	shellArgs := []string{action}
+	if yes {
+		shellArgs = append(shellArgs, "--yes")
+	}
+	shellCode := runBobShell(shellArgs, stdout, stderr)
+
+	return bobCombine(ideCode, shellCode)
+}
+
+// bobCombine picks the merged command's exit code from its halves' own codes: the
+// WORSE outcome wins, so a script branching on the code learns about the half that
+// did not succeed even when the other did. Failure (1) outranks a declined prompt
+// (3) — something going wrong is not the user's refusal — and both outrank success.
+// 2 cannot reach here (usage is validated before either half runs) but is ranked
+// first anyway, so a future half that answers it cannot silently soften the code.
+func bobCombine(ide, shell int) int {
+	switch {
+	case ide == 2 || shell == 2:
+		return 2
+	case ide == 1 || shell == 1:
+		return 1
+	case ide == exitDeclined || shell == exitDeclined:
+		return exitDeclined
+	}
+	return 0
 }
 
 // bobSettingsPath is where IBM Bob's settings live, for the platforms where that

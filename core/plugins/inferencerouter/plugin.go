@@ -275,7 +275,13 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper}
 		byHost[ep.Key()] = name
 	}
-	p.servers, p.byHost, p.agents = servers, byHost, c.Agents
+	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
+	// config named: pipeline.CanonicalAgent maps retired spellings ("bob-shell",
+	// "ibm-bob") to the name requests now report ("bob"), so a config written before a
+	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
+	// is the one implementation of that fold, shared with agentop's own reads and
+	// writes of the same agents: map so the two cannot disagree.
+	p.servers, p.byHost, p.agents = servers, byHost, pipeline.FoldAgentNames(c.Agents)
 	return nil
 }
 
@@ -387,6 +393,16 @@ type pin struct {
 	server string
 }
 
+// belongsTo reports whether this pin is agent's. The stored spelling is folded
+// through pipeline.CanonicalAgent, so a pin recorded under a retired agent name —
+// "bob-shell", before that name converged into "bob" — still matches the requests it
+// was pinning. Without the fold, a rename reads every existing pin as another
+// agent's, unpins the session, and re-decides it mid-conversation: the exact
+// mid-conversation switch the pin exists to prevent.
+func (pn pin) belongsTo(agent string) bool {
+	return pipeline.CanonicalAgent(pn.agent) == agent
+}
+
 // pinning is one request's session pin: how it was decided, and for a
 // session's first request where to store the outcome once OnRequest knows it.
 type pinning struct {
@@ -448,7 +464,7 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 	}
 	key := pinPrefix + pctx.Session.ID
 	if pn, ok := store.load(key); ok {
-		if pn.agent != agent {
+		if !pn.belongsTo(agent) {
 			server, _, _ := p.unpinned(pctx, agent, choice, captured)
 			return server, pinning{state: pinNone}
 		}
@@ -472,7 +488,7 @@ func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
 		return false
 	}
 	pn, ok := store.load(pinPrefix + pctx.Session.ID)
-	return ok && pn.agent == agentOf(pctx) && pn.server != ""
+	return ok && pn.belongsTo(agentOf(pctx)) && pn.server != ""
 }
 
 // unpinned is the server for a request in a session its agent holds no pin on, and

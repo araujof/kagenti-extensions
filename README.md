@@ -33,7 +33,7 @@ from where you are, the same script is served straight from this repository, at
 Then connect your agent — once, in a new terminal. The table below has each command.
 
 ```sh
-agentop configure claude-code enable    # or opencode, bob, bobshell
+agentop configure claude-code enable    # or opencode, bob
 ```
 
 Run your agent the way you always do. No flags, no environment variables.
@@ -60,8 +60,7 @@ names the command that fixes it.
 | **Claude Code** | `agentop configure claude-code enable` | [Guide](./docs/agents/claude-code.md) |
 | **OpenCode** | `agentop configure opencode enable` | [Guide](./docs/agents/opencode.md) |
 | **Codex** | `agentop configure codex enable` | [Guide](./docs/agents/codex.md) |
-| **IBM Bob** | `agentop configure bob enable` | [Guide](./docs/agents/bob.md) |
-| **Bob Shell** | `agentop configure bobshell enable` | [Guide](./docs/agents/bobshell.md) |
+| **IBM Bob** | `agentop configure bob enable` — the editor and the `bob` shell command both | [Guide](./docs/agents/bob.md) |
 | **Any other agent** | `agentop exec -- <command>` | [Guide](./docs/agents/any-agent.md) |
 
 Each `configure` command is a one-time setup: it asks before it writes, and afterwards

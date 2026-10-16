@@ -8,7 +8,7 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Install and run Cortex on a laptop | [root README](../README.md) |
-| Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [bobshell](agents/bobshell.md), [any other agent](agents/any-agent.md) |
+| Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [any other agent](agents/any-agent.md) |
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |

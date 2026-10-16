@@ -19,6 +19,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 )
 
@@ -159,6 +160,11 @@ func readRouter(cfg *config.Config) (c routerconfig.Config, present bool, err er
 				return routerconfig.Config{}, true, fmt.Errorf("the %s entry's config: %w", routerName, err)
 			}
 		}
+		// Agents keyed by CANONICAL name, the same fold the router keys its routing
+		// table with (pipeline.FoldAgentNames), so what `server` lists, checks and
+		// changes agrees with what the proxy routes: a config written before an
+		// agent-name rename still names the agent today's spelling on both sides.
+		c.Agents = pipeline.FoldAgentNames(c.Agents)
 		return c, true, nil
 	}
 	return routerconfig.Config{}, false, nil

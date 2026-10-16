@@ -161,3 +161,78 @@ Only macOS's settings location is known (`~/Library/Application Support/IBM
 Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
+
+## The shell half: the rc-file block
+
+`agentop configure bob enable` also makes `bob` at a prompt run through Cortex,
+by appending a delimited block to your shell's rc file (the block and the
+`--yes` / exit-3 conventions are in the [README's bob section](../../cmd/agentop/README.md#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob)).
+What the write itself obeys:
+
+### Which file it writes
+
+The basename of `$SHELL` picks it, and only these two:
+
+| `$SHELL` | File |
+|---|---|
+| …`/zsh` | `~/.zshrc` |
+| …`/bash` | `~/.bashrc` |
+| anything else, or unset | nothing is written — `enable` prints the block for you to place, `disable` tells you which block to delete |
+
+That is the whole rule. `agentop` does not work out whether your shell will be a
+login or a non-login shell, or which of zsh's four startup files you meant,
+because being wrong about it writes a block into a file nothing reads and
+leaves you with no reason to look there.
+
+**bash on macOS is the case to know about.** Terminal.app starts bash as a
+*login* shell, which reads `~/.bash_profile` and not `~/.bashrc`. If the
+function does not appear in a new window, either source `~/.bashrc` from
+`~/.bash_profile` — the usual arrangement — or move the block there yourself.
+`enable` always prints the path it wrote, so you can see where it went.
+
+### Symlinks
+
+A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
+the real file: writing the link itself would replace it with a regular file and
+silently detach it from the repo, leaving the tracked copy stale with nothing
+in `git status` to show it. Two or more links deep, or a dangling link, and
+both verbs decline to write — a chain that long is somebody's deliberate
+arrangement, and a write through it is more likely to surprise than to help.
+
+What they print instead follows the verb, as it does for an unrecognised
+`$SHELL`: `enable` gives you the block to paste, and `disable` names the markers
+to delete between, because you already have the block — it is in your file — and
+printing it at someone removing the integration reads as an instruction to put
+it back.
+
+The write is temp-file-then-rename, so a failure part way through leaves your
+rc file as it was rather than half-written. An existing file keeps its own
+permissions; a new one is created `0644`.
+
+### What `status` does and does not know
+
+It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
+files. So it says `not enabled` in the very shell that just ran `enable`, until
+you open a new terminal or source the file — recognising the block inside a
+startup script would mean parsing shell, which is the thing this command
+deliberately does not do.
+
+What the variable proves is narrower than "`bob` is routed", which is why the
+report separates the two. The variable is exported, so every child process inherits
+it — including a **non-interactive** subshell or a script, which does not read
+your startup file and therefore has no `bob` function at all. There, `bob` is the
+plain binary and Cortex is not in the path of the call, while the variable still
+says `1`. `status` cannot tell the two apart: the shell's function table lives in
+that shell's memory and is never exported, so `agentop`, as a child process, cannot
+see it. To settle it in a particular shell, ask that shell: `type bob` says
+`bob is a function` when the function is live, and names a file when it is not.
+
+Use `type`, not `which`. In bash, `which` is `/usr/bin/which` — a separate
+process, which cannot see its parent shell's functions, so with the function live
+it reports the `bob` binary's path and looks like a definitive "not routed". zsh's
+`which` is a builtin and does report the function, so the wrong advice works in
+one of the two shells this writes a file for. `type` is a shell builtin in sh,
+bash, zsh and dash alike. (`mise doctor` splits `activated:` from
+`shims_on_path:` for the same reason.)
+
+Both answers exit 0: "not enabled" is a report, not a failure.
