@@ -170,6 +170,7 @@ const (
 	pinNew      = "new"      // this request pinned the session
 	pinExisting = "existing" // the session was already pinned
 	pinNone     = "none"     // nothing was pinned: no session, a synthetic one, no store, a failed redirect, another agent's pin, a side request, or an unparsed request
+	pinMoved    = "moved"    // a sessions: override moved the session with this request
 )
 
 // The turn detail on a not-routed record, where the request's own turn decided an
@@ -199,6 +200,9 @@ type Router struct {
 	servers map[string]route  // by server name
 	byHost  map[string]string // every server's Endpoint.Key, to its name
 	agents  map[string]string // agent name to server name
+	// sessions is the config's sessions: map, a session id to the server the user
+	// moved it to ("" to stop routing it). It beats the pin and every unpinned rule.
+	sessions map[string]string
 
 	// store is the process's durable store (storage.StoreConsumer), where pins are
 	// kept when there is one; nil keeps them in pctx.Shared.
@@ -281,7 +285,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
 	// is the one implementation of that fold, shared with agentop's own reads and
 	// writes of the same agents: map so the two cannot disagree.
-	p.servers, p.byHost, p.agents = servers, byHost, pipeline.FoldAgentNames(c.Agents)
+	p.servers, p.byHost, p.agents, p.sessions = servers, byHost, pipeline.FoldAgentNames(c.Agents), c.Sessions
 	return nil
 }
 
@@ -419,7 +423,7 @@ type pinning struct {
 // when it was redirected there, "" when it stayed where the client sent it. A
 // session already pinned keeps its pin, which serverFor renewed.
 func (pn *pinning) settle(server string) {
-	if pn.state == pinNew {
+	if pn.state == pinNew || pn.state == pinMoved {
 		pn.store.save(pn.key, pin{agent: pn.agent, server: server})
 	}
 }
@@ -463,6 +467,22 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		return choice, pinning{state: pinNone}
 	}
 	key := pinPrefix + pctx.Session.ID
+	// A sessions: override is the user's explicit move: it beats the pin and every
+	// unpinned rule, and the pin follows it, so removing the entry later does not
+	// move the session back. pinMoved tells the record this request moved a session
+	// that already held a pin; pinNew is a session that held none.
+	if over, ok := p.overrideFor(pctx); ok {
+		state := pinNew
+		if pn, had := store.load(key); had && pn.belongsTo(agent) {
+			switch {
+			case pn.server == over:
+				state = pinExisting
+			case pn.server != over:
+				state = pinMoved
+			}
+		}
+		return over, pinning{state: state, store: store, key: key, agent: agent}
+	}
 	if pn, ok := store.load(key); ok {
 		if !pn.belongsTo(agent) {
 			server, _, _ := p.unpinned(pctx, agent, choice, captured)
@@ -476,6 +496,17 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		return server, pinning{state: pinNone, turn: turn}
 	}
 	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn}
+}
+
+// overrideFor is the sessions: entry for pctx's session, when one names it. A
+// synthetic session is never overridden, whatever a hand-fed config says: its id
+// holds many conversations, not one to move.
+func (p *Router) overrideFor(pctx *pipeline.Context) (string, bool) {
+	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+		return "", false
+	}
+	over, ok := p.sessions[pctx.Session.ID]
+	return over, ok
 }
 
 // pinnedToServer reports whether pctx's session holds its agent's pin to a server.
