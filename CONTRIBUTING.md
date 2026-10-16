@@ -220,7 +220,9 @@ agentop --version
 
 - **Linux** binaries are fully static (`CGO_ENABLED=0`) — no libc dependency, run anywhere.
 - **macOS** binaries are portable but unsigned; after extracting, clear the Gatekeeper
-  quarantine once: `xattr -dr com.apple.quarantine ./agentop` (or `codesign --sign - ./agentop`).
+  quarantine once — `xattr -dr com.apple.quarantine ./agentop` (or `codesign --sign -
+  ./agentop`) — **before** `sudo mv` moves the binary out of the directory, while
+  `./agentop` still names it.
 
 `cortex` defaults to the `full` plugin profile when built with `make cortex`;
 pass `PROFILE=lite` or `local` for smaller sets. See

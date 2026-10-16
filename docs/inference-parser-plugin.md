@@ -4,7 +4,7 @@ Parses outbound LLM inference requests/responses into `pctx.Extensions.Inference
 downstream policy plugins, **and prices the finished response** — it is the one place
 tokens become dollars.
 
-It reads two dialects, chosen by how the request path ends, under any prefix: a path ending
+It reads three dialects, chosen by how the request path ends, under any prefix: a path ending
 in `/completions` is OpenAI chat completions (or legacy completions), and one ending in
 `/v1/messages` is Anthropic Messages. A path ending in `/responses` is the OpenAI
 Responses API — the public `/v1/responses` and Codex's `chatgpt.com`-hosted gateway at
