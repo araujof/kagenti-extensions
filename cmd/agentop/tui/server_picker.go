@@ -177,7 +177,7 @@ func (m *model) applyServerChoice() tea.Cmd {
 		res, err := edit.WritePluginConfig(context.Background(), edit.ConfigWrite{
 			Path:     path,
 			StatsURL: statsURL,
-			Changes:  []edit.ConfigChange{servers.AgentChange(agent, server)},
+			Changes:  servers.AgentChanges(agent, server),
 			Verify:   servers.Verify,
 		})
 		return serverSwitchedMsg{agent: agent, server: server, statsURL: statsURL, staying: staying, inForce: inForce,

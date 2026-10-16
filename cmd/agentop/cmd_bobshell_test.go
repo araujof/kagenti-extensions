@@ -854,7 +854,7 @@ func TestBobShellRejectsStrayArguments(t *testing.T) {
 				if code != 0 {
 					t.Errorf("exit = %d, want 0; stderr: %s", code, errb.String())
 				}
-				if !strings.Contains(out.String(), "agentop configure bobshell —") {
+				if !strings.Contains(out.String(), "the shell half of agentop configure bob —") {
 					t.Errorf("usage not on stdout:\n%s", out.String())
 				}
 			} else {
@@ -884,7 +884,7 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 			if code := runBobShell([]string{arg}, &out, &errb); code != 0 {
 				t.Errorf("exit = %d, want 0", code)
 			}
-			if !strings.Contains(out.String(), "agentop configure bobshell —") {
+			if !strings.Contains(out.String(), "the shell half of agentop configure bob —") {
 				t.Errorf("usage not on stdout:\n%s", out.String())
 			}
 			if strings.Contains(out.String()+errb.String(), "unknown bobshell action") {
@@ -902,7 +902,7 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 		if code := runBobShell(nil, &out, &errb); code != 2 {
 			t.Errorf("exit = %d, want 2", code)
 		}
-		if !strings.Contains(errb.String(), "agentop configure bobshell —") {
+		if !strings.Contains(errb.String(), "the shell half of agentop configure bob —") {
 			t.Errorf("usage not on stderr:\n%s", errb.String())
 		}
 		if out.Len() != 0 {

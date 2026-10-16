@@ -327,8 +327,8 @@ func TestBobShellState_NeverFullyEnabled(t *testing.T) {
 	t.Run("variable set", func(t *testing.T) {
 		t.Setenv(bobShellEnvVar, "1")
 		got := bobShellState()
-		if got.Agent != "bobshell" {
-			t.Errorf("Agent = %q, want bobshell", got.Agent)
+		if got.Agent != "bob" {
+			t.Errorf("Agent = %q, want bob — the shell half names the agent, not the retired spelling", got.Agent)
 		}
 		if got.State != configurePartial {
 			t.Errorf("State = %s, want %s — agentop cannot see a shell's function table",
@@ -462,7 +462,6 @@ func TestWriteConfigureStatusTable_Shape(t *testing.T) {
 	writeConfigureStatusTable([]configureStatus{
 		{Agent: "claude-code", State: configureOn, Detail: "/home/u/.claude/settings.json"},
 		{Agent: "bob", State: configureOff, Detail: `"http.proxy" is unset`},
-		{Agent: "bobshell", State: configurePartial, Detail: "CORTEX_BOB=1"},
 		{Agent: "opencode", State: configureUnknown, Detail: "opencode not found"},
 		{Agent: "codex", State: configurePartial, Detail: "3 of 5 keys set"},
 	}, &out)
@@ -474,7 +473,7 @@ func TestWriteConfigureStatusTable_Shape(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "HARNESS") || !strings.Contains(lines[0], "STATUS") || !strings.Contains(lines[0], "DETAIL") {
 		t.Errorf("first line is not the header: %q", lines[0])
 	}
-	for i, agent := range []string{"claude-code", "bob", "bobshell", "opencode", "codex"} {
+	for i, agent := range []string{"claude-code", "bob", "opencode", "codex"} {
 		if !strings.HasPrefix(lines[i+1], agent) {
 			t.Errorf("row %d = %q, want it to start with %q", i+1, lines[i+1], agent)
 		}
@@ -489,11 +488,10 @@ func TestWriteConfigureStatusTable_Shape(t *testing.T) {
 	wantVerdict := map[string]string{
 		"claude-code": "enabled",
 		"bob":         "not enabled",
-		"bobshell":    "partly enabled",
 		"opencode":    "uncertain",
 		"codex":       "partly enabled",
 	}
-	for i, agent := range []string{"claude-code", "bob", "bobshell", "opencode", "codex"} {
+	for i, agent := range []string{"claude-code", "bob", "opencode", "codex"} {
 		rest := strings.TrimSpace(strings.TrimPrefix(lines[i+1], agent))
 		if want := wantVerdict[agent]; !strings.HasPrefix(rest, want) {
 			t.Errorf("row %q verdict = %q, want it to start with %q\n%s", agent, rest, want, got)
@@ -588,12 +586,12 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 		t.Fatal(err)
 	}
 
-	rows := make([]configureStatus, 0, 5)
+	rows := make([]configureStatus, 0, 4)
 	for _, fn := range configureStatusFuncs() {
 		rows = append(rows, fn(home))
 	}
-	if len(rows) != 5 {
-		t.Fatalf("got %d rows, want 5 — a failing agent dropped its row", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want 4 — a failing agent dropped its row", len(rows))
 	}
 	for _, r := range rows {
 		if r.Agent == "" {
@@ -614,7 +612,7 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 	// And it renders, rather than only building.
 	var out bytes.Buffer
 	writeConfigureStatusTable(rows, &out)
-	for _, agent := range []string{"claude-code", "bob", "bobshell", "opencode", "codex"} {
+	for _, agent := range []string{"claude-code", "bob", "opencode", "codex"} {
 		if !strings.Contains(out.String(), agent) {
 			t.Errorf("table omits %q:\n%s", agent, out.String())
 		}
@@ -833,9 +831,9 @@ func TestStatusAndTableAgree(t *testing.T) {
 		}
 	})
 
-	// bobshell's paragraph branch is now taken on the state, so the variable being
-	// visible and the paragraph admitting it must stay in step.
-	t.Run("bobshell", func(t *testing.T) {
+	// The shell half's paragraph branch is now taken on the state, so the variable
+	// being visible and the paragraph admitting it must stay in step.
+	t.Run("bob shell half", func(t *testing.T) {
 		t.Setenv(bobShellEnvVar, "1")
 		var out bytes.Buffer
 		if code := bobShellStatus(&out); code != 0 {
@@ -848,4 +846,32 @@ func TestStatusAndTableAgree(t *testing.T) {
 			t.Errorf("state = %s, want %s", got, configurePartial)
 		}
 	})
+}
+
+// The merged bob row's combination rule, as a table: enabled only when both
+// halves are, one enabled half is "partly enabled", an unreadable half keeps the
+// row honest as "uncertain", and only two positive findings give "not enabled".
+func TestBobRowState(t *testing.T) {
+	for _, tc := range []struct {
+		ide, shell configureState
+		want       configureState
+	}{
+		// The shell half's own best is "partly enabled" — its state function
+		// refuses to claim more from an inherited variable — so an editor-on row
+		// with the variable set stays "partly enabled" rather than promoting
+		// unconfirmed evidence to enabled.
+		{configureOn, configurePartial, configurePartial},
+		{configureOn, configureOff, configurePartial},
+		{configureOff, configurePartial, configurePartial},
+		// A half's positive evidence outranks the other half's unreadability.
+		{configureUnknown, configurePartial, configurePartial},
+		{configurePartial, configureOff, configurePartial},
+		{configureOff, configureOff, configureOff},
+		{configureUnknown, configureOff, configureUnknown},
+		{configureOff, configureUnknown, configureUnknown},
+	} {
+		if got := bobRowState(tc.ide, tc.shell); got != tc.want {
+			t.Errorf("bobRowState(%s, %s) = %s, want %s", tc.ide, tc.shell, got, tc.want)
+		}
+	}
 }
