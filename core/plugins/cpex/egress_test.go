@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -195,6 +196,42 @@ func TestPrincipalSourceMissingFile(t *testing.T) {
 	}
 	if got, err := identityHeaders(nil, true, p); err != nil || got["x-user-token"] != "late" {
 		t.Fatalf("after the file appears: %v %v", got, err)
+	}
+}
+
+func TestPrincipalSourceRotation(t *testing.T) {
+	path := writeToken(t, "first")
+	p, err := newPrincipalSource(principalConfig{TokenFile: path, Header: "x-user-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotate := func(content string, at time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().Add(-time.Hour)
+	rotate("second", base)
+	if tok, ok := p.Token(); !ok || tok != "second" {
+		t.Fatalf("after rotation: %q %v, want second", tok, ok)
+	}
+	rotate("", base.Add(time.Minute))
+	if tok, ok := p.Token(); !ok || tok != "second" {
+		t.Fatalf("after an empty rewrite: %q %v, want the cached second", tok, ok)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok := p.Token(); !ok || tok != "second" {
+		t.Fatalf("after removal: %q %v, want the cached second", tok, ok)
+	}
+	rotate("third", base.Add(2*time.Minute))
+	if tok, ok := p.Token(); !ok || tok != "third" {
+		t.Fatalf("after the file returns: %q %v, want third", tok, ok)
 	}
 }
 

@@ -433,7 +433,9 @@ caller is never asserted as the principal. The token is never written to the
 forwarded request, and a caller's own copy of the header reaches neither
 identity resolution nor the `http` extension. When the file cannot be read,
 Cortex logs a warning at startup and denies those requests with
-`cpex.principal_unavailable` until it can.
+`cpex.principal_unavailable` until it can. The file is read again whenever
+its modification time or size changes, so a rotated token is picked up; a
+read that fails or finds the file empty keeps the previous token.
 
 ### Cortex-asserted workload
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -28,12 +29,16 @@ type principalSource struct {
 
 	mu    sync.Mutex
 	token string
+	// modTime and size describe the file token was read from, so a rotated
+	// file is read again.
+	modTime time.Time
+	size    int64
 }
 
-// newPrincipalSource reads the token file once. A missing or empty file
-// is returned as an error alongside a usable source: requests that need
-// the token are denied, and the file is read again on each of them until
-// it appears.
+// newPrincipalSource reads the token file. A missing or empty file is
+// returned as an error alongside a usable source: requests that need the
+// token are denied, and the file is read again on each of them until it
+// appears.
 func newPrincipalSource(cfg principalConfig) (*principalSource, error) {
 	if cfg.TokenFile == "" {
 		return nil, nil
@@ -43,17 +48,37 @@ func newPrincipalSource(cfg principalConfig) (*principalSource, error) {
 	return p, err
 }
 
-// Token returns the token, reading the file when it has not been read yet.
+// Token returns the token, reading the file again when it has changed.
 func (p *principalSource) Token() (string, bool) {
 	tok, err := p.load()
 	return tok, err == nil
 }
 
+// load stats the file on every call and reads it when its modification
+// time or size differs from the cached token's. A failed or empty read
+// keeps the cached token, so a rotation caught mid-write is retried on the
+// next call rather than denying requests.
 func (p *principalSource) load() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.token != "" {
+	fi, err := os.Stat(p.path)
+	if err == nil && p.token != "" && fi.ModTime().Equal(p.modTime) && fi.Size() == p.size {
 		return p.token, nil
+	}
+	tok, rerr := p.read(err)
+	if rerr != nil {
+		if p.token != "" {
+			return p.token, nil
+		}
+		return "", rerr
+	}
+	p.token, p.modTime, p.size = tok, fi.ModTime(), fi.Size()
+	return tok, nil
+}
+
+func (p *principalSource) read(statErr error) (string, error) {
+	if statErr != nil {
+		return "", fmt.Errorf("read principal token_file %q: %w", p.path, statErr)
 	}
 	b, err := os.ReadFile(p.path)
 	if err != nil {
@@ -63,7 +88,6 @@ func (p *principalSource) load() (string, error) {
 	if tok == "" {
 		return "", fmt.Errorf("principal token_file %q is empty", p.path)
 	}
-	p.token = tok
 	return tok, nil
 }
 
