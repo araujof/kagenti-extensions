@@ -770,14 +770,15 @@ PR titles must follow the format:
 <Prefix>: <Subject starting with uppercase>
 ```
 
-The CI title check (`deepakputhraya/action-pr-title`) is **case-sensitive** and
-requires a **capitalized** prefix from this set: `Build`, `Chore`, `CI`, `Docs`,
-`Feat`, `Fix`, `Perf`, `Refactor`, `Revert`, `Style`, `Test`, `Feature`,
-`Bug fix`, `Proposal`, `Breaking change`, `Other`, `Other/Misc`.
-
-Note: commit *message* examples elsewhere in this doc use lowercase
-(`feat:` / `fix:`) — that is fine for commits, but the PR *title* check rejects
-lowercase prefixes. Use `Fix:` / `Feat:` / `Docs:` in PR titles.
+The CI title check (`deepakputhraya/action-pr-title` via the shared
+`pr-verifier` workflow) matches prefixes **case-insensitively**
+(`prefix_case_sensitive: false`), accepting this set in any case: `Build`,
+`Chore`, `CI`, `Docs`, `Feat`, `Fix`, `Perf`, `Refactor`, `Revert`, `Style`,
+`Test`, `Feature`, `Bug fix`, `Proposal`, `Breaking change`, `Other`,
+`Other/Misc`. `scripts/release_notes.sh` also lowercases before matching, so
+the prefix files the PR the same way in either case. The capitalized spelling
+is the repo's convention, not an enforced rule — lowercase commit-style
+prefixes (`feat:`, `fix:`) pass.
 
 The prefix also files the PR in the release notes, which
 `scripts/release_notes.sh` builds from the PRs merged since the previous

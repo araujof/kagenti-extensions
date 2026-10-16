@@ -30,7 +30,8 @@ tool results.
 {"sessions": [{
   "id": "…", "createdAt": "…", "updatedAt": "…", "eventCount": 42, "active": true,
   "title": "…", "agent": "claude-code", "totalTokens": 1186300, "costMicros": 254600,
-  "avoidedMicros": 3700, "promptContext": 16384, "inferenceHost": "api.anthropic.com"
+  "avoidedMicros": 3700, "promptContext": {"tokens": 16384, "stated": true,
+  "at": "2026-10-15T20:01:02Z", "msgs": 12}, "inferenceHost": "api.anthropic.com"
 }]}
 ```
 

@@ -59,10 +59,12 @@ prefix, resolve it from the shared store to the real token before the
 normal exchange. An unresolvable placeholder (unknown or expired —
 e.g. after a sidecar restart) is **denied, fail-closed**; the opaque
 string is never sent to an upstream. A non-placeholder bearer skips
-resolve and runs the normal exchange (backward compatible). Resolve is
-gated by the same route match as the exchange — the handle is never
-resolved before a route is confirmed, so a leaked handle can't pull the
-real token into a header bound for an unmatched host.
+resolve and runs the normal exchange (backward compatible). The lookup
+is the first step of the outbound pass, before the route match — a
+stale handle is denied even when the host matches no route. The
+resolved token is used only by the exchange: it is never written back
+into the request's headers, so a passthrough host still receives the
+opaque handle (next section).
 
 ### Passthrough hosts receive the placeholder, not the real token
 
