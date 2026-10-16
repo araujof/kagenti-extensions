@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -620,6 +622,53 @@ func CanonicalAgent(name string) string {
 		return n
 	}
 	return name
+}
+
+// FoldAgentNames is agents keyed by canonical agent name: every key folded through
+// CanonicalAgent, so a map written before an agent-name rename — a router config's
+// `agents:`, pinned under "bob-shell" before it converged into "bob" — names the
+// agent requests report today.
+//
+// THE ONE IMPLEMENTATION OF THE MAP-LEVEL FOLD, shared by every reader and writer of
+// such a map: the inference router keys its routing table with it, and agentop reads
+// and writes the same `agents:` map through it, so the two cannot disagree about
+// which spelling a config names — a disagreement that made `server reset` report
+// "not routed" for an agent the proxy was routing.
+//
+// Sorted order with set-if-absent, so a config naming both a retired spelling and its
+// replacement resolves deterministically whichever way the map iterates: whichever
+// key sorts first wins. Deliberately the same rule on both sides rather than a
+// "current beats retired" preference, because agreeing is the property that matters
+// and this rule needs no second list of which spelling is which.
+func FoldAgentNames(agents map[string]string) map[string]string {
+	out := make(map[string]string, len(agents))
+	for _, name := range slices.Sorted(maps.Keys(agents)) {
+		canonical := CanonicalAgent(name)
+		if _, exists := out[canonical]; !exists {
+			out[canonical] = agents[name]
+		}
+	}
+	return out
+}
+
+// AgentSpellings is name and every retired spelling that folds to it, sorted: for
+// "bob", ["bob", "bob-shell", "ibm-bob"]. For every other name, just the name.
+//
+// FOR WRITERS THAT MUST CLEAR EVERY WAY A CONFIG MIGHT NAME THE AGENT: agentop's
+// server commands remove each of an agent's spellings from a router config's
+// agents: map, so a retired spelling cannot sit beside the canonical key and fold
+// back into routing once the key is gone. Read-side callers want FoldAgentNames or
+// CanonicalAgent instead.
+func AgentSpellings(name string) []string {
+	name = CanonicalAgent(name)
+	out := []string{name}
+	for retired, canonical := range retiredAgents {
+		if canonical == name && retired != name {
+			out = append(out, retired)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // AgentName is the agent a Label names, with its version dropped: "claude-code/2.1.285" is

@@ -129,7 +129,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -279,18 +278,10 @@ func (p *Router) Configure(raw json.RawMessage) error {
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
 	// config named: pipeline.CanonicalAgent maps retired spellings ("bob-shell",
 	// "ibm-bob") to the name requests now report ("bob"), so a config written before a
-	// rename keeps routing instead of silently matching nothing. Sorted order with
-	// set-if-absent, so a config naming both a retired spelling and its replacement
-	// resolves deterministically to the CURRENT spelling's server whichever way the
-	// map iterates.
-	agents := make(map[string]string, len(c.Agents))
-	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
-		canonical := pipeline.CanonicalAgent(name)
-		if _, exists := agents[canonical]; !exists {
-			agents[canonical] = c.Agents[name]
-		}
-	}
-	p.servers, p.byHost, p.agents = servers, byHost, agents
+	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
+	// is the one implementation of that fold, shared with agentop's own reads and
+	// writes of the same agents: map so the two cannot disagree.
+	p.servers, p.byHost, p.agents = servers, byHost, pipeline.FoldAgentNames(c.Agents)
 	return nil
 }
 

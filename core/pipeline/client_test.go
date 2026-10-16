@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
@@ -895,5 +896,32 @@ func TestAgentName(t *testing.T) {
 		if got := AgentName(tc.label); got != tc.want {
 			t.Errorf("AgentName(%q) = %q, want %q", tc.label, got, tc.want)
 		}
+	}
+}
+
+// FoldAgentNames is the one map-level fold both the router and agentop key their
+// views of an agents: config with, so its collision rule is worth pinning directly:
+// a config naming both a retired spelling and its replacement resolves to ONE key,
+// deterministically, whichever way the map iterates.
+func TestFoldAgentNames(t *testing.T) {
+	folded := FoldAgentNames(map[string]string{
+		"bob-shell":   "glm",
+		"ibm-bob":     "ete",
+		"claude-code": "glm",
+		"opencode":    "ete",
+	})
+	want := map[string]string{"bob": "glm", "claude-code": "glm", "opencode": "ete"}
+	if !maps.Equal(folded, want) {
+		t.Errorf("FoldAgentNames = %v, want %v", folded, want)
+	}
+	// Both of Bob's retired spellings fold to the one key; the value is whichever
+	// spelling sorts first ("bob-shell" before "ibm-bob"), the same rule the router
+	// applied before the fold was extracted.
+	if got := FoldAgentNames(map[string]string{"ibm-bob": "ete", "bob-shell": "glm"}); !maps.Equal(got, map[string]string{"bob": "glm"}) {
+		t.Errorf("collision = %v, want the sorted-first spelling's server", got)
+	}
+	// An empty or nil map folds to an empty one, so a reset can empty the map.
+	if got := FoldAgentNames(nil); len(got) != 0 {
+		t.Errorf("FoldAgentNames(nil) = %v, want empty", got)
 	}
 }
