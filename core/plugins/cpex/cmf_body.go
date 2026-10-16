@@ -285,7 +285,7 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 
 // ambiguousJSON reports whether body is not valid JSON, or has an object
 // with a repeated key or two keys equal under Unicode case folding. Inside
-// free-form values (tool schemas and arguments, which every side decodes
+// free-form objects (tool schemas and arguments, which every side decodes
 // as a map) only exact repeats count.
 func ambiguousJSON(body []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -318,8 +318,11 @@ func ambiguousJSON(body []byte) bool {
 				if top != nil {
 					f.freeForm = top.freeForm
 					if top.keys != nil {
+						// Only an object under a free-form key is free-form. An
+						// array there (a Responses API input) holds protocol
+						// items whose fields the parsers decode case-insensitively.
 						_, free := freeFormKeys[strings.ToLower(top.lastKey)]
-						f.freeForm = f.freeForm || free
+						f.freeForm = f.freeForm || (free && d == '{')
 						top.expectKey = false
 					}
 				}
@@ -354,7 +357,7 @@ func ambiguousJSON(body []byte) bool {
 }
 
 // freeFormKeys name values whose object keys are data rather than fields:
-// tool schemas and arguments.
+// tool schemas and arguments. They apply to object values only.
 var freeFormKeys = map[string]struct{}{
 	"arguments":         {},
 	"input":             {},

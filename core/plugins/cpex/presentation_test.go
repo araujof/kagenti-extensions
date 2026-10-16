@@ -24,10 +24,16 @@ func TestAmbiguousJSON(t *testing.T) {
 		`{"kind":"a","Kind":"b"}`:                                             true,
 		`{"params":{"arguments":{"path":"/ok"},"arguments":{"path":"/etc"}}}`: true,
 		`{"a":1`: true,
-		`{"params":{"arguments":{"Path":"/a","path":"/b"}}}`:            false,
-		`{"tools":[{"input_schema":{"properties":{"ID":{},"id":{}}}}]}`: false,
-		`{"params":{"arguments":{"path":"/a","path":"/b"}}}`:            true,
-		`{"params":{"arguments":{"x":{}},"Name":"a","name":"b"}}`:       true,
+		`{"params":{"arguments":{"Path":"/a","path":"/b"}}}`:                                  false,
+		`{"tools":[{"input_schema":{"properties":{"ID":{},"id":{}}}}]}`:                       false,
+		`{"params":{"arguments":{"path":"/a","path":"/b"}}}`:                                  true,
+		`{"params":{"arguments":{"x":{}},"Name":"a","name":"b"}}`:                             true,
+		`{"input":[{"type":"function_call_output","call_id":"c","output":"a","Output":"b"}]}`: true,
+		`{"input":[{"type":"message","content":"a","content":"b"}]}`:                          true,
+		`{"input":[{"type":"function_call","arguments":"{}","call_id":"c"}]}`:                 false,
+		`{"input":{"Path":"/a","path":"/b"}}`:                                                 false,
+		`{"messages":[{"content":[{"type":"tool_use","input":{"ID":1,"id":2}}]}]}`:            false,
+		`{"params":{"arguments":{"list":[{"Path":"/a","path":"/b"}]}}}`:                       false,
 	}
 	for body, want := range cases {
 		if got := ambiguousJSON([]byte(body)); got != want {
