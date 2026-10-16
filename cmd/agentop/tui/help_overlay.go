@@ -306,6 +306,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
 			{"X", "clear all history, in memory and on disk (asks first; the cost ledger is kept)"},
+			{"x", "erase this session, in memory and on disk (asks first; the cost ledger is kept)"},
 			{"esc", "back to the agents picker, else pods picker"},
 		},
 	},
@@ -385,6 +386,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↵", "scope to this agent and list its sessions; All agents clears"},
 			{"S", "choose the inference server this agent's new sessions use"},
 			{"w", "cycle the window: the rows and the breakdown together"},
+			{"x", "erase this agent's sessions (asks first); on All agents, everything"},
 			{"esc", "back, keeping the scope"},
 		},
 		// ONE SHORT NOTE, NOT TWO LONG ONES, and the budget is real rather than stylistic: an

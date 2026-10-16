@@ -275,7 +275,7 @@ type snapshotLoadedMsg struct {
 	// means a proxy that predates the projection returned full events — in which
 	// case the detail pane already has everything and must not fetch.
 	projected bool
-	// gen is the model's clearGen when the snapshot was asked for.
+	// gen is the model's eraseGen when the snapshot was asked for.
 	gen uint64
 }
 
@@ -408,10 +408,14 @@ type model struct {
 	// events arrive several a second. The poll replaces the list every 2s regardless.
 	sessionsStale bool
 
-	// clearConfirm is X's confirmation, modal while non-nil; clearGen counts completed clears,
-	// so a snapshot answered before one is not stored after it. See clear.go.
+	// clearConfirm is X's and x's confirmation, modal while non-nil. eraseGen counts completed
+	// erases; clearedAt is the generation of the last X, erasedAt each x-erased session's — so a
+	// snapshot answered before an erase is not stored after it, and an x erase drops only the
+	// erased session's. See clear.go.
 	clearConfirm *clearConfirm
-	clearGen     uint64
+	eraseGen     uint64
+	clearedAt    uint64
+	erasedAt     map[string]uint64
 	// serverPicker is S's picker on the AGENTS pane, modal while non-nil, and serverSwitch the
 	// write it started, until serverSwitchedMsg lands. See server_picker.go.
 	serverPicker *serverPicker
@@ -1262,7 +1266,7 @@ func streamPump(ch <-chan apiclient.StreamEvent) tea.Cmd {
 // events that predate Subscribe).
 func (m *model) snapshotCmd(id string) tea.Cmd {
 	// Read here, on the Update goroutine, not in the closure: the closure runs on its own.
-	gen := m.clearGen
+	gen := m.eraseGen
 	return func() tea.Msg {
 		view, err := m.client.GetSession(m.ctx, id)
 		if err != nil {
@@ -1688,9 +1692,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case snapshotLoadedMsg:
-		// Asked for before a clear, answered after it: the session it describes is gone, and
+		// Asked for before an erase, answered after it: the session it describes is gone, and
 		// storing it would bring the session back as a cached row.
-		if msg.gen != m.clearGen {
+		if msg.gen < m.clearedAt || msg.gen < m.erasedAt[msg.id] {
 			return m, nil
 		}
 		// Every event the snapshot carried, untrimmed. This used to cut to the most
@@ -1748,6 +1752,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearDoneMsg:
 		return m, m.applyClearDone(msg)
+
+	case erasedMsg:
+		return m, m.applyErased(msg)
 
 	case serverSwitchedMsg:
 		return m, m.applyServerSwitched(msg)
