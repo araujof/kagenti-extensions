@@ -86,7 +86,7 @@ so resolved credentials reach delegation in CPEX memory.
 APL routes pull from a toolbox of named CPEX sub-plugins declared in the CPEX
 YAML. Routes invoke them by name: `authentication: [jwt-user]`,
 `run(<name>)`, `delegate(workday-oauth, ...)`. PDPs declared under
-`global.pdp` are called with `cedar:`, `cel:` and `opa:` steps. CPEX 0.3.0
+`global.pdp` are called with `cedar:`, `cel:` and `opa:` steps. CPEX 0.3
 bundles JWT and API-key identity, the OAuth delegator, CIBA elicitation and
 the Cedar, CEL and OPA PDPs; the 0.2.x `validator/pii-scan` and
 `audit/logger` plugins are gone. See the HR demo for examples.
@@ -109,7 +109,7 @@ plugins:
       claim_mapper: standard
       trusted_issuers:
         - issuer: "https://keycloak.example.com/realms/hr"
-          audiences: ["cpex-gateway"]       # required in 0.3.0
+          audiences: ["cpex-gateway"]       # required since 0.3.0
           algorithms: ["RS256"]
           decoding_key:
             kind: jwks_url
@@ -157,7 +157,7 @@ CPEX session store keyed by the subject and the session id, threaded from
 `X-Session-Id` (or, with `session_source: resolved`, the session the forward
 proxy resolved). A later `send_email` in the same session reads that label and
 denies, blocking the exfiltration at the session level rather than with a
-per-call filter. On CPEX 0.3.0 the `delegate(...)` step's token does not reach the host, so
+per-call filter. The `delegate(...)` step's token does not reach the host, so
 `get_compensation` is denied with `cpex.delegation_unavailable` once the
 exchange succeeds (see [Decisions and denials](#decisions-and-denials)).
 
@@ -451,7 +451,7 @@ vocabulary:
 
 - **allow**: all sub-plugins continued and the forwarded message is unchanged.
   A result that only adds labels (`taint`) or runs a `delegate` step is an
-  allow, as is one returning the headers and payload as sent, which CPEX 0.3.0
+  allow, as is one returning the headers and payload as sent, which CPEX 0.3
   does on every allowed call.
 - **deny**: a sub-plugin returned a policy violation with a `cpex.<code>` code
   (`cpex.pii_detected`, `cpex.session_tainted_secret`, and so on). The plugin
@@ -478,7 +478,7 @@ Some denials come from the plugin rather than from policy, and `fail_open`
 does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
 (above), `cpex.principal_unavailable` (above), and
 `cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
-step granted a token: CPEX 0.3.0 does not hand the token's value to the host,
+step granted a token: the plugin does not take the token's value from CPEX,
 and forwarding would send the caller's own bearer where the policy asked for
 the delegated one.
 

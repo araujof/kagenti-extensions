@@ -265,7 +265,8 @@ func messageEgressDetails(msg *rcpex.Message) map[string]string {
 }
 
 // delegatedTokensWithheld reports whether a delegate() step granted a
-// token on this invocation. CPEX 0.3.0 returns only the token's metadata
+// token on this invocation. Unless the host asks for delegated credentials,
+// which this plugin does not, CPEX returns only the token's metadata
 // (audience, outbound header) in raw_credentials.delegated_tokens; the
 // value is never serialized across the FFI. Forwarding the request would
 // then send the caller's inbound bearer where the policy asked for the
@@ -382,7 +383,7 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 //
 // changed reports whether the forwarded message changed: a header written
 // or a body rewritten. Labels do not count, and neither does a returned
-// header map or payload equal to what was sent, which CPEX 0.3.0 hands
+// header map or payload equal to what was sent, which CPEX 0.3 hands
 // back on every allowed call.
 func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse, egress bool, sent map[string]string, protect ...string) (changed bool, err error) {
 	if len(pres.ModifiedExtensions) > 0 {
@@ -598,7 +599,7 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 // applyExtensionChanges mutates pctx based on a CPEX-modified
 // Extensions struct. Field-by-field, with deliberate ownership notes:
 //
-//   - Headers: CPEX 0.3.0 returns the full request header map on every
+//   - Headers: CPEX 0.3 returns the full request header map on every
 //     invocation, so the write-back is a diff against the map sent: a
 //     header CPEX removed (an assertion strip) is deleted and one it set
 //     (an asserted identity header) is replaced. Headers never sent

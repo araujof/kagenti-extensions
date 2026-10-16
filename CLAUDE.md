@@ -188,7 +188,7 @@ cortex/
 ├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
-│   ├── CPEX_FFI_VERSION              #   pinned CPEX release tag (e.g. v0.3.0)
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX release tag (e.g. v0.3.1)
 │   ├── CPEX_FFI_ABI                  #   FFI ABI integer that release must report
 │   ├── CPEX_FFI_SHA256               #   pinned digest of each target's FFI tarball
 │   └── entrypoint.sh

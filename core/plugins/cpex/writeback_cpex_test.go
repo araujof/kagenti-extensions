@@ -21,7 +21,7 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// CPEX 0.3.0 hands back the full request header map on every allowed
+// CPEX 0.3 hands back the full request header map on every allowed
 // invocation, not only when a policy changed it. The write-back is a diff
 // for that reason.
 func TestEngineReturnsHeadersOnEveryInvocation(t *testing.T) {

@@ -221,7 +221,7 @@ func cmfEntity(part cmfPart) (entityType, entityName string) {
 // Entity coordinates for requests that name no tool, prompt, resource or
 // model. PPE reserves http/* for an entity-less request: it matches `http:`
 // routes by path when the config declares them and otherwise falls back to
-// the global policy. Without any meta, CPEX 0.3.0 denies the request as
+// the global policy. Without any meta, CPEX 0.3 denies the request as
 // unidentified_request whenever the config declares a policy.
 const (
 	entityTypeLLM    = "llm"

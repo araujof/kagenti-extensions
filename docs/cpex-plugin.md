@@ -9,7 +9,7 @@ runtime inside AuthBridge so operators can drive policy with CPEX's
 APL (Attribute Policy Language) DSL — and CPEX's built-in plugins (JWT
 and API-key identity, OAuth delegation, CIBA elicitation, and the Cedar,
 CEL and OPA decision points) — without writing Go. The pinned CPEX
-release is 0.3.0.
+release is 0.3.1.
 
 A single AuthBridge plugin instance (`cpex`) wraps an entire CPEX
 `PolicyEngine`. Operators declare which CPEX hook names fire on each
@@ -129,7 +129,7 @@ different levels:
 - **The CPEX runtime YAML** declares the sub-plugins, PDPs and routes
   CPEX loads. Cortex does not parse or reshape it. It arrives as a file
   (`config_file`) or as one string (`config`) and goes to CPEX's
-  `LoadConfig` verbatim, so its schema is CPEX 0.3.0's own: see
+  `LoadConfig` verbatim, so its schema is CPEX 0.3's own: see
   [CPEX's configuration reference](https://contextforge-org.github.io/cpex/docs/configuration/)
   and, for an older policy, [Migrating a CPEX 0.2.x policy](#migrating-a-cpex-02x-policy).
 
@@ -332,7 +332,7 @@ plugins:
 | `cpex.denied` | 403 | A CPEX sub-plugin returned deny without a violation code. |
 | `cpex.<sanitized>` | 403 | A CPEX sub-plugin returned deny with a violation code; the `<sanitized>` part lower-cases letters, replaces other characters with underscores, e.g. `pii.detected` → `cpex.pii_detected`. |
 | `cpex.principal_unavailable` | 403 | Principal injection is configured but its token file cannot be read; tool calls that resolve identity are denied. |
-| `cpex.delegation_unavailable` | 403 | A `delegate(...)` step granted a token, but CPEX 0.3.0 does not hand the token's value to the host. Forwarding would send the caller's own bearer where the policy asked for the delegated one, so the request is denied. |
+| `cpex.delegation_unavailable` | 403 | A `delegate(...)` step granted a token, but the plugin does not take the token's value from CPEX, which keeps it. Forwarding would send the caller's own bearer where the policy asked for the delegated one, so the request is denied. |
 | `cpex.unnamed_entity` | 403 | An MCP `tools/call` or `prompts/get` with no name, or a `resources/read` with no URI. |
 | `cpex.ambiguous_request` | 403 | A parsed JSON body has a repeated key, or two keys equal under case folding, so policy and the server could read different requests. |
 

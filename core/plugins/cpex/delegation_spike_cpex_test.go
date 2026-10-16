@@ -27,7 +27,9 @@ import (
 // The delegation tests below drive the CPEX engine the way the cpex
 // plugin does (InvokeResolved, loopback IdP, private destinations on)
 // and pin down what a Go host can see after a granted delegate() step.
-// On CPEX 0.3.0 the minted token stays in Rust memory: the result
+// Unless the host asks for delegated credentials (CPEX 0.3.1's
+// WithDelegatedCredentials, which the plugin does not use), the minted
+// token stays in Rust memory: the result
 // carries its metadata in raw_credentials.delegated_tokens, never its
 // value, which is why the plugin denies with cpex.delegation_unavailable.
 
