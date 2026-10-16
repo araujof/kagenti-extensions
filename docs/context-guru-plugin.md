@@ -1,8 +1,5 @@
 # `context-guru`
 
-Compacts the outbound LLM request context before forwarding. | Opt-in
-
-
 Compacts an agent's outbound LLM request context before forwarding,
 using the embedded context-guru engine. `OnResponse` is currently a
 pass-through; model-driven expand/restore is a later integration.

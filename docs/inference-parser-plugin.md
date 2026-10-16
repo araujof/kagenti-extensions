@@ -1,8 +1,5 @@
 # `inference-parser`
 
-Parses LLM completions into `pctx.Extensions.Inference`.
-
-
 Parses outbound LLM inference requests/responses into `pctx.Extensions.Inference` for
 downstream policy plugins, **and prices the finished response** — it is the one place
 tokens become dollars.

@@ -1,8 +1,5 @@
 # `token-exchange`
 
-RFC 8693 outbound token exchange per route.
-
-
 RFC 8693 outbound token exchange per route. Supports Keycloak, Entra
 ID, Okta, and any RFC 8693-compliant IdP. For the `IdPProvider`
 interface each IdP implements, see

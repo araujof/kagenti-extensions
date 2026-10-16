@@ -1,8 +1,5 @@
 # `inference-router`
 
-Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on.
-
-
 Sends a coding agent's new sessions to the inference server chosen for it — a
 LiteLLM gateway or a local model server such as Ollama, with its own URL and key —
 and keeps every session on the

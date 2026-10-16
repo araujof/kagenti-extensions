@@ -39,7 +39,7 @@ silent one. Scripted callers should pass `--yes`.
 
 `bob` and `bobshell` are two different agents, not two spellings of one. `bob`
 configures the IBM Bob **editor** — a VS Code fork, so the lever is `http.proxy`
-in its `settings.json` (below). `bobshell` configures the **shell integration** —
+in its `settings.json` (see [bob.md](bob.md)). `bobshell` configures the **shell integration** —
 a `bob` function in your rc file, so typing `bob` at a prompt runs through
 Cortex. Configuring one does not configure the other, and neither name is an
 alias of the other: `agentop configure bob --settings X` is a usage error under

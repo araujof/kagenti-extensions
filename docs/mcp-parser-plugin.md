@@ -1,8 +1,5 @@
 # `mcp-parser`
 
-Parses MCP tool calls/results into `pctx.Extensions.MCP`.
-
-
 Parses MCP tool calls/results into `pctx.Extensions.MCP` for downstream
 policy plugins.
 

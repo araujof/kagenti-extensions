@@ -1,8 +1,5 @@
 # `lineage-telemetry`
 
-Emits two facts-only OTel lineage spans per HTTP exchange, parented across pods through one `tracestate` member.
-
-
 Emits two facts-only OpenTelemetry spans per HTTP exchange — a request
 span on sight and a response span at stream end, paired by
 `lineage.exchange.id` — carrying direction, protocol, endpoints, outcome

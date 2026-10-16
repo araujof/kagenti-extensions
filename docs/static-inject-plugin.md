@@ -1,12 +1,10 @@
 # `static-inject`
 
-Swaps a placeholder credential for a real static credential on outbound requests.
-
 An outbound plugin (`core/plugins/staticinject`, registered name
 `static-inject`) that swaps a placeholder credential on the outbound
 `Authorization` header for a real static credential, so a
 model-influenced workload never holds the real secret. Unlike
-[Credential placeholder swap](token-exchange-plugin.md#credential-placeholder-swap) below —
+[Credential placeholder swap](token-exchange-plugin.md#credential-placeholder-swap) —
 which mints and resolves a per-request `abph_` handle for a real user
 token across two cooperating plugins — `static-inject` is a single
 self-contained plugin that injects one operator-provisioned static

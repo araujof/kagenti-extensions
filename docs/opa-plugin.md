@@ -1,8 +1,5 @@
 # `opa`
 
-[OPA](https://www.openpolicyagent.org/docs) policy enforcement for inbound and outbound requests.
-
-
 Evaluates [OPA](https://www.openpolicyagent.org/docs) (Open Policy Agent)
 policy bundles against inbound and outbound requests, using an embedded
 OPA engine and four fixed decision paths. Full details in the plugin's

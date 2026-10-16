@@ -1,8 +1,5 @@
 # `jwt-validation`
 
-Inbound JWT validation (signature, issuer, audience) against JWKS.
-
-
 Validates inbound JWTs: signature via JWKS, issuer, and audience.
 
 - `issuer` (string) — expected `iss` claim; required.
