@@ -1,8 +1,12 @@
 package inferencerouter
 
 import (
+	"context"
+	"log/slog"
 	"strconv"
 	"strings"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -61,4 +65,97 @@ func stripReasoning(body []byte) ([]byte, int) {
 		}
 	}
 	return body, dropped
+}
+
+const (
+	// originPrefix is where the router records, per session, the server that
+	// produced the reasoning its requests carry. It lives where pins do, with the
+	// pin's TTL, and X does not clear it.
+	originPrefix = "inference-router/origin/"
+	// originForeign marks a session whose reasoning has come from more than one
+	// server. It is sticky: the client's history is its own, so blocks from the
+	// old server stay in it however many turns pass on the new one, and the origin
+	// must never resolve back to a single server. No server name can collide with
+	// it: config refuses parentheses in a name.
+	originForeign = "(foreign)"
+)
+
+// originKey is the store key for pctx's session's origin, "" when it has none a
+// record could name.
+func originKey(pctx *pipeline.Context) string {
+	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+		return ""
+	}
+	return originPrefix + pctx.Session.ID
+}
+
+// origin is the session's recorded reasoning origin, "" when none is.
+func (p *Router) origin(pctx *pipeline.Context, key string) string {
+	if p.store != nil {
+		v, err := p.store.Get(context.Background(), key)
+		if err != nil {
+			return ""
+		}
+		return v
+	}
+	if pctx.Shared != nil {
+		if v, ok := pctx.Shared.Get(key); ok {
+			s, _ := v.(string)
+			return s
+		}
+	}
+	return ""
+}
+
+// keepOrigin records v as the session's reasoning origin, for as long as a pin is
+// kept: the origin outlives a restart beside the pin it explains.
+func (p *Router) keepOrigin(pctx *pipeline.Context, key, v string) {
+	if p.store != nil {
+		if err := p.store.Set(context.Background(), key, v, pinTTL); err != nil {
+			slog.Warn("inference-router: could not record a session's reasoning origin", "error", err)
+		}
+		return
+	}
+	if pctx.Shared != nil {
+		pctx.Shared.Put(key, v, pinTTL)
+	}
+}
+
+// stripForeign drops the reasoning a request carries that its target cannot have
+// produced, and records the target as the session's reasoning origin. It runs only
+// where the router applied a server (Redirected), for a session's
+// first routed request it records and strips nothing, and once a session's target
+// has differed from its recorded origin the origin is foreign for good and every
+// switched request strips, the target's own reasoning included: a server that
+// cannot verify foreign blocks may not get them, and one that can loses only
+// reasoning text, which no measured continuation needed.
+func (p *Router) stripForeign(pctx *pipeline.Context, server string) {
+	// Redirected, not switched: a moved session's client asks its own provider,
+	// which after the move is the target's own host, and a same-host redirect is
+	// not "switched" — but the reasoning in its history still came from elsewhere.
+	// The router applying a server at all is the signal provenance needs.
+	if !pctx.Redirected() {
+		return
+	}
+	key := originKey(pctx)
+	if key == "" {
+		return
+	}
+	if origin := p.origin(pctx, key); origin != "" {
+		if origin == server {
+			return
+		}
+		p.keepOrigin(pctx, key, originForeign)
+	} else {
+		p.keepOrigin(pctx, key, server)
+		return
+	}
+	body, dropped := stripReasoning(pctx.Body)
+	if dropped == 0 {
+		return
+	}
+	if pctx.SetBody(body) {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "reasoning_stripped",
+			Details: map[string]string{"blocks": strconv.Itoa(dropped)}})
+	}
 }
