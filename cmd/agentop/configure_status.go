@@ -331,8 +331,8 @@ func bobStateFrom(settingsPath string, doc map[string]any, cortexCfgPath, wantPr
 	switch bobOwns(existing, wantProxy) {
 	case bobOurs:
 		if launch.macOS {
-			if ok, _, problem := bobLaunchCheck(launch, caPath, doc); !ok {
-				return row(configurePartial, problem)
+			if ok, problems := bobLaunchCheck(launch, caPath, doc); !ok {
+				return row(configurePartial, problems[0])
 			}
 		}
 		return row(configureOn, fmt.Sprintf("%q=%s", bobProxyKey, existing))
@@ -413,13 +413,14 @@ func bobRowState(ide, shell configureState) configureState {
 
 // bobShellState is the bob shell function's verdict as data.
 //
-// NEVER configureOn, and that is the whole point of modelling this one. bobShellStatus
-// spends a paragraph on why: the exported variable is inherited by every child
-// process, including a non-interactive subshell that never reads the rc file and so
-// has no bob function at all. agentop is itself such a child, and a shell's function
-// table is never exported — so "the variable is set" is evidence and not a verdict,
-// and configurePartial is what that is. Reporting "enabled" from an inherited variable
-// is exactly the confident wrong answer bobShellStatus's comment refuses to give.
+// NEVER configureOn, and that is the whole point of modelling this one.
+// bobShellStatusLine says why in one line: the exported variable is inherited by
+// every child process, including a non-interactive subshell that never reads the
+// rc file and so has no bob function at all. agentop is itself such a child, and
+// a shell's function table is never exported — so "the variable is set" is
+// evidence and not a verdict, and configurePartial is what that is. Reporting
+// "enabled" from an inherited variable is exactly the confident wrong answer
+// that line's "run \"type bob\" to confirm" hedge exists to avoid.
 func bobShellState() configureStatus {
 	if v, ok := os.LookupEnv(bobShellEnvVar); ok {
 		return configureStatus{

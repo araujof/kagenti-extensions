@@ -744,7 +744,7 @@ func planUnrouteBob(env *setupEnv) (removal, bool) {
 		fix:   remedy{agentop: "agentop configure bob disable", byHand: "remove \"" + bobProxyKey + "\" from " + env.tilde(settings)},
 		run: func(*checklist.Running) (string, []string, error) {
 			var out, errb bytes.Buffer
-			if bobDisable(settings, cfg, wantProxy, caPath, launch, true, &out, &errb) != 0 {
+			if bobDisableEditor(settings, cfg, wantProxy, caPath, launch, &out, &errb) != 0 {
 				return "", []string{env.tilde(settings)}, errors.New(lastLineOf(errb.String(), out.String()))
 			}
 			return "IBM Bob no longer goes through Cortex · restart Bob", nil, nil

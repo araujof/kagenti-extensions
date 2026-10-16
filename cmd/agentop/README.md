@@ -354,7 +354,7 @@ export CORTEX_BOBSHELL=1
 ```sh
 agentop configure bob enable    # append the block (and set the editor's proxy)
 agentop configure bob disable   # remove exactly that block (and the editor's key)
-agentop configure bob status    # both halves, each with its own verdict
+agentop configure bob status    # the verdict, then one line per half
 ```
 
 Both `enable` and `disable` ask before writing, and `--yes` skips the question:
@@ -374,8 +374,9 @@ silent one. Scripted callers should pass `--yes`.
 Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
 **editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
 (above) — and the **shell integration**, a `bob` function in your rc file so
-typing `bob` at a prompt runs through Cortex. Each half reports its own outcome
-and prompts before its own write, and a failure in one does not stop the other.
+typing `bob` at a prompt runs through Cortex. Both halves' changes are listed
+under ONE preview and confirmed by ONE prompt, and a write failure in one half
+does not stop the other; a declined prompt declines both.
 
 The two were separate commands (`configure bob` and `configure bobshell`) until
 2026-10-15, when the agent converged on one name and one row in `agentop

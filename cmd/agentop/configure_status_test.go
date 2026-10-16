@@ -815,9 +815,9 @@ func TestStatusAndTableAgree(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				settings, cfg := fixture(t, tc.settings)
-				want, ca := bobWanted(cfg, t.TempDir())
-				var out bytes.Buffer
-				if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
+				want, _ := bobWanted(cfg, t.TempDir())
+				var out, errb bytes.Buffer
+				if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status(); code != 0 {
 					t.Fatalf("exit = %d", code)
 				}
 				first := strings.SplitN(out.String(), "\n", 2)[0]
@@ -831,16 +831,12 @@ func TestStatusAndTableAgree(t *testing.T) {
 		}
 	})
 
-	// The shell half's paragraph branch is now taken on the state, so the variable
-	// being visible and the paragraph admitting it must stay in step.
+	// The shell half's line is taken on the state, so the variable being visible
+	// and the line admitting it must stay in step.
 	t.Run("bob shell half", func(t *testing.T) {
 		t.Setenv(bobShellEnvVar, "1")
-		var out bytes.Buffer
-		if code := bobShellStatus(&out); code != 0 {
-			t.Fatalf("exit = %d", code)
-		}
-		if !strings.Contains(out.String(), bobShellEnvVar+"=1") {
-			t.Errorf("paragraph does not show the variable:\n%s", out.String())
+		if !strings.Contains(bobShellStatusLine(), "configured") {
+			t.Errorf("line does not admit the configured state: %s", bobShellStatusLine())
 		}
 		if got := bobShellState().State; got != configurePartial {
 			t.Errorf("state = %s, want %s", got, configurePartial)

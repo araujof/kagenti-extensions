@@ -42,12 +42,33 @@ func noPrompt(t *testing.T, answer bool) *int {
 	t.Helper()
 	asked := 0
 	saved := bobConfirm
-	bobConfirm = func(path, what string, stdout io.Writer) bool {
+	bobConfirm = func(stdout io.Writer) bool {
 		asked++
 		return answer
 	}
 	t.Cleanup(func() { bobConfirm = saved })
 	return &asked
+}
+
+// bobHalf builds the merged command around a synthetic launch, the way runBob
+// assembles it, so a test can drive one verb or a sequence. The shell half's rc
+// file is a separate scratch file, so assertions on the editor half's files
+// watch those alone, and l.rcErr rides along as the shell half's by-hand advice
+// the way runBob passes it.
+func bobHalf(t *testing.T, l bobLaunch, settings, cfg string, yes bool, stdout, stderr io.Writer) bobCommand {
+	t.Helper()
+	home := t.TempDir()
+	return bobCommand{
+		home:          home,
+		settingsPath:  settings,
+		cortexCfgPath: cfg,
+		launch:        l,
+		shellRC:       filepath.Join(home, ".zshrc"),
+		shellAdvise:   l.rcErr,
+		yes:           yes,
+		stdout:        stdout,
+		stderr:        stderr,
+	}
 }
 
 // bobDoc reads the settings file back as a flat map.
@@ -68,7 +89,7 @@ func bobDoc(t *testing.T, path string) map[string]any {
 func TestBobEnable_WritesHTTPProxy(t *testing.T) {
 	settings, cfg := fixture(t, "{}")
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if got := bobDoc(t, settings)[bobProxyKey]; got != "http://127.0.0.1:47600" {
@@ -125,7 +146,7 @@ func TestBobEnable_ChangesOneLineAndNoOtherByte(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -190,11 +211,10 @@ func TestBobEnableDisable_RoundTripsByteForByte(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("enable: exit %d: %s", code, errb.String())
 	}
-	proxy, caPath := bobWanted(cfg, t.TempDir())
-	if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, errb.String())
 	}
 
@@ -348,10 +368,9 @@ func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, cfg := fixture(t, tc.in)
-			proxy, caPath := bobWanted(cfg, t.TempDir())
 
 			var out, errb bytes.Buffer
-			if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
+			if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 
@@ -387,10 +406,9 @@ func TestBobDisable_IgnoresTheKeyNameInsideValuesAndNesting(t *testing.T) {
 		"    \"z\": 1\n}\n"
 
 	settings, cfg := fixture(t, in)
-	proxy, caPath := bobWanted(cfg, t.TempDir())
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, proxy, caPath, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -454,7 +472,7 @@ func TestBobEnable_PreservesEverythingElse(t *testing.T) {
 	before := bobDoc(t, settings)
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -490,7 +508,8 @@ func TestBobEnable_PreservesEverythingElse(t *testing.T) {
 func TestBobEnable_IsIdempotent(t *testing.T) {
 	settings, cfg := fixture(t, "{}")
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
+	if code := c.enable(); code != 0 {
 		t.Fatalf("first run: exit %d: %s", code, errb.String())
 	}
 	first, err := os.ReadFile(settings)
@@ -501,7 +520,8 @@ func TestBobEnable_IsIdempotent(t *testing.T) {
 	asked := noPrompt(t, false) // would decline; must not be consulted at all
 	out.Reset()
 	errb.Reset()
-	if code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb); code != 0 {
+	c.yes = false
+	if code := c.enable(); code != 0 {
 		t.Fatalf("second run: exit %d: %s", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "Already enabled") {
@@ -529,7 +549,7 @@ func TestBobEnable_RefusesAForeignProxy(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(errb.String(), "proxy.corp.example.com:3128") {
@@ -570,7 +590,7 @@ func TestBobEnable_DerivesPortAndCAFromConfig(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+			if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 			if got := bobDoc(t, settings)[bobProxyKey]; got != tc.wantProxy {
@@ -599,7 +619,7 @@ func TestBobEnable_RefusesADisabledBridge(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 1 {
 		t.Fatalf("exit = %d, want 1: %s", code, errb.String())
 	}
 	if _, err := os.Stat(settings + ".bak"); err == nil {
@@ -617,7 +637,7 @@ func TestBobEnable_RejectsCommentedSettings(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 1 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(errb.String(), "comment") {
@@ -639,9 +659,8 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 
 	t.Run("ours is removed", func(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13, "http.proxy": "http://127.0.0.1:47600"}`)
-		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
+		if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 			t.Fatalf("exit %d: %s", code, errb.String())
 		}
 		doc := bobDoc(t, settings)
@@ -655,13 +674,12 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 
 	t.Run("a foreign proxy is left in place", func(t *testing.T) {
 		settings, cfg := fixture(t, `{"http.proxy": "http://proxy.corp.example.com:3128"}`)
-		want, ca := bobWanted(cfg, t.TempDir())
 		before, err := os.ReadFile(settings)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
+		if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 			t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -675,9 +693,8 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 
 	t.Run("the key being absent is not an error", func(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
-		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
+		if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		if !strings.Contains(out.String(), "Not enabled") {
@@ -687,13 +704,12 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 
 	t.Run("a non-string value is reported, not deleted", func(t *testing.T) {
 		settings, cfg := fixture(t, `{"http.proxy": false}`)
-		want, ca := bobWanted(cfg, t.TempDir())
 		before, err := os.ReadFile(settings)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
+		if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -756,7 +772,7 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 	// unattended one: without it, a fix that dropped the prompt entirely would pass.
 	asked := noPrompt(t, true)
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, false, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).disable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if *asked != 1 {
@@ -805,9 +821,8 @@ func TestBobStatus_ThreeStates(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			var out bytes.Buffer
-			want, ca := bobWanted(cfg, t.TempDir())
-			if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
+			var out, errb bytes.Buffer
+			if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status(); code != 0 {
 				t.Fatalf("exit = %d, want 0 — a report is not a verdict", code)
 			}
 
@@ -885,9 +900,8 @@ func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
 			settings, cfg := fixture(t, tc.settings)
 			movePort(t, cfg, dead)
 
-			var out bytes.Buffer
-			want, ca := bobWanted(cfg, t.TempDir())
-			if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
+			var out, errb bytes.Buffer
+			if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status(); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
 
@@ -917,9 +931,8 @@ func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
 // now" — reporting drift is useful, silently moving it is not.
 func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	settings, cfg := fixture(t, `{"http.proxy": "http://127.0.0.1:47699"}`)
-	var out bytes.Buffer
-	want, ca := bobWanted(cfg, t.TempDir())
-	if code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out); code != 0 {
+	var out, errb bytes.Buffer
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status(); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "47699") || !strings.Contains(out.String(), "47600") {
@@ -939,7 +952,7 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	// value, in which case the bare advice becomes true and this stops objecting.
 	var enableOut, enableErr bytes.Buffer
 	noPrompt(t, true) // enable must not block on a prompt if it gets that far
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &enableOut, &enableErr); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &enableOut, &enableErr).enable(); code != 0 {
 		// enable refuses, so the detail lines must not present it as the whole fix.
 		// The bare sentence is the exact shape that was wrong.
 		if strings.Contains(out.String(), "run `agentop configure bob enable` to move it") {
@@ -965,18 +978,25 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 		asked := noPrompt(t, false)
 
 		var out, errb bytes.Buffer
-		if code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb); code != exitDeclined {
+		c := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb)
+		rcBefore, _ := os.ReadFile(c.shellRC)
+		if code := c.enable(); code != exitDeclined {
 			t.Fatalf("exit = %d, want %d", code, exitDeclined)
 		}
 		if *asked != 1 {
-			t.Errorf("prompted %d times, want 1", *asked)
+			t.Errorf("prompted %d times, want 1 — one prompt covers both halves", *asked)
 		}
 		after, err := os.ReadFile(settings)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(before, after) {
-			t.Error("a declined enable wrote to the file")
+			t.Error("a declined enable wrote to the settings file")
+		}
+		// One consent covers every write the preview listed, so refusing it
+		// declines both halves: the rc file is as untouched as the settings.
+		if rcAfter, _ := os.ReadFile(c.shellRC); !bytes.Equal(rcBefore, rcAfter) {
+			t.Error("a declined enable wrote to the rc file")
 		}
 	})
 
@@ -989,8 +1009,7 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 		noPrompt(t, false)
 
 		var out, errb bytes.Buffer
-		want, ca := bobWanted(cfg, t.TempDir())
-		if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, false, &out, &errb); code != exitDeclined {
+		if code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).disable(); code != exitDeclined {
 			t.Fatalf("exit = %d, want %d", code, exitDeclined)
 		}
 		after, err := os.ReadFile(settings)
@@ -1287,17 +1306,16 @@ func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, ca := bobWanted(cfg, t.TempDir())
-
 			var out, errb bytes.Buffer
+			c := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb)
 			var code int
 			switch verb {
 			case "enable":
-				code = bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb)
+				code = c.enable()
 			case "disable":
-				code = bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb)
+				code = c.disable()
 			case "status":
-				code = bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
+				code = c.status()
 			}
 
 			// status reports; the two writers fail. Both are "refused" — the
@@ -1354,7 +1372,7 @@ func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
 func TestBob_ADuplicateOfAnotherKeyIsNotRefused(t *testing.T) {
 	settings, cfg := fixture(t, `{"editor.fontSize": 13, "editor.fontSize": 14}`)
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit = %d, want 0: %s", code, errb.String())
 	}
 	if got := bobDoc(t, settings)[bobProxyKey]; got == nil {
@@ -1382,7 +1400,7 @@ func TestBobDisable_LeavesACredentialBearingProxyAlone(t *testing.T) {
 	// The port is Cortex's own, and the host is loopback — everything the old check
 	// looked at says this is ours. Only the userinfo says otherwise, which is the
 	// point.
-	want, ca := bobWanted(cfg, t.TempDir())
+	_, _ = bobWanted(cfg, t.TempDir()) // the ownership premise, checked by TestBobOwns
 
 	before, err := os.ReadFile(settings)
 	if err != nil {
@@ -1390,7 +1408,7 @@ func TestBobDisable_LeavesACredentialBearingProxyAlone(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable(); code != 0 {
 		t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error: %s", code, errb.String())
 	}
 
@@ -1452,7 +1470,8 @@ func TestBob_EnableDisableRoundTripOnANon476xxPort(t *testing.T) {
 	}
 
 	var enOut, enErr bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &enOut, &enErr); code != 0 {
+	c := bobHalf(t, bobLaunch{}, settings, cfg, true, &enOut, &enErr)
+	if code := c.enable(); code != 0 {
 		t.Fatalf("enable exit %d: %s", code, enErr.String())
 	}
 	got, _ := bobDoc(t, settings)[bobProxyKey].(string)
@@ -1462,9 +1481,9 @@ func TestBob_EnableDisableRoundTripOnANon476xxPort(t *testing.T) {
 
 	// The half that was missing. Same config, so disable judges the value against
 	// the address enable derived it from.
-	want, ca := bobWanted(cfg, t.TempDir())
 	var disOut, disErr bytes.Buffer
-	if code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &disOut, &disErr); code != 0 {
+	c.stdout, c.stderr = &disOut, &disErr
+	if code := c.disable(); code != 0 {
 		t.Fatalf("disable exit %d: %s", code, disErr.String())
 	}
 	if _, ok := bobDoc(t, settings)[bobProxyKey]; ok {
@@ -1577,7 +1596,7 @@ func TestBobUntrustNoteUndoesTheEarlierKeychainAdd(t *testing.T) {
 		t.Errorf("the undo does not delete the certificate from %s:\n%s", bobSystemKeychain, untrust)
 	}
 	// Conditional, because this version of enable never asked for the add.
-	if !strings.Contains(untrust, "If an earlier agentop") {
+	if !strings.Contains(untrust, "if an earlier agentop") {
 		t.Errorf("the undo reads as though this enable made a keychain change:\n%s", untrust)
 	}
 }
@@ -1593,15 +1612,14 @@ func TestBobUntrustNoteUndoesTheEarlierKeychainAdd(t *testing.T) {
 // the absence of the claim that would be wrong there, because a message that says
 // everything says nothing.
 func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
-	t.Run("no existing file: no backup is made", func(t *testing.T) {
+	t.Run("no existing file: nothing to promise", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		got := bobBackupNote(path)
-		if !strings.Contains(got, "No backup is made") {
-			t.Errorf("does not say a backup will not be made:\n%s", got)
-		}
-		// The false promise being fixed.
-		if strings.Contains(got, "a copy is kept") {
-			t.Errorf("promises a copy of a file that does not exist:\n%s", got)
+		// Nothing at all: the preview already shows the path enable creates, and a
+		// "no backup" line for a file that does not exist is noise before the one
+		// question that matters.
+		if got != "" {
+			t.Errorf("says something about a backup of a file that does not exist: %q", got)
 		}
 	})
 
@@ -1611,7 +1629,7 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := bobBackupNote(path)
-		if !strings.Contains(got, "a copy is kept as "+path+".bak") {
+		if !strings.Contains(got, "kept as "+path+".bak") {
 			t.Errorf("does not promise the backup it will make:\n%s", got)
 		}
 		if strings.Contains(got, "No backup is made") || strings.Contains(got, "already exists") {
@@ -1649,7 +1667,7 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			promised := strings.Contains(bobBackupNote(path), "a copy is kept")
+			promised := strings.Contains(bobBackupNote(path), "copy of the original is kept")
 			if err := writeSettings(path, map[string]any{"http.proxy": "http://127.0.0.1:47600"}); err != nil {
 				t.Fatal(err)
 			}
@@ -1771,7 +1789,7 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 			if !tc.readableConfig {
 				cfgArg = filepath.Join(t.TempDir(), "does-not-exist.yaml")
 			}
-			want, ca := bobWanted(cfgArg, t.TempDir())
+			want, _ := bobWanted(cfgArg, t.TempDir())
 
 			// Asserted rather than assumed: if bobWanted ever started guessing a proxy
 			// address, every "guess" row would silently become a "known" row and this
@@ -1790,7 +1808,7 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 
 			asked := noPrompt(t, true)
 			var out, errb bytes.Buffer
-			code := bobDisable(settings, cfg, want, ca, bobLaunch{}, tc.yes, &out, &errb)
+			code := bobHalf(t, bobLaunch{}, settings, cfgArg, tc.yes, &out, &errb).disable()
 
 			if code != tc.wantCode {
 				t.Errorf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, tc.wantCode, out.String(), errb.String())
@@ -1850,8 +1868,8 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 				// does: "the Cortex config could not be read" does not say which file,
 				// so a typo'd --config and an uninstalled Cortex read identically.
 				// Only rows that got here through an unreadable config can assert it.
-				if !tc.readableConfig && !strings.Contains(errb.String(), cfg) {
-					t.Errorf("the refusal does not name the config it could not read (%s): %q", cfg, errb.String())
+				if !tc.readableConfig && !strings.Contains(errb.String(), cfgArg) {
+					t.Errorf("the refusal does not name the config it could not read (%s): %q", cfgArg, errb.String())
 				}
 				// Naming the way out is the difference between a refusal and a dead
 				// end. Both routes are asserted: drop --yes, or supply a config.
@@ -1895,7 +1913,7 @@ func TestBobEnable_ReplacesADifferentSpellingOfTheSameListener(t *testing.T) {
 	noPrompt(t, true)
 
 	var out, errb bytes.Buffer
-	if code := bobEnable(settings, cfg, bobLaunch{}, true, &out, &errb); code != 0 {
+	if code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable(); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	// Not "Already enabled": the values differ, so this must be a write.
@@ -1964,7 +1982,7 @@ func TestBobVerbs_SettingsDocumentShapes(t *testing.T) {
 			name:    "absent in Bob's directory",
 			setup:   func(t *testing.T, settings string) string { return settings },
 			created: true,
-			enable:  expect{code: 0, has: []string{"No backup is made"}},
+			enable:  expect{code: 0, has: []string{"Nothing else in the files changes"}},
 			disable: expect{code: 0, has: []string{"does not exist; nothing to remove there", "Nothing to do"}},
 			status:  expect{code: 0, has: []string{bobStatusNo, "does not exist yet"}, hasNot: []string{bobStatusUnknown}},
 		},
@@ -2027,7 +2045,7 @@ func TestBobVerbs_SettingsDocumentShapes(t *testing.T) {
 				asked := noPrompt(t, true)
 				before, beforeErr := os.ReadFile(settings)
 				var out, errb bytes.Buffer
-				code := bobEnable(settings, cfg, bobLaunch{}, false, &out, &errb)
+				code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).enable()
 				check(t, code, out.String()+errb.String(), tc.enable)
 				if !tc.created {
 					// A refusal: no prompt, nothing written, no directory conjured up.
@@ -2056,8 +2074,7 @@ func TestBobVerbs_SettingsDocumentShapes(t *testing.T) {
 				noPrompt(t, true)
 				before, beforeErr := os.ReadFile(settings)
 				var out, errb bytes.Buffer
-				want, ca := bobWanted(cfg, t.TempDir())
-				code := bobDisable(settings, cfg, want, ca, bobLaunch{}, true, &out, &errb)
+				code := bobHalf(t, bobLaunch{}, settings, cfg, true, &out, &errb).disable()
 				check(t, code, out.String()+errb.String(), tc.disable)
 				after, afterErr := os.ReadFile(settings)
 				if !bytes.Equal(before, after) || (beforeErr == nil) != (afterErr == nil) {
@@ -2067,10 +2084,9 @@ func TestBobVerbs_SettingsDocumentShapes(t *testing.T) {
 			t.Run("status", func(t *testing.T) {
 				base, cfg := fixture(t, "")
 				settings := tc.setup(t, base)
-				var out bytes.Buffer
-				want, ca := bobWanted(cfg, t.TempDir())
-				code := bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
-				check(t, code, out.String(), tc.status)
+				var out, errb bytes.Buffer
+				code := bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status()
+				check(t, code, out.String()+errb.String(), tc.status)
 			})
 		})
 	}
@@ -2095,13 +2111,20 @@ func TestBobStatus_DistinguishesWhyThereIsNoDocument(t *testing.T) {
 		} else if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		var out bytes.Buffer
-		want, ca := bobWanted(cfg, t.TempDir())
-		bobStatus(settings, cfg, want, ca, bobLaunch{}, &out)
-		// The path varies per subtest, so compare only the reason line's prose.
-		reason := strings.TrimSpace(strings.TrimPrefix(out.String(), bobStatusUnknown))
-		reason = strings.TrimPrefix(reason, filepath.Dir(settings))
-		reason = strings.TrimPrefix(reason, settings)
+		var out, errb bytes.Buffer
+		bobHalf(t, bobLaunch{}, settings, cfg, false, &out, &errb).status()
+		// The path varies per subtest, so compare only the reason's prose, with
+		// the paths that name it stripped out.
+		reason := ""
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.HasPrefix(line, "  editor: ") {
+				reason = strings.TrimPrefix(strings.TrimPrefix(line, "  editor: "), settings)
+				reason = strings.TrimSpace(strings.TrimPrefix(reason, filepath.Dir(settings)))
+			}
+		}
+		if reason == "" {
+			t.Fatalf("%s: no editor line in:\n%s", tc.name, out.String())
+		}
 		if prev, dup := seen[reason]; dup {
 			t.Errorf("%s reports identically to %s: %q", tc.name, prev, reason)
 		}
@@ -2136,32 +2159,33 @@ func TestBob_EnableConfiguresEditorAndShellBoth(t *testing.T) {
 	}
 }
 
-// A declined prompt in ONE half does not stop the other: the halves are
-// independent changes, and the user saying no to the editor write has not said
-// no to the rc file. The command still exits 3, because one of its two changes
-// did not happen — a script branching on the code must not read it as done.
-func TestBob_OneDeclinedHalfStillRunsTheOther(t *testing.T) {
+// One consent covers every write the preview listed, so a declined prompt
+// declines BOTH halves: the user saying no to the list has not said yes to half
+// of it. The command exits 3, because none of its changes happened — a script
+// branching on the code must not read it as done.
+//
+// Until 2026-10-16 each half prompted separately and a refusal in one left the
+// other applied; folding the prompts is what made the refusal whole.
+func TestBob_DeclinedPromptDeclinesBothHalves(t *testing.T) {
 	home := fakeHome(t)
 	t.Setenv("SHELL", "/bin/zsh")
 	settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
 
-	// The editor's prompt answers no; the shell's answers yes.
-	savedEditor, savedShell := bobConfirm, bobShellConfirm
-	bobConfirm = func(string, string, io.Writer) bool { return false }
-	bobShellConfirm = func(string, string, io.Writer) bool { return true }
-	t.Cleanup(func() { bobConfirm, bobShellConfirm = savedEditor, savedShell })
-
+	asked := noPrompt(t, false)
 	var out, errb bytes.Buffer
 	code := runBob([]string{"enable", "--settings", settings, "--config", cfg}, &out, &errb)
 	if code != exitDeclined {
-		t.Fatalf("exit = %d, want %d — one of the two changes was declined", code, exitDeclined)
+		t.Fatalf("exit = %d, want %d — the changes were declined", code, exitDeclined)
+	}
+	if *asked != 1 {
+		t.Errorf("prompted %d times, want 1 — one prompt covers both halves", *asked)
 	}
 	if bobDoc(t, settings)[bobProxyKey] != nil {
 		t.Error("editor half: a declined prompt still wrote the key")
 	}
 	b, err := os.ReadFile(filepath.Join(home, ".zshrc"))
-	if err != nil || !strings.Contains(string(b), bobShellBlock) {
-		t.Errorf("shell half: the rc file was not written (%v):\n%s", err, b)
+	if err == nil {
+		t.Errorf("shell half: a declined prompt still wrote the rc file:\n%s", b)
 	}
 }
 
