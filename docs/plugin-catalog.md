@@ -30,7 +30,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`inference-router`](#inference-router) | Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on. | Alpha | Outbound | No |
 | [`jwt-validation`](#jwt-validation) | Inbound JWT validation (signature, issuer, audience) against JWKS. | Ready | Inbound | YES |
 | [`lineage-telemetry`](#lineage-telemetry) | Emits two facts-only OTel lineage spans per HTTP exchange, parented across pods through one `tracestate` member. | Alpha | Both | No |
-| [`litellm-budget-track`](#litellm-budget-track) | Tracks `x-litellm-response-cost` (with `-original` fallback) and enforces a daily budget limit. Place on whichever chain carries LLM traffic — inbound when fronting the LLM endpoint, outbound when hosting an agent via `authbridge exec`. | Alpha | Both | No |
+| [`litellm-budget-track`](#litellm-budget-track) | Tracks `x-litellm-response-cost` (with `-original` fallback) and enforces a daily budget limit. Place on whichever chain carries LLM traffic — inbound when fronting the LLM endpoint, outbound when hosting an agent via `agentop exec`. | Alpha | Both | No |
 | [`mcp-parser`](#mcp-parser) | Parses MCP tool calls/results into `pctx.Extensions.MCP`. | Beta | Outbound | No |
 | [`opa`](#opa) | [OPA](https://www.openpolicyagent.org/docs) policy enforcement for inbound and outbound requests. | Alpha | Both | No |
 | [`sparc`](#sparc) | Pre-tool reflection: blocks ungrounded/hallucinated tool calls. | Alpha | Outbound | No |
@@ -116,13 +116,15 @@ tokens become dollars.
 
 It reads two dialects, chosen by how the request path ends, under any prefix: a path ending
 in `/completions` is OpenAI chat completions (or legacy completions), and one ending in
-`/v1/messages` is Anthropic Messages. That covers providers that mount the same API under a
+`/v1/messages` is Anthropic Messages. A path ending in `/responses` is the OpenAI
+Responses API — the public `/v1/responses` and Codex's `chatgpt.com`-hosted gateway at
+`/backend-api/codex/responses` both match. That covers providers that mount the same API under a
 prefix of their own — IBM Bob's `/inference`, OpenCode Zen's `/zen`, OpenRouter's `/api`,
 Groq's `/openai`, Azure's `/openai/deployments/<d>` — with no code change. A body is taken
 for inference only if it carries a `messages` array, or a `prompt` for legacy completions.
 A body that fails that check is recorded the way an unrecognised path is: with no inference
-record, and still priced from a gateway's cost header. Other dialects — the Responses API,
-Gemini's native API, Bedrock's native API — are not parsed.
+record, and still priced from a gateway's cost header. Other dialects — Gemini's native
+API, Bedrock's native API — are not parsed.
 
 Costing lives here because this is the only component that knows when usage is *final*: it
 owns the three response-finalization paths and the assembled-usage handling (Claude Code's

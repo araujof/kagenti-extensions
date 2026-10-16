@@ -13,7 +13,7 @@ the `lite` profile's tags), not a separate binary.
 
 | Directory | Mode | Listeners | Plugins | Image (CI) |
 |---|---|---|---|---|
-| [`cortex/`](cortex/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/rossoctl/cortex/authbridge` |
+| [`cortex/`](cortex/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full, incl. parsers (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge` |
 | [`cortex-envoy/`](cortex-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/cortex/authbridge-envoy` |
 | `authbridge-lite` _(build variant of `cortex`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `cortex` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
 | [`cortex-cpex/`](cortex-cpex/) | `proxy-sidecar` | HTTP forward + reverse proxies | full + `cpex` (needs cgo; links `libcpex_ffi.a`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
@@ -59,7 +59,7 @@ inbound mechanism, and the preset fills only that one's address.
 All of these are overridable, which matters for running two proxies on one host:
 a second instance on the default ports dies on a bind conflict. They are not all
 under the same config key — everything above is a `listener.*` address except
-`9093`, which is `stats.stats_address`. The defaults bind every interface, which
+`9093`, which is `stats.address`. The defaults bind every interface, which
 is what Kubernetes probes and sidecar traffic need but not what a laptop wants;
 local single-host setups typically pin them all to `127.0.0.1`. `cortex
 --local` ships exactly such a config — see

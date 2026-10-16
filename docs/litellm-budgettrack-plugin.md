@@ -23,12 +23,12 @@ once the budget is exhausted.
 ## Architecture
 
 ```
-Agent → cortex.py → AuthBridge (litellm-budget-track) → LiteLLM upstream
-                                    │
-                                    ├── OnRequest: check if budget exceeded → 429
-                                    └── OnResponse: read x-litellm-response-cost, accumulate
-                                           │
-                                           └── spend-authbridge.json (daily ledger)
+Agent → agentop exec / sidecar (litellm-budget-track) → LiteLLM upstream
+                              │
+                              ├── OnRequest: check if budget exceeded → 429
+                              └── OnResponse: read x-litellm-response-cost, accumulate
+                                     │
+                                     └── spend-authbridge.json (daily ledger)
 ```
 
 The plugin hooks:
@@ -109,8 +109,8 @@ pipeline:
 The plugin is direction-agnostic — place it in whichever pipeline carries the LLM
 traffic: **`inbound`** when fronting the LLM endpoint (a reverse proxy the LLM requests
 arrive at, as shown above), **`outbound`** when hosting the agent via
-`rossoctl authbridge exec -- <agent>`, whose forward proxy runs the outbound pipeline on
-the agent's own egress to LiteLLM. In an `authbridge exec` setup nothing reaches the
+`agentop exec -- <agent>`, whose forward proxy runs the outbound pipeline on
+the agent's own egress to LiteLLM. In an `agentop exec` setup nothing reaches the
 inbound pipeline, so a plugin left under `inbound:` there records `$0` — use `outbound:`.
 
 | Field | Type | Required | Description |
@@ -261,23 +261,26 @@ package main
 import _ "github.com/rossoctl/cortex/core/plugins/litellm_budgettrack"
 ```
 
-## Integration with Cortex
+## Configuring it
 
-Cortex generates the AuthBridge config on startup, embedding the plugin
-in the inbound pipeline with the correct `spend_file` path and `max_budget`
-from the CLI flags:
+The plugin is configured through the runtime config — the
+`authbridge-runtime-config` ConfigMap in a cluster, `~/.cortex/config.yaml` on a
+local install — with the `spend_file` path and `max_budget` in its `config:`
+block:
 
-```bash
-# rossoctlx.py start --budget 5.00
-# → generates config.yaml with litellm-budget-track plugin
-#   spend_file = ~/.config/cortex/spend-authbridge.json
-#   max_budget = 5.00
+```yaml
+pipeline:
+  inbound:
+    plugins:
+      - name: litellm-budget-track
+        config:
+          spend_file: /var/lib/authbridge/spend-authbridge.json
+          max_budget: 5.00
 ```
 
-The plugin complements cortex.py's own budget tracking (which reads
-the same `x-litellm-response-cost` header on direct HTTP requests). For
-CONNECT-tunneled traffic that flows through AuthBridge's TLS bridge,
-the plugin is the only cost-tracking mechanism.
+For CONNECT-tunneled traffic that flows through the TLS bridge, this plugin is
+the only cost-tracking mechanism — see [`docs/pricing.md`](pricing.md) for how
+the cost pipeline prices the same traffic from model rates.
 
 ## Testing
 
@@ -360,7 +363,7 @@ That matters because **streamed responses have no authoritative cost** — the g
 reports 0 in the header by design, since the total is unknown when headers are sent. So a
 misconfigured rate table is invisible on exactly the traffic an agent generates. The
 occasional non-streamed call is the only place the error is observable, and this is what
-looks.
+it looks like.
 
 Once per endpoint and model, not per request: an agent makes thousands of calls, and a
 per-request warning would bury every other line in the log.

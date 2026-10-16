@@ -42,7 +42,7 @@ one process; systemd handles it.
 The one-liner is how you upgrade, so it is meant to be run repeatedly. When nothing has
 changed it changes nothing. It still downloads the release, but `agentop setup` finds
 the staged binaries identical to the installed ones, asks nothing, and ends on one line,
-`cortex v0.9.3 is installed and healthy.`, leaving the running proxy alone rather than
+`cortex v0.9.0 is installed and healthy.`, leaving the running proxy alone rather than
 restarting it. When something has changed it lists what, and asks first. An upgrade keeps
 the previous binaries until the new Cortex answers its health check, and puts them back
 if it never does.

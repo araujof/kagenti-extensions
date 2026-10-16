@@ -10,7 +10,7 @@ and read individual events as pretty-printed JSON.
 
 Download a prebuilt `agentop` for your platform (linux/macOS, amd64/arm64) from the
 [Releases page](https://github.com/rossoctl/cortex/releases) — see
-[Download prebuilt binaries](../../docs/architecture.md#download-prebuilt-binaries) for the download,
+[Download prebuilt binaries](../../CONTRIBUTING.md#prebuilt-release-binaries) for the download,
 checksum-verify, and macOS quarantine steps — and drop it on your PATH.
 
 Or build from source:
@@ -1338,7 +1338,7 @@ agentop is for, and the other three are surfaces you visit and leave.
    token-exchange                                        RFC 8693 exchange for a target audience
    mcp-parser                                            Parse MCP JSON-RPC requests and results
    inference-parser                                      Parse LLM chat/completions traffic
-   ibac                    a2a-parser                    Intent-based access control
+   ibac                    mcp-parser                   Intent-based access control
    tool-prune              inference-parser              Drop unused tool definitions
 
   [↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit
@@ -1803,7 +1803,7 @@ cannot finish.
 
 ### Pre-apply validation
 
-After save, agentop runs the same Requires/RequiresAny/After/Claims
+After save, agentop runs the same Requires/RequiresAny/RequiresLater
 checks the framework runs at reload-time, against the cached
 `/v1/plugins` catalog. Issues land as a red banner above the diff in ~50ms
 instead of at hot-reload — which means after the kubelet sync (~60s) in a
@@ -1924,10 +1924,9 @@ Plugins declare dependencies in their `Capabilities()`:
   chain at a strictly-lower position; otherwise framework reload fails.
 - **RequiresAny**: soft OR. At least one of the listed plugins must
   appear upstream; each one that IS present must be earlier.
-- **After**: ordering hint. If the named plugin IS present, it must
-  appear earlier; absent is OK.
-- **Claims**: exclusive ownership. Within one chain, two plugins
-  cannot both declare the same claim string.
+- **RequiresLater**: the mirror of `Requires` for response-phase output —
+  the named plugin must appear at a strictly-*higher* position, because
+  the response pass walks the chain in reverse.
 
 agentop surfaces these in three places:
 

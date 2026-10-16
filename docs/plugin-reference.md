@@ -211,8 +211,8 @@ canaried; auth gates should stay on `enforce` (the default).
 
 ## Declaring plugin relationships
 
-`PluginCapabilities` carries two fields that let a plugin express how it
-depends on other plugins in the same chain. Both are checked at
+`PluginCapabilities` carries three fields that let a plugin express how it
+depends on other plugins in the same chain. All are checked at
 `plugins.Build` time (startup and hot-reload), and misconfigurations
 fail loud before serving traffic.
 
@@ -223,8 +223,9 @@ type PluginCapabilities struct {
     WritesResponseBody bool
     WritesDestination  bool   // plugin may call pctx.Redirect
 
-    Requires    []string   // ALL must be present + earlier (hard)
-    RequiresAny []string   // AT LEAST ONE must be present + run after it (hard)
+    Requires      []string   // ALL must be present + earlier (hard)
+    RequiresAny   []string   // AT LEAST ONE must be present + run after it (hard)
+    RequiresLater []string   // ALL must be present + later in the chain (hard)
 
     Description string
 }
@@ -232,8 +233,9 @@ type PluginCapabilities struct {
 
 | Field | All present? | At least one? | Ordering enforced? |
 |---|---|---|---|
-| `Requires` | ✓ | — | ✓ |
-| `RequiresAny` | — | ✓ | ✓ |
+| `Requires` | ✓ | — | must be earlier |
+| `RequiresAny` | — | ✓ | must be earlier |
+| `RequiresLater` | ✓ | — | must be later |
 
 Both are chain-scoped — validation runs within the inbound chain
 OR within the outbound chain, independently. Plugin names are
@@ -271,6 +273,24 @@ func (p *PIIScrubber) Capabilities() pipeline.PluginCapabilities {
         RequiresAny: []string{
             "a2a-parser", "mcp-parser", "inference-parser",
         },
+    }
+}
+```
+
+### `RequiresLater` — hard dependency on a later plugin
+
+The mirror of `Requires`, for dependencies on another plugin's
+*response-phase* output. The response pass walks the chain in reverse,
+so "runs before me on the response" means "later in the chain" — declare
+the producer with `RequiresLater` and it must sit at a *higher* index
+than your plugin.
+
+```go
+// Reads what the parser found in the response, on the response pass —
+// only makes sense with a parser after it in the chain.
+func (p *ResponseAuditor) Capabilities() pipeline.PluginCapabilities {
+    return pipeline.PluginCapabilities{
+        RequiresLater: []string{"mcp-parser"},
     }
 }
 ```
@@ -1127,7 +1147,7 @@ func (p *JailbreakDetector) OnRequest(_ context.Context, pctx *pipeline.Context)
 }
 ```
 
-One import (`contracts`), one iteration pattern, works across A2A +
+One import (`capabilities`), one iteration pattern, works across A2A +
 MCP + Inference. A fourth protocol that implements `Fragments` is
 picked up with no guardrail change.
 
@@ -1230,7 +1250,7 @@ lives in this module. The pattern mirrors `database/sql` drivers and
 ### Factory shape
 
 ```go
-// core/plugins/jwtvalidation.go
+// core/plugins/jwtvalidation/plugin.go
 func init() {
     RegisterPlugin("jwt-validation", func() pipeline.Plugin { return NewJWTValidation() })
 }
@@ -1440,7 +1460,7 @@ interface — a **current limitation**, tracked as a future enhancement.
   parsing.
 - `core/plugins/registry.go` — how Build calls Configure.
 - `core/pipeline/extensions.go` — named categories
-  (`MCP`, `A2A`, `Inference`, `Auth`) + `Custom` map + escape-hatch
+  (`MCP`, `A2A`, `Inference`, `Security`, `Delegation`, `Auth`) + `Custom` map + escape-hatch
   convention.
 - `core/pipeline/session.go` — `SessionEvent` wire shape
   and the `SessionDenied` phase.
