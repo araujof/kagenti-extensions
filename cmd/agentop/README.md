@@ -286,7 +286,9 @@ OpenCode's traffic leaves from a per-user background service, `opencode serve
 `enable` and `disable` take `[--yes] [--config PATH] [--opencode BIN]`; `status`
 takes `[--config PATH] [--opencode BIN]`. Changing the service's environment
 restarts it, which interrupts every OpenCode session using it — the commands
-say so and ask first. Everything else — undo by hand, CA trust, the record
+say so and ask first. A restart that fails is reported: the service may be
+stopped, or running with its old environment, and `opencode service restart`
+applies the change. Everything else — undo by hand, CA trust, the record
 file, verified depth, known issues — is in
 [opencode.md](../../docs/agents/opencode.md).
 
