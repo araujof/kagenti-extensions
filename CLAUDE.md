@@ -569,7 +569,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   string can carry an API key. Before that was recorded the row did not exist at all,
   so a failed request was indistinguishable from one still in flight and raised no
   error rate (#1045). **`error.kind: "proxy_error"` is the one that is ours:** a
-  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). Where the
+  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). **A 421
+  with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
+  another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
+  before the pipeline runs and forwards nothing, and both rows name the CONNECT target
+  as `host`, because policy keyed on the client's `Host` would judge a destination the
+  bytes never reach. Where the
   upstream did answer, `error.code` keeps the status it sent, while `statusCode` stays
   what the client got, because every consumer keys on it. **A 499 with `error.kind:
   "client_canceled"` is the client hanging up first** — and since neither proxy times

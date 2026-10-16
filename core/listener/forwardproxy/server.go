@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,6 +337,21 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// disagree depending on which asked first. Latent while no plugin touches that header
 	// — and silent on the day one does, which is why it is pinned rather than watched.
 	pctx.ResolveClient()
+
+	// A bridged request is dialed to the tunnel's authority, so policy must judge that
+	// host. The client chose both the CONNECT target and the Host header, and a Host
+	// naming anywhere else would have every host-keyed plugin, skip_hosts included,
+	// judge a destination the bytes never reach. Refuse it before anything runs.
+	if isBridge {
+		if r.Host == "" {
+			r.Host = r.URL.Host
+			pctx.Host = r.Host
+		}
+		if !tunnelAuthorityMatches(r.Host, r.URL.Host) {
+			s.refuseMisdirected(w, r, pctx, tl)
+			return
+		}
+	}
 
 	// Every request that reaches here is re-originated from pctx below, plain or
 	// TLS-bridged, so a plugin may redirect it. The CONNECT and transparent-connection
@@ -929,6 +945,80 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// handler still running returns.
 	tl.finish()
 	return true
+}
+
+// misdirectedBody is the 421's body. Static: the Host it refuses is the client's own
+// input, and echoing it back would make the proxy a reflector.
+const misdirectedBody = "misdirected request: the Host header does not name this tunnel's destination\n"
+
+// refuseMisdirected answers a bridged request whose Host names another authority than
+// the tunnel's with 421 Misdirected Request (RFC 9110 §15.5.20), without running the
+// pipeline or contacting any upstream. The rows it records name the tunnel's authority
+// as the host, since that is where the request would have gone; the Host the client
+// sent goes in the error message only, and carries no path or query.
+func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog) {
+	claimed := r.Host
+	if len(claimed) > 255 {
+		claimed = claimed[:255]
+	}
+	slog.Warn("forward-proxy: refused a bridged request whose Host is not the tunnel's",
+		"tunnel", r.URL.Host, "host", claimed, "method", r.Method)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusMisdirectedRequest)
+	_, _ = io.WriteString(w, misdirectedBody)
+
+	if s.Sessions == nil {
+		return
+	}
+	pctx.Host = r.URL.Host
+	chain := s.clientChain(r)
+	sid := s.recordingSessionID("", r.Header, chain)
+	pctx.OutboundSessionID = sid
+	if chain != nil {
+		defer s.Sessions.TouchProcess(sid, chain)
+	}
+	s.recordOutboundRequestEvent(tl, pctx, sid)
+	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
+		Kind:    "misdirected_request",
+		Message: fmt.Sprintf("Host %q does not name the tunnel's destination %s", claimed, r.URL.Host),
+	})
+}
+
+// tunnelAuthorityMatches reports whether host, a bridged request's Host, names the same
+// authority as tunnel, the CONNECT target or transparent destination it was decrypted
+// from. Hosts compare case-insensitively without a trailing dot, IP literals by value,
+// and a missing port is 443, the tunnel being TLS.
+func tunnelAuthorityMatches(host, tunnel string) bool {
+	h, hp, ok := splitAuthority(host)
+	if !ok {
+		return false
+	}
+	t, tp, ok := splitAuthority(tunnel)
+	return ok && h == t && hp == tp
+}
+
+func splitAuthority(a string) (host string, port int, ok bool) {
+	host, p, err := net.SplitHostPort(a)
+	if err != nil {
+		// No port: a name, an IPv4 literal, or a bracketed IPv6 literal.
+		host, p = a, ""
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+	}
+	port = 443
+	if p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", 0, false
+		}
+		port = n
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.Unmap().String()
+	}
+	return host, port, host != ""
 }
 
 // bridgedHandler serves one bridged tunnel's decrypted requests through the pipeline.
