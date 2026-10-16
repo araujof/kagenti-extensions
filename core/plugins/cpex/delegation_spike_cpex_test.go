@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -45,8 +46,8 @@ type spikeIdP struct {
 	exchanges []url.Values
 }
 
-// newSpikeIdP serves an RFC 8693 token endpoint granting audience
-// workday-api and refusing every other audience.
+// newSpikeIdP serves an RFC 8693 token endpoint granting audiences
+// workday-api and github-api and refusing every other audience.
 func newSpikeIdP(t *testing.T) *spikeIdP {
 	t.Helper()
 	m := &spikeIdP{}
@@ -59,7 +60,7 @@ func newSpikeIdP(t *testing.T) *spikeIdP {
 		m.exchanges = append(m.exchanges, r.PostForm)
 		m.mu.Unlock()
 		w.Header().Set("content-type", "application/json")
-		if r.PostForm.Get("audience") != "workday-api" {
+		if aud := r.PostForm.Get("audience"); aud != "workday-api" && aud != "github-api" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_target"})
 			return
@@ -125,6 +126,13 @@ routes:
       pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "require(delegation.granted)"
+  - tool: get_both
+    authentication: [idp]
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "delegate(workday-oauth, target: github-api, audience: github-api)"
         - "require(delegation.granted)"
 `
 }
@@ -217,8 +225,67 @@ func spikePlugin(t *testing.T, idp *spikeIdP, forward bool) *CPEX {
 	}
 	if forward {
 		cfg["delegated_credentials"] = true
+		cfg["delegated_credential_hosts"] = map[string][]string{"workday-api": {"tools.example"}}
 	}
 	return configuredEngine(t, cfg, HookToolPreInvoke)
+}
+
+// spikePluginBound configures the cpex plugin on spikePolicy forwarding
+// delegated credentials to the hosts bindings name.
+func spikePluginBound(t *testing.T, idp *spikeIdP, bindings map[string][]string) *CPEX {
+	t.Helper()
+	return configuredEngine(t, map[string]any{
+		"config":                     spikePolicy(idp.srv.URL + "/token"),
+		"private_destinations":       true,
+		"delegated_credentials":      true,
+		"delegated_credential_hosts": bindings,
+	}, HookToolPreInvoke)
+}
+
+// A minted credential reaches only a host its target is bound to. Any
+// other destination, or a target with no binding, denies the request
+// with nothing written to it, even when another credential would fit.
+func TestDelegationCredentialBoundToDestination(t *testing.T) {
+	logs := captureLogs(t)
+	idp := newSpikeIdP(t)
+	caller := "Bearer " + spikeJWT("alice", []string{"hr"})
+	cases := []struct {
+		name     string
+		bindings map[string][]string
+		tool     string
+		host     string
+		forward  bool
+	}{
+		{"bound host", map[string][]string{"workday-api": {"tools.example"}}, "get_compensation", "tools.example:8080", true},
+		{"other host", map[string][]string{"workday-api": {"tools.example"}}, "get_compensation", "attacker.example", false},
+		{"unbound target", map[string][]string{"github-api": {"tools.example"}}, "get_compensation", "tools.example", false},
+		{"both bound", map[string][]string{"workday-api": {"tools.example"}, "github-api": {"tools.example"}}, "get_both", "tools.example", true},
+		{"one of two bound", map[string][]string{"workday-api": {"tools.example"}, "github-api": {"github.example"}}, "get_both", "tools.example", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := spikePluginBound(t, idp, tc.bindings)
+			pctx := toolCall(tc.tool, http.Header{"Authorization": {caller}, "X-Keep": {"1"}})
+			pctx.Host = tc.host
+			before := pctx.Headers.Clone()
+			a := p.OnRequest(context.Background(), pctx)
+			if tc.forward {
+				wantContinue(t, tc.name, a)
+				if got := pctx.Headers.Get("Authorization"); got != "Bearer "+spikeMinted {
+					t.Fatal("bound destination did not get the minted credential")
+				}
+				return
+			}
+			wantReject(t, tc.name, a, "cpex."+codeDelegationDestinationMismatch)
+			if a.Violation.Status != http.StatusForbidden || a.Violation.Reason != deniedMessage {
+				t.Fatalf("violation = %d %q, want 403 with the static message", a.Violation.Status, a.Violation.Reason)
+			}
+			if !reflect.DeepEqual(pctx.Headers, before) {
+				t.Fatal("a denied request's headers were changed")
+			}
+		})
+	}
+	assertNoToken(t, "logs", logs.Bytes())
 }
 
 // captureLogs sends every slog record, debug included, to a buffer for
@@ -336,6 +403,7 @@ func TestDelegationCredentialHeaderNotAllowed(t *testing.T) {
 		"private_destinations":         true,
 		"delegated_credentials":        true,
 		"delegated_credential_headers": []string{"X-Workday-Token"},
+		"delegated_credential_hosts":   map[string][]string{"workday-api": {"tools.example"}},
 	}, HookToolPreInvoke)
 	caller := "Bearer " + spikeJWT("alice", []string{"hr"})
 	pctx := toolCall("get_compensation", http.Header{"Authorization": {caller}})

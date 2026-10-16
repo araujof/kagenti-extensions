@@ -162,6 +162,16 @@ type cpexConfig struct {
 	// may be written to. A credential for any other header denies the
 	// request with cpex.delegation_unavailable.
 	DelegatedCredentialHeaders []string `json:"delegated_credential_headers" description:"Headers a delegated credential may be written to. Default [Authorization]."`
+
+	// DelegatedCredentialHosts binds each delegation target (the target a
+	// delegate() step names, else its audience) to the hosts its
+	// credentials may be sent to, as `.`-delimited globs matched against
+	// the request's host without its port. Required with
+	// delegated_credentials: the caller picks the tool and the destination,
+	// so a credential whose target is not bound to the request's host
+	// denies it with cpex.delegation_destination_mismatch and nothing is
+	// written.
+	DelegatedCredentialHosts map[string][]string `json:"delegated_credential_hosts" description:"Delegation target → host globs its credentials may be sent to. Required with delegated_credentials."`
 }
 
 // principalConfig configures principal injection. An empty TokenFile turns
@@ -279,6 +289,9 @@ func (c *cpexConfig) validate() error {
 			return fmt.Errorf("workload.header must differ from principal.header")
 		}
 	}
+	if c.DelegatedCredentials && len(c.DelegatedCredentialHosts) == 0 {
+		return errors.New("delegated_credentials needs delegated_credential_hosts, the hosts each target's credentials may be sent to")
+	}
 	if len(c.DelegatedCredentialHeaders) > 0 && !c.DelegatedCredentials {
 		return errors.New("delegated_credential_headers needs delegated_credentials: true")
 	}
@@ -345,10 +358,11 @@ func observeCode(code string) string {
 // pluginCodes are deny codes the plugin emits itself; they guard against
 // forwarding a request CPEX cannot vouch for, so they are never observed.
 var pluginCodes = map[string]bool{
-	"cpex." + codePrincipalUnavailable:  true,
-	"cpex." + codeDelegationUnavailable: true,
-	"cpex." + codeAmbiguousRequest:      true,
-	"cpex." + codeUnnamedEntity:         true,
+	"cpex." + codePrincipalUnavailable:          true,
+	"cpex." + codeDelegationUnavailable:         true,
+	"cpex." + codeDelegationDestinationMismatch: true,
+	"cpex." + codeAmbiguousRequest:              true,
+	"cpex." + codeUnnamedEntity:                 true,
 }
 
 // resolveYAML returns the CPEX YAML string the operator supplied —

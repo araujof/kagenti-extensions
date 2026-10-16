@@ -206,6 +206,14 @@ func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipelin
 				Details:  details,
 			}, nil
 		}
+		if !c.boundToDestination(minted, pctx.Host) {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codeDelegationDestinationMismatch,
+				Reason:   "delegated credential not bound to the destination host",
+				Details:  details,
+			}, nil
+		}
 	}
 
 	// Apply modifications only when the policy will allow the request
@@ -322,6 +330,21 @@ func (c *cpexManager) forwardable(creds []rcpex.DelegatedCredential, tokens int)
 		}
 	}
 	return creds
+}
+
+// boundToDestination reports whether every credential's target is bound
+// to host in delegated_credential_hosts. The agent picks both the tool
+// and the destination, so a credential minted for one service must not
+// follow a request to another. Only the target and host are logged.
+func (c *cpexManager) boundToDestination(creds []rcpex.DelegatedCredential, host string) bool {
+	for _, cr := range creds {
+		target := credentialTarget(cr.Target, cr.Audience)
+		if !c.opts.DelegatedCredentialHosts.allows(target, host) {
+			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", host)
+			return false
+		}
+	}
+	return true
 }
 
 func (c *cpexManager) credentialHeaderAllowed(name string) bool {

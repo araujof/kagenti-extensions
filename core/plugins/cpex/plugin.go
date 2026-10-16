@@ -237,6 +237,11 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		}
 	}
 
+	credentialHosts, err := newCredentialHosts(c.DelegatedCredentialHosts)
+	if err != nil {
+		return fmt.Errorf("cpex config: %w", err)
+	}
+
 	factory := p.newManager
 	if factory == nil {
 		factory = NewManager
@@ -252,6 +257,7 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 
 		DelegatedCredentials:       c.DelegatedCredentials,
 		DelegatedCredentialHeaders: c.DelegatedCredentialHeaders,
+		DelegatedCredentialHosts:   credentialHosts,
 	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces

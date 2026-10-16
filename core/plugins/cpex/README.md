@@ -481,7 +481,8 @@ vocabulary:
 
 Some denials come from the plugin rather than from policy, and `fail_open`
 does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
-(above), `cpex.principal_unavailable` (above), and
+(above), `cpex.principal_unavailable` (above),
+`cpex.delegation_destination_mismatch` (below), and
 `cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
 step granted a token the plugin cannot forward: `delegated_credentials` is
 off (the engine then keeps the token), or a credential came back for a
@@ -496,6 +497,20 @@ value, after the header write-back. The value never enters the invocation,
 the session record or a log, and later CPEX calls on the same request do not
 see it. It needs CPEX 0.3.1 or later; a 0.3.0 library rejects the
 option, failing the plugin at startup.
+
+The agent picks the tool and the destination, so each credential is bound
+to the hosts it may reach. `delegated_credential_hosts` maps a delegation
+target (the `target:` of the `delegate(...)` step, else its audience) to
+`.`-delimited host globs, matched against the request's host without its
+port; it is required with `delegated_credentials`. A credential whose target
+is unbound, or bound elsewhere, denies the request (403,
+`cpex.delegation_destination_mismatch`) and nothing is written to it:
+
+```yaml
+delegated_credentials: true
+delegated_credential_hosts:
+  workday-api: [hr-mcp, hr-mcp.cpex-demo]
+```
 
 **How a rejection is rendered.** The plugin sets the decision and a status
 (`403` for a policy deny, `502` for a CPEX-internal error); the HTTP/proxy

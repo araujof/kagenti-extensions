@@ -226,8 +226,8 @@ func TestConfigure_DelegatedCredentials(t *testing.T) {
 		wantHeaders []string
 	}{
 		{`{}`, false, nil},
-		{`{"delegated_credentials":true}`, true, []string{"Authorization"}},
-		{`{"delegated_credentials":true,"delegated_credential_headers":["X-Api-Key"]}`, true, []string{"X-Api-Key"}},
+		{`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example"]}}`, true, []string{"Authorization"}},
+		{`{"delegated_credentials":true,"delegated_credential_headers":["X-Api-Key"],"delegated_credential_hosts":{"api":["api.example"]}}`, true, []string{"X-Api-Key"}},
 	}
 	for _, tc := range cases {
 		var seen ManagerOptions
@@ -245,14 +245,80 @@ func TestConfigure_DelegatedCredentials(t *testing.T) {
 	}
 	for _, raw := range []string{
 		`{"delegated_credential_headers":["Authorization"]}`,
-		`{"delegated_credentials":true,"delegated_credential_headers":["Host"]}`,
-		`{"delegated_credentials":true,"delegated_credential_headers":["x-authbridge-direction"]}`,
-		`{"delegated_credentials":true,"delegated_credential_headers":["bad header"]}`,
-		`{"delegated_credentials":true,"delegated_credential_headers":["x-user-token"],"principal":{"token_file":"/t"}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["Host"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-authbridge-direction"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["bad header"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-user-token"],"principal":{"token_file":"/t"},"delegated_credential_hosts":{"api":["api.example"]}}`,
 	} {
 		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
 			t.Errorf("Configure(%s): want error", raw)
 		}
+	}
+}
+
+// Forwarding delegated credentials needs a destination binding for every
+// target, and each binding names hosts, not everything.
+func TestConfigure_DelegatedCredentialHosts(t *testing.T) {
+	var seen ManagerOptions
+	p := NewCPEX()
+	p.newManager = func(opts ManagerOptions) (Manager, error) {
+		seen = opts
+		return &FakeManager{}, nil
+	}
+	if err := p.Configure([]byte(`{"delegated_credentials":true,"delegated_credential_hosts":{"workday-api":["hr-mcp","hr-mcp.*.svc.cluster.local"]}}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if !seen.DelegatedCredentialHosts.allows("workday-api", "hr-mcp:9100") {
+		t.Fatal("binding not passed to the manager")
+	}
+	for _, raw := range []string{
+		`{"delegated_credentials":true}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":[]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":[""]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["*"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["**"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example:443"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["[bad"]}}`,
+	} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("Configure(%s): want error", raw)
+		}
+	}
+}
+
+func TestCredentialHostsAllows(t *testing.T) {
+	h, err := newCredentialHosts(map[string][]string{
+		"workday-api": {"hr-mcp", "hr-mcp.cpex-demo", "*.hr.svc.cluster.local"},
+		"support":     {"Support.Localtest.Me"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		target, host string
+		want         bool
+	}{
+		{"workday-api", "hr-mcp", true},
+		{"workday-api", "hr-mcp:9100", true},
+		{"workday-api", "HR-MCP.cpex-demo:9100", true},
+		{"workday-api", "a.hr.svc.cluster.local", true},
+		{"workday-api", "a.b.hr.svc.cluster.local", false},
+		{"workday-api", "hr-mcp.attacker.example", false},
+		{"workday-api", "support.localtest.me", false},
+		{"support", "support.localtest.me:47711", true},
+		{"support", "support.localtest.me.", true},
+		{"github-api", "hr-mcp", false},
+		{"", "hr-mcp", false},
+		{"workday-api", "", false},
+	} {
+		if got := h.allows(tc.target, tc.host); got != tc.want {
+			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
+		}
+	}
+	if credentialTarget("workday-api", "aud") != "workday-api" || credentialTarget("", "aud") != "aud" {
+		t.Fatal("credentialTarget: want Target, else Audience")
 	}
 }
 
@@ -379,7 +445,7 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"bypass_hosts", "bypass_paths",
 		"fallback_identification", "session_source", "private_destinations",
 		"synthetic_egress", "principal",
-		"delegated_credentials", "delegated_credential_headers",
+		"delegated_credentials", "delegated_credential_headers", "delegated_credential_hosts",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)

@@ -83,6 +83,9 @@ type ManagerOptions struct {
 	// config values of the same names; see cpexConfig.
 	DelegatedCredentials       bool
 	DelegatedCredentialHeaders []string
+
+	// DelegatedCredentialHosts is the compiled delegated_credential_hosts.
+	DelegatedCredentialHosts credentialHosts
 }
 
 // NewManager is defined in one of two build-tag-gated files:
