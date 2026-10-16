@@ -30,7 +30,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`inference-router`](#inference-router) | Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on. | Alpha | Outbound | No |
 | [`jwt-validation`](#jwt-validation) | Inbound JWT validation (signature, issuer, audience) against JWKS. | Ready | Inbound | YES |
 | [`lineage-telemetry`](#lineage-telemetry) | Emits two facts-only OTel lineage spans per HTTP exchange, parented across pods through one `tracestate` member. | Alpha | Both | No |
-| [`litellm-budget-track`](#litellm-budget-track) | Tracks `x-litellm-response-cost` (with `-original` fallback) and enforces a daily budget limit. Place on whichever chain carries LLM traffic — inbound when fronting the LLM endpoint, outbound when hosting an agent via `agentop exec`. | Alpha | Both | No |
+| [`litellm-budget-track`](#litellm-budget-track) | Accumulates the cost record `inference-parser` settles (authoritative where LiteLLM's cost header is present) and enforces a daily budget limit. Place on whichever chain carries LLM traffic — inbound when fronting the LLM endpoint, outbound when hosting an agent via `agentop exec`. | Alpha | Both | No |
 | [`mcp-parser`](#mcp-parser) | Parses MCP tool calls/results into `pctx.Extensions.MCP`. | Beta | Outbound | No |
 | [`opa`](#opa) | [OPA](https://www.openpolicyagent.org/docs) policy enforcement for inbound and outbound requests. | Alpha | Both | No |
 | [`sparc`](#sparc) | Pre-tool reflection: blocks ungrounded/hallucinated tool calls. | Alpha | Outbound | No |
@@ -133,10 +133,11 @@ Keeps the daily spend ledger and enforces a spend budget, from the cost record
 `inference-parser` publishes.
 
 **Provider-specific:** `x-litellm-response-cost` is emitted only by
-[LiteLLM](https://docs.litellm.ai/), so this plugin works only when
-LiteLLM is the inference provider in front of the model. Against a
-provider that doesn't set the header (raw OpenAI, Ollama, vLLM, …), no
-cost is ever accumulated and the budget never trips.
+[LiteLLM](https://docs.litellm.ai/), so the *authoritative* cost figure — and
+the drift check against it — exists only when LiteLLM is the inference
+provider in front of the model. Against a provider that doesn't set the
+header, `inference-parser` prices token usage from the [`pricing:`](pricing.md)
+table and this plugin accumulates the modelled figure.
 
 Full reference: [`litellm-budget-track-plugin.md`](litellm-budget-track-plugin.md).
 

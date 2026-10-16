@@ -24,7 +24,7 @@ has a dedicated reference doc there (`docs/<name>-plugin.md`).
 | `ibac` | Outbound Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's most recent intent. Catches prompt-injection / data-exfiltration attempts |
 | `opa` | OPA policy evaluation on inbound and outbound requests via bundle download |
 | `tool-prune` | Remove unused tool definitions from the outbound inference manifest |
-| `litellm-budget-track` | Daily spend ledger and budget cap off LiteLLM's cost header |
+| `litellm-budget-track` | Daily spend ledger and budget cap, accumulated from the cost record `inference-parser` settles |
 | `static-inject` | Swap a placeholder credential for a real static one on outbound requests |
 | `token-broker` | Acquire tokens from an external broker service per host-based routes |
 | `lineage-telemetry` | Emit facts-only OTel lineage spans per HTTP exchange |

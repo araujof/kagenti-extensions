@@ -19,9 +19,11 @@ tool results.
 | `GET /v1/sessions/{id}` | `application/json` | The session's most recent events; `?limit=N` and `?before=<seq>` page backward |
 | `GET /v1/sessions/{id}/events/{seq}` | `application/json` | One event by its sequence number |
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
+| `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config` |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not |
+| `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
 | `GET /healthz` | text | Liveness probe |
 
 ## `GET /v1/sessions`
@@ -92,12 +94,25 @@ runs. **The cost ledger is kept** — spend totals, no content. Answers
 `{sessions, archivedSessions, bytes}`; a failed disk half is a 500 adding
 `archiveError`, with memory cleared regardless.
 
-This is the one state-changing route on an unauthenticated API, so it is
-guarded against a browser: DELETE only (a cross-site DELETE needs a preflight
-this server never approves), a loopback `Host` (`localhost`, `127.0.0.1` or
-`::1`, which defeats DNS rebinding), no `Origin` header, and the server must
-have been built with clearing allowed (`listener.bind_loopback_only` on a
-local install). A refusal is a 403 `{"error": ...}`. agentop's `X` drives it.
+This is the one state-changing route pair on an unauthenticated API, so both
+are guarded against a browser: DELETE only (a cross-site DELETE needs a
+preflight this server never approves), a loopback `Host` (`localhost`,
+`127.0.0.1` or `::1`, which defeats DNS rebinding), no `Origin` header, and
+the server must have been built with clearing allowed
+(`listener.bind_loopback_only` on a local install). A refusal is a 403
+`{"error": ...}`. agentop's `X` drives it.
+
+## `DELETE /v1/sessions/{id}` — erase one session
+
+Erases one session: the store's entry and, where the archive runs, its files —
+a session only the archive holds too. The same four guards as
+`DELETE /v1/sessions` (pinned in `core/sessionapi/delete_test.go`) and the
+same answer shape, each count 0 or 1. **404** when neither half held the id;
+**500** with `archiveError` when the disk half failed (memory is erased
+regardless). The cost ledger, usage totals and inference-router pins are
+kept. An agent still using the session brings it back with its next request.
+agentop's `x` drives it, one request per session for an agent-wide erase —
+see [`laptop-service.md`](laptop-service.md) for the user-facing story.
 
 ## Quick examples
 
