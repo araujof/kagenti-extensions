@@ -227,6 +227,16 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 			"token_file", c.Principal.TokenFile, "error", err)
 	}
 
+	cfgYAML, err := c.resolveYAML()
+	if err != nil {
+		return fmt.Errorf("cpex config: %w", err)
+	}
+	if len(c.ObserveCodes) > 0 && cfgYAML != "" {
+		if err := checkObservedCodes(cfgYAML, c.ObserveCodes); err != nil {
+			return fmt.Errorf("cpex config: %w", err)
+		}
+	}
+
 	factory := p.newManager
 	if factory == nil {
 		factory = NewManager
@@ -250,10 +260,6 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("cpex: %w", err)
 	}
 
-	cfgYAML, err := c.resolveYAML()
-	if err != nil {
-		return fmt.Errorf("cpex config: %w", err)
-	}
 	if cfgYAML != "" {
 		if err := mgr.LoadConfig(cfgYAML); err != nil {
 			return fmt.Errorf("cpex: load config: %w", err)

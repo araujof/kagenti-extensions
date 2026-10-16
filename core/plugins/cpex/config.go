@@ -145,7 +145,9 @@ type cpexConfig struct {
 	// step set, so a step can taint a session on content without blocking
 	// the request: PPE 0.5.0 has no other conditional taint, since a CEL
 	// step that is false always denies. Steps after the denying one do
-	// not run. Codes the plugin itself emits cannot be listed.
+	// not run, so Configure checks the policy: each code must be named by
+	// one deny() alone, as the last entry of a route's phase list (see
+	// checkObservedCodes). Codes the plugin itself emits cannot be listed.
 	ObserveCodes []string `json:"observe_codes" description:"Policy violation codes recorded as observe instead of enforced; the labels the denying step set still apply."`
 
 	// DelegatedCredentials forwards the credentials CPEX delegate() steps

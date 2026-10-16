@@ -281,7 +281,11 @@ later `http_egress` route can then deny on `security.labels contains "secret"`.
 To taint without blocking the request, list the code in the plugin's
 `observe_codes` (`observe_codes: [secret_in_tool_result]`): the deny is
 recorded as `observe`, the request is forwarded, and the label stays. Steps
-after the denying one do not run, so make it the route's last step.
+after the denying one do not run, and a code another step shares would be
+silenced there too, so the plugin refuses at Configure an observed code that is
+not the code of exactly one `deny('reason', 'code')`, is not in a route's own
+phase list, or is not the last entry of every list down to it (step, `on_deny`,
+`when`/`do`).
 
 Caller identity lives in `SecurityExtension.Subject`. Policies read it from
 `security.subject`, not `agent.agent_id`. The `agent` slot models the agent's own
