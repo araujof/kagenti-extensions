@@ -60,9 +60,9 @@ names the command that fixes it.
 | **Claude Code** | `agentop configure claude-code enable` | [Guide](./docs/agents/claude-code.md) |
 | **OpenCode** | `agentop configure opencode enable` | [Guide](./docs/agents/opencode.md) |
 | **Codex** | `agentop configure codex enable` | [Guide](./docs/agents/codex.md) |
-| **IBM Bob** | `agentop configure bob enable` | [Guide](./cmd/agentop/README.md#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob) |
-| **Bob Shell** | `agentop configure bobshell enable` | [Guide](./cmd/agentop/README.md#typing-bob-instead-of-agentop-exec----bob-agentop-configure-bobshell) |
-| **Any other agent** | `agentop exec -- <command>` | [Guide](./cmd/agentop/README.md#running-one-command-through-cortex-agentop-exec) |
+| **IBM Bob** | `agentop configure bob enable` | [Guide](./docs/agents/bob.md) |
+| **Bob Shell** | `agentop configure bobshell enable` | [Guide](./docs/agents/bobshell.md) |
+| **Any other agent** | `agentop exec -- <command>` | [Guide](./docs/agents/any-agent.md) |
 
 Each `configure` command is a one-time setup: it asks before it writes, and afterwards
 you start the agent exactly as before. `status` and `disable` check and undo it. An

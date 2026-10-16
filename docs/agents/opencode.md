@@ -27,7 +27,7 @@ goes there and not into a shell profile. `enable` sets nine variables in that bl
 with one `opencode service set env NAME VALUE` call per variable that differs, the CA
 variables before the proxy. agentop never edits the file itself. These are the nine
 variables `agentop exec` sets, chosen for the reasons
-[its section](../../cmd/agentop/README.md#running-one-command-through-cortex-agentop-exec)
+[any-agent.md](any-agent.md)
 gives. The addresses come from `~/.cortex/config.yaml`:
 
 | Variable | Value |

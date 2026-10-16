@@ -20,7 +20,7 @@ Neither owns the cost model. One owner of rates means `tool-prune`,
 | The published record | `core/cost/event` | this page ([Cost records](#cost-records)) |
 | Durable per-minute ledger (`cost_ledger:`) | `core/cost/ledger` | [`laptop-service.md`](laptop-service.md) for the config; [`framework-architecture.md`](framework-architecture.md) for why it is not hot-reloadable |
 | Windowed aggregation, `/v1/usage` | `core/cost/usage` | this page ([Reading usage over HTTP](#reading-usage-over-http)) |
-| Daily caps, drift check | `core/plugins/litellm_budgettrack` | [`litellm-budgettrack-plugin.md`](litellm-budgettrack-plugin.md) |
+| Daily caps, drift check | `core/plugins/litellm_budgettrack` | [`litellm-budget-track-plugin.md`](litellm-budget-track-plugin.md) |
 
 > **Terminology.** *Rate* — money per token for one tier of one model at one endpoint.
 > *Tier* — which kind of token: uncached input, cache write, cache read, output.
@@ -698,7 +698,7 @@ eventually sums two fields that must never be summed.
 
 - [`plugin-catalog.md`](plugin-catalog.md) — the plugins that consume these rates:
   `inference-parser`, `litellm-budget-track`, `tool-prune`.
-- [`litellm-budgettrack-plugin.md`](litellm-budgettrack-plugin.md) — daily caps, and the
+- [`litellm-budget-track-plugin.md`](litellm-budget-track-plugin.md) — daily caps, and the
   drift check that compares the rate table against what the gateway charged.
 - [`superpowers/specs/2026-09-09-pricing-consolidation-design.md`](superpowers/specs/2026-09-09-pricing-consolidation-design.md)
   — why rates live in one place, kept for the reasoning rather than as current docs.
