@@ -291,6 +291,11 @@ need:
   with its decision and violation code.
 - A declared plugin that no route reaches (through `authentication:`,
   `run(...)` or `delegate(...)`) fails the load.
+- Route entities changed. Inference was entity `model`/<name> and is now
+  `llm`/<model>, so a `- model: <name>` route becomes `- llm: <model>`. A2A
+  was `a2a_method`/<method> and now takes the fallback identification
+  (`http`/`*`), so a `- a2a_method: ...` route no longer matches anything;
+  move its steps to an `- http: "*"` route or to `global`.
 
 The load error carries no detail: it says `parse / deserialize failed` or
 `pipeline / lifecycle error`. CPEX's
