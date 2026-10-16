@@ -513,6 +513,7 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. `onError` is the plugin's `on_error`, sent only when it is not the default — in practice only `observe`, since an `on_error: off` plugin is not built and so is not listed. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped — header writes still apply — so in those respects its `config` says what it would do, not what it does. agentop renders this as the Pipeline pane. |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
+| `GET /v1/usage` | `application/json` | Windowed usage aggregation, the aggregate behind `agentop cost` — parameters and semantics in [`docs/pricing.md`](docs/pricing.md#reading-usage-over-http). |
 | `GET /healthz` | text | Liveness probe. |
 
 ### Quick examples
@@ -771,14 +772,15 @@ PR titles must follow the format:
 <Prefix>: <Subject starting with uppercase>
 ```
 
-The CI title check (`deepakputhraya/action-pr-title`) is **case-sensitive** and
-requires a **capitalized** prefix from this set: `Build`, `Chore`, `CI`, `Docs`,
-`Feat`, `Fix`, `Perf`, `Refactor`, `Revert`, `Style`, `Test`, `Feature`,
-`Bug fix`, `Proposal`, `Breaking change`, `Other`, `Other/Misc`.
-
-Note: commit *message* examples elsewhere in this doc use lowercase
-(`feat:` / `fix:`) — that is fine for commits, but the PR *title* check rejects
-lowercase prefixes. Use `Fix:` / `Feat:` / `Docs:` in PR titles.
+The CI title check (`deepakputhraya/action-pr-title` via the shared
+`pr-verifier` workflow) matches prefixes **case-insensitively**
+(`prefix_case_sensitive: false`), accepting this set in any case: `Build`,
+`Chore`, `CI`, `Docs`, `Feat`, `Fix`, `Perf`, `Refactor`, `Revert`, `Style`,
+`Test`, `Feature`, `Bug fix`, `Proposal`, `Breaking change`, `Other`,
+`Other/Misc`. `scripts/release_notes.sh` also lowercases before matching, so
+the prefix files the PR the same way in either case. The capitalized spelling
+is the repo's convention, not an enforced rule — lowercase commit-style
+prefixes (`feat:`, `fix:`) pass.
 
 The prefix also files the PR in the release notes, which
 `scripts/release_notes.sh` builds from the PRs merged since the previous

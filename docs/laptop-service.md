@@ -42,7 +42,7 @@ one process; systemd handles it.
 The one-liner is how you upgrade, so it is meant to be run repeatedly. When nothing has
 changed it changes nothing. It still downloads the release, but `agentop setup` finds
 the staged binaries identical to the installed ones, asks nothing, and ends on one line,
-`cortex v0.9.3 is installed and healthy.`, leaving the running proxy alone rather than
+`cortex v0.9.0 is installed and healthy.`, leaving the running proxy alone rather than
 restarting it. When something has changed it lists what, and asks first. An upgrade keeps
 the previous binaries until the new Cortex answers its health check, and puts them back
 if it never does.
@@ -405,6 +405,28 @@ which server each session is on, as its session id, its agent's name and the ser
 holds no prompts and no keys. A session's entry expires 29 to 30 days after its last request; `X`
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
+
+## The `tls_bridge:` configuration
+
+The TLS bridge terminates agent egress so the outbound plugin pipeline sees
+decrypted HTTPS. It is configured under the top-level `tls_bridge:` block in
+`~/.cortex/config.yaml` (`authbridge-runtime-config` in a cluster):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `mode` | *(off)* | `disabled` or `enabled`. Empty or an absent block means off. |
+| `ca_dir` | — | Directory of the signing CA: the bridge reads `tls.crt` + `tls.key` to sign leaves; `ca.crt` is the trust cert handed to the agent (cert-manager Secret key conventions, so only the directory is configured). On a laptop this is `~/.cortex/ca`. |
+| `generate_ca` | `false` | Mint and persist a self-signed CA into `ca_dir` when those files are absent, instead of failing at startup. For standalone/demo use only — in-cluster the CA is a mounted Secret and this stays false so a missing Secret fails loudly. `ca_dir` should persist across restarts: on ephemeral storage a fresh CA is minted each boot, and clients must re-trust the new `ca.crt`. |
+| `upstream_ca_bundle` | *(system roots)* | Extra-roots PEM file for re-origination, for private-CA origins the agent trusts. Empty means system roots only. |
+| `upstream_insecure` | `false` | Disable origin cert verification on re-origination, for internal/self-signed upstreams whose CA is unavailable. Prefer `upstream_ca_bundle` when possible. |
+| `passthrough_hosts` | *(see below)* | Hosts to tunnel, never intercept. Distinct from `listener.skip_hosts`, which bypasses the whole pipeline: these still run the egress gate, they just aren't TLS-terminated. See [Developer tooling is not intercepted at all](#developer-tooling-is-not-intercepted-at-all). |
+| `ports` | `{443, 8443}` | TCP ports to intercept as TLS. Only HTTP(S)-bearing ports belong here — the bridge serves the decrypted stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS, SMTPS, DB-over-TLS, …) would break it. |
+
+The bridge is built once at startup, so changing any `tls_bridge:` field takes
+effect only after `agentop service restart`. Note the reload does not *refuse*
+the edit — `/reload/status` reports a successful reload and `/config` serves
+the new values while the running bridge keeps its startup settings. Restart to
+apply.
 
 ## `agentop: command not found`
 

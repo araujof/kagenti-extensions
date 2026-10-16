@@ -60,8 +60,8 @@ names the command that fixes it.
 | **Claude Code** | `agentop configure claude-code enable` | [Guide](./docs/agents/claude-code.md) |
 | **OpenCode** | `agentop configure opencode enable` | [Guide](./docs/agents/opencode.md) |
 | **Codex** | `agentop configure codex enable` | [Guide](./docs/agents/codex.md) |
-| **IBM Bob** | `agentop configure bob enable` — the editor and the `bob` shell command both | [Guide](./cmd/agentop/README.md#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob) |
-| **Any other agent** | `agentop exec -- <command>` | [Guide](./cmd/agentop/README.md#running-one-command-through-cortex-agentop-exec) |
+| **IBM Bob** | `agentop configure bob enable` — the editor and the `bob` shell command both | [Guide](./docs/agents/bob.md) |
+| **Any other agent** | `agentop exec -- <command>` | [Guide](./docs/agents/any-agent.md) |
 
 Each `configure` command is a one-time setup: it asks before it writes, and afterwards
 you start the agent exactly as before. `status` and `disable` check and undo it. An
@@ -94,6 +94,8 @@ binaries. [Remove it](./docs/laptop-service.md#remove-it) has the details.
 
 ## Learn more
 
+- [All documentation](./docs/README.md) — the docs index, grouped by what you
+  are trying to do
 - [Running Cortex](./docs/laptop-service.md) — the service, how sessions are grouped,
   troubleshooting
 - [agentop](./cmd/agentop/README.md) — every pane, key and command
