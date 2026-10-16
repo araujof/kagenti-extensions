@@ -849,3 +849,110 @@ func TestServerUse_LeavesSiblingAgentsByteIdentical(t *testing.T) {
 		t.Errorf("the retired spelling survived:\n%s", got)
 	}
 }
+
+// move writes a sessions: entry for the named session: the move `agentop server
+// move` and the TUI's S on a session row make.
+func TestServerMove_MovesTheSession(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if !strings.Contains(readConfig(t, path), "          sessions:\n            s0: ete\n") {
+		t.Errorf("config:\n%s", readConfig(t, path))
+	}
+	if !strings.Contains(out, "Session s0 → ete.") {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+// own stops routing the session: the entry goes, and the request goes where the
+// client sent it.
+func TestServerMove_OwnStopsRoutingTheSession(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            s0: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "own", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if strings.Contains(readConfig(t, path), "sessions:") {
+		t.Errorf("config:\n%s", readConfig(t, path))
+	}
+	if !strings.Contains(out, "Session s0 → its own provider.") {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+func TestServerMove_RefusesAServerThatIsNotConfigured(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	code, _, errOut := runServerCmd(t, "", "move", "s0", "east", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "no server named east") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerMove_WantsASessionAndAServer(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	for _, args := range [][]string{{"move"}, {"move", "s0"}, {"move", "s0", "ete", "extra"}} {
+		if code, _, _ := runServerCmd(t, "", append(args, "--config", path)...); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+func TestServerMove_RefusesASyntheticSession(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	for _, id := range []string{"default", "pending:claude-code", ""} {
+		if code, _, _ := runServerCmd(t, "", "move", id, "ete", "--config", path); code != 2 {
+			t.Errorf("move %q: exit %d, want 2", id, code)
+		}
+	}
+}
+
+// A move prunes the overrides of sessions neither live nor archived: inert config
+// a move left behind. With no session API reachable, nothing is pruned — a live
+// session must never lose its override to a blind prune.
+func TestServerMove_PrunesDeadOverrides(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            s0: glm\n            dead: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "s0: ete") || strings.Contains(cfg, "dead:") {
+		t.Errorf("config:\n%s", cfg)
+	}
+
+	blind := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), closedAddr(t), routerBlock+
+		"          sessions:\n            s0: glm\n            dead: glm\n")
+	code, out, errOut = runServerCmd(t, "", "move", "s0", "ete", "--config", blind)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if cfg := readConfig(t, blind); !strings.Contains(cfg, "dead: glm") {
+		t.Errorf("a blind prune removed a session's override:\n%s", cfg)
+	}
+}
+
+// The cost line: the session's prompt context is re-sent uncached on the first
+// turn at the new server.
+func TestServerMove_StatesTheUncachedContext(t *testing.T) {
+	store := session.New(0, 0, 0)
+	store.Append("s0", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionResponse,
+		Host: "glm.example.com:8443",
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5-5", AgentRole: pipeline.AgentRoleMain,
+			PromptTokens: 81234, Tools: []pipeline.InferenceTool{{Name: "lookup"}}}})
+	sessions := serveSessions(t, store)
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "81234 tokens of s0's context go to ete uncached on its first turn there."; !strings.Contains(flat(out), flat(want)) {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
