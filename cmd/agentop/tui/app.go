@@ -2287,7 +2287,7 @@ func (m *model) View() string {
 	}
 	// Scoped to the pane it was opened on, as the column picker below is: a message can change
 	// panes under a modal even though no key can.
-	if m.serverPicker != nil && m.pane == paneAgents {
+	if m.serverPicker != nil && (m.pane == paneAgents || m.pane == paneSessions) {
 		return overlayCenter(base, renderServerPicker(m.serverPicker, m.width), m.width, m.height)
 	}
 	if m.serverNotice != "" && m.pane == paneAgents {

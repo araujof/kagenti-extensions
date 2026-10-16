@@ -724,3 +724,85 @@ func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
 		}
 	}
 }
+
+// sessionsServerModelOver is serverModel's wiring on the SESSIONS pane, so S is
+// pressed on a session row, with serverSessions() as its rows.
+func sessionsServerModelOver(t *testing.T, f *fakeProxy) *model {
+	t.Helper()
+	m := serverModel(t, f)
+	m.pane = paneSessions
+	m.sessions = serverSessions()
+	m.rebuildSessionsTable()
+	return m
+}
+
+// onSessionRow puts the sessions cursor on id's row.
+func onSessionRow(t *testing.T, m *model, id string) {
+	t.Helper()
+	for i, rid := range m.sessionRowIDs {
+		if rid == id {
+			m.sessionsTbl.SetCursor(i)
+			return
+		}
+	}
+	t.Fatalf("no sessions row %q in %v", id, m.sessionRowIDs)
+}
+
+// S on a session row, ↵ on a server: a sessions: entry is written for that
+// session — not an agents: choice — and the flash says the session moved.
+func TestServerPicker_EnterOnAServerMovesTheSession(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	onSessionRow(t, m, "on-glm")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; flash %q", m.flash)
+	}
+	m.handleKey(keyDown) // own choice → ete: the first server by name
+	cmd := m.handleKey(keyEnter)
+	if cmd == nil {
+		t.Fatalf("↵ started no write; flash %q", m.flash)
+	}
+	// The flash lands with the write's result, before the refetch that follows it:
+	// the fake proxy serves no session snapshots, and the refetch's failure would
+	// overwrite it.
+	_, refetch := m.Update(cmd())
+	flash := m.flash
+	if refetch != nil {
+		m.Update(refetch())
+	}
+	if !strings.Contains(f.config(t), "on-glm: ete") {
+		t.Errorf("config:\\n%s", f.config(t))
+	}
+	if !strings.Contains(f.config(t), "claude-code: ete") || strings.Contains(f.config(t), "opencode: glm") {
+		t.Errorf("the move must not touch agents:\\n%s", f.config(t))
+	}
+	if flash != "Session on-glm → ete." {
+		t.Errorf("flash %q", flash)
+	}
+}
+
+// S on the agents pane still writes an agents: choice — the regression guard.
+func TestServerPicker_SOnTheAgentsPaneStillRoutesTheAgent(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := serverModel(t, f)
+	switchTo(t, m, "opencode/1.0.3", "glm")
+	if !strings.Contains(f.config(t), "opencode: glm") {
+		t.Errorf("config:\\n%s", f.config(t))
+	}
+}
+
+// The confirmation states the cache cost from the session's promptContext.
+func TestServerPicker_AMoveStatesTheUncachedContext(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	m.sessions[0].PromptContext = &pipeline.PromptContext{Tokens: 81234}
+	onSessionRow(t, m, "on-glm")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; notice %q, flash %q", m.serverNotice, m.flash)
+	}
+	if !strings.Contains(m.View(), "81234 tokens of its context go uncached") {
+		t.Errorf("the picker states no cache cost:\\n%s", m.View())
+	}
+}
