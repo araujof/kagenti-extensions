@@ -58,9 +58,10 @@ the ones without.
 Four agents persist, by four different mechanisms. Claude Code reads a settings
 file, so its configuration goes there — it keeps an "env" block. Bob is two faces of
 one agent and persists twice: the editor is a VS Code fork and reads "http.proxy"
-from its settings.json (and additionally needs the bridge CA trusted by the OS, which
-"configure bob enable" prints rather than performs), while the shell function is
-written into the rc file, so the routing is applied when you type the command.
+from its settings.json, and on macOS enable also arranges the bridge-CA trust itself
+(a settings key plus a launch-environment block in the rc file; off macOS it prints
+the OS trust step rather than performing it), while the shell function is written
+into the rc file, so the routing is applied when you type the command.
 OpenCode's background service keeps an environment of its own, so its configuration
 goes there, through the opencode CLI. Codex has no
 settings file and no background service, but loads a dotenv file, ~/.codex/.env, on
