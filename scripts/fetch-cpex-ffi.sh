@@ -108,6 +108,16 @@ if [[ -f "$CPEX_FFI_DEST/VERSION" && -f "$CPEX_FFI_DEST/FFI_ABI" && -f "$CPEX_FF
     exit 0
 fi
 
+# Replace only a directory this script created: one with .pinned-sha256,
+# or an empty one. Anything else at that path is not ours to delete.
+if [[ -e "$CPEX_FFI_DEST" || -L "$CPEX_FFI_DEST" ]]; then
+    [[ -d "$CPEX_FFI_DEST" && ! -L "$CPEX_FFI_DEST" ]] ||
+        err "CPEX_FFI_DEST $CPEX_FFI_DEST exists and is not a directory; refusing to replace it"
+    if [[ ! -f "$CPEX_FFI_DEST/.pinned-sha256" && -n "$(ls -A "$CPEX_FFI_DEST")" ]]; then
+        err "CPEX_FFI_DEST $CPEX_FFI_DEST is not empty and holds no .pinned-sha256, so this script did not create it; refusing to replace it (remove it, or pick another CPEX_FFI_DEST)"
+    fi
+fi
+
 # Clear the destination now, so a failure below cannot leave an older or
 # unverified library in place.
 rm -rf "$CPEX_FFI_DEST"
