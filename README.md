@@ -99,6 +99,8 @@ binaries. [Remove it](./docs/laptop-service.md#remove-it) has the details.
 - [Running Cortex](./docs/laptop-service.md) — the service, how sessions are grouped,
   troubleshooting
 - [agentop](./cmd/agentop/README.md) — every pane, key and command
+- [Run an agent on a local model](./docs/laptop-local-model.md) — Ollama on
+  your laptop, for when a provider is out or you want the traffic local
 - [Pricing](./docs/pricing.md) — rates, gateway discounts, unpriced traffic
 - [Full install guide](https://www.rossoctl.dev/docs/dev/get-started/laptop) —
   prerequisites and a walkthrough. Ending the install command in `sh -s -- --help`

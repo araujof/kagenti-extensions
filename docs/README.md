@@ -11,6 +11,7 @@ holds the repo-level pieces; this file is the index.
 | Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [any other agent](agents/any-agent.md) |
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
+| Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Export sessions to files | [`session-dump.md`](session-dump.md) |
 
