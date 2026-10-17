@@ -95,6 +95,10 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
+	if name == ownProvider {
+		fmt.Fprintf(stderr, "agentop server add: %q is reserved: agentop server move <session-id> %s sends a session to its own provider\n", name, ownProvider)
+		return 2
+	}
 	// ParseURL's error, never rawURL: a refused URL may carry a key anywhere in it,
 	// and ParseURL's errors quote no part of the URL.
 	ep, err := routerconfig.ParseURL(rawURL)
@@ -536,6 +540,10 @@ func configuredServers(c routerconfig.Config) string {
 	return "; configured: " + strings.Join(slices.Sorted(maps.Keys(c.Servers)), ", ")
 }
 
+// ownProvider is the word serverMove takes for a session's own provider, so no
+// server may be added under it.
+const ownProvider = "own"
+
 // serverMove moves one running session to a server, or stops routing it with
 // "own". Unlike use and reset, this moves the session the user named, not the
 // agent's next one.
@@ -555,7 +563,7 @@ func serverMove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
 		return 2
 	}
-	if server == "own" {
+	if server == ownProvider {
 		server = ""
 	} else if err := routerconfig.CheckName(server); err != nil {
 		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
@@ -583,7 +591,7 @@ func serverMove(args []string, stdout, stderr io.Writer) int {
 		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
 	}
 	changes := servers.SessionChanges(sid, server)
-	changes = append(changes, pruneFrom(sessionsURL, c)...)
+	changes = append(changes, pruneFrom(sessionsURL, c, sid)...)
 	name := server
 	if name == "" {
 		name = "its own provider"
@@ -627,7 +635,7 @@ func moveNote(sessionsURL, sid, server string) string {
 // session API no longer lists — inert config a move left behind. Nothing when the
 // API cannot be read: a live session must never lose its override to a blind
 // prune.
-func pruneFrom(sessionsURL string, c routerconfig.Config) []edit.ConfigChange {
+func pruneFrom(sessionsURL string, c routerconfig.Config, moved string) []edit.ConfigChange {
 	if sessionsURL == "" {
 		return nil
 	}
@@ -640,7 +648,7 @@ func pruneFrom(sessionsURL string, c routerconfig.Config) []edit.ConfigChange {
 	if err != nil {
 		return nil
 	}
-	live := map[string]bool{}
+	live := map[string]bool{moved: true}
 	for _, s := range list.Sessions {
 		live[s.ID] = true
 	}

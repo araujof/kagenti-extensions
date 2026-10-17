@@ -121,6 +121,26 @@ func (p *Router) keepOrigin(pctx *pipeline.Context, key, v string) {
 	}
 }
 
+// renewOrigin keeps pctx's session's recorded origin, if it has one, for another
+// pinTTL.
+func (p *Router) renewOrigin(pctx *pipeline.Context) {
+	key := originKey(pctx)
+	if key == "" {
+		return
+	}
+	if p.store != nil {
+		if err := p.store.Expire(context.Background(), key, pinTTL); err != nil {
+			slog.Warn("inference-router: could not renew a session's reasoning origin", "error", err)
+		}
+		return
+	}
+	if pctx.Shared != nil {
+		if v, ok := pctx.Shared.Get(key); ok {
+			pctx.Shared.Put(key, v, pinTTL)
+		}
+	}
+}
+
 // hasPriorRequests reports whether the session's recorded history holds an
 // earlier inference request of its agent's. Requests the router itself skipped
 // are recorded too, so a session that ran on its own provider counts. Read once
@@ -153,15 +173,23 @@ func (p *Router) hasPriorPin(pctx *pipeline.Context, key string) bool {
 	return had
 }
 
+// leaveServer records that pctx's session moved off a server to its own provider,
+// whose reasoning its history now carries.
+func (p *Router) leaveServer(pctx *pipeline.Context) {
+	if key := originKey(pctx); key != "" {
+		p.keepOrigin(pctx, key, originForeign)
+	}
+}
+
 // stripForeign drops the reasoning a request carries that its target cannot have
 // produced, and records the target as the session's reasoning origin. It runs only
 // where the router applied a server (Redirected). A session new to routing — no
 // origin recorded, no pin, no reasoning in its body — records the target and
-// strips nothing; any other first routed request strips, and once a session's target
-// has differed from its recorded origin the origin is foreign for good and every
-// switched request strips, the target's own reasoning included: a server that
-// cannot verify foreign blocks may not get them, and one that can loses only
-// reasoning text, which no measured continuation needed.
+// strips nothing; once a session's target has differed from its recorded origin
+// the origin is foreign for good and every switched request strips, the target's
+// own reasoning included: a server that cannot verify foreign blocks may not get
+// them, and one that can loses only reasoning text, which no measured continuation
+// needed.
 func (p *Router) stripForeign(pctx *pipeline.Context, server string, prior pinning) {
 	// Redirected, not switched: a moved session's client asks its own provider,
 	// which after the move is the target's own host, and a same-host redirect is
@@ -177,6 +205,12 @@ func (p *Router) stripForeign(pctx *pipeline.Context, server string, prior pinni
 	origin := p.origin(pctx, key)
 	if origin == server {
 		return // steady state, the common case: no body is parsed
+	}
+	if origin == "" && prior.state == pinExisting {
+		// The agent's pin names the target and no move recorded an origin, so the
+		// session's reasoning is the target's own.
+		p.keepOrigin(pctx, key, server)
+		return
 	}
 	body, dropped := stripReasoning(pctx.Body)
 	if origin == "" {

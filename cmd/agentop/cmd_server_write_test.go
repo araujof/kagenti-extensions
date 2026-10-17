@@ -1004,3 +1004,37 @@ func TestServerMove_PruneKeepsAnArchivedSession(t *testing.T) {
 		t.Errorf("the prune kept a dead session's override:\n%s", cfg)
 	}
 }
+
+// A session that already holds an entry but that the listing does not show —
+// the archive off, or the session not seen since a restart — keeps the entry this
+// move writes: the prune must not remove it after the move sets it.
+func TestServerMove_PruneSparesTheMovedSession(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443") // lists s0, not moved
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            moved: glm\n            dead: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "moved", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "moved: ete") {
+		t.Errorf("the prune removed the moved session's entry:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "dead:") {
+		t.Errorf("the prune kept a dead session's override:\n%s", cfg)
+	}
+}
+
+// A server named own could not be reached by `server move <id> own`, so add refuses
+// the name.
+func TestServerAdd_RefusesTheNameOwn(t *testing.T) {
+	asked := stubKeyPrompt(t, "sk")
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	code, _, errOut := runServerCmd(t, "", "add", "own", "https://own.example.com", "--main", "opus", "--helper", "haiku", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "reserved") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if *asked != "" {
+		t.Error("asked for a key for a server named own")
+	}
+}

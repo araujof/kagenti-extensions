@@ -325,9 +325,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		// nothing it does applies — moves no pin: the pin the move would replace
 		// stands until enforce is back. This branch returns before any redirect, so
 		// it reads the policy itself.
-		if pin.state == pinMoved && pctx.Observing() {
+		switch {
+		case pin.state == pinMoved && pctx.Observing():
 			pin.forgo()
-		} else {
+		case pin.state == pinMoved:
+			p.leaveServer(pctx)
+			pin.settle("")
+		default:
 			pin.settle("")
 		}
 		details := map[string]string{"pin": pin.state}
@@ -503,6 +507,7 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 			switch {
 			case pn.server == over:
 				state = pinExisting
+				p.keepPin(pctx, store, key, pn)
 			case pn.server != over:
 				state = pinMoved
 			}
@@ -514,7 +519,7 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 			server, _, _, _ := p.unpinned(pctx, agent, choice, captured)
 			return server, pinning{state: pinNone, read: true}
 		}
-		store.keep(key, pn)
+		p.keepPin(pctx, store, key, pn)
 		return pn.server, pinning{state: pinExisting}
 	}
 	server, turn, decides, history := p.unpinned(pctx, agent, choice, captured)
@@ -522,6 +527,14 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		return server, pinning{state: pinNone, turn: turn, history: history, read: true}
 	}
 	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn, history: history, read: true}
+}
+
+// keepPin renews the session's pin and, with it, its reasoning origin, which must
+// not expire under a pin its session keeps alive.
+func (p *Router) keepPin(pctx *pipeline.Context, store pins, key string, pn pin) {
+	if store.keep(key, pn) {
+		p.renewOrigin(pctx)
+	}
 }
 
 // overrideFor is the sessions: entry for pctx's session, when one names it. A

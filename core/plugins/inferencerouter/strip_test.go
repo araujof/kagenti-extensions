@@ -361,3 +361,83 @@ func TestRouter_AMovedPinlessSessionWhoseFirstRoutedRequestIsAOneShotSeedsForeig
 	run(t, after, next)
 	assertAnyRecord(t, next, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
 }
+
+// A session its agent pinned to the target, with no origin recorded — pinned
+// before origins were, or its origin expired under a pin every request renews —
+// has only ever run on that server: the reasoning in its body is the target's own,
+// and nothing strips it. Both ways a request can find that pin.
+func TestRouter_APinnedSessionWithNoOriginKeepsItsOwnReasoning(t *testing.T) {
+	for _, tc := range []struct{ name, config string }{
+		{"its pin", routerConfig(`"claude-code": "glm"`)},
+		{"an override naming its pin", sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			first := request(store, eteHost, claudeUA, "s1")
+			first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+			run(t, build(t, routerConfig(`"claude-code": "glm"`)), first)
+			store.Delete(originPrefix + "s1")
+
+			second := request(store, eteHost, claudeUA, "s1")
+			second.Body = anthropicBodyWithThinking()
+			run(t, build(t, tc.config), second)
+			assertNoInvocation(t, second, "reasoning_stripped")
+			if v, _ := store.Get(originPrefix + "s1"); v != "glm" {
+				t.Errorf("origin = %v, want glm", v)
+			}
+		})
+	}
+}
+
+// A pin to another server is no provenance for the target: a session moved off it
+// with no origin recorded still strips.
+func TestRouter_AMovedSessionWithNoOriginStrips(t *testing.T) {
+	store := newStore(t)
+	run(t, build(t, routerConfig(`"claude-code": "glm"`)), request(store, eteHost, claudeUA, "s1"))
+	store.Delete(originPrefix + "s1")
+
+	pctx := request(store, eteHost, claudeUA, "s1")
+	pctx.Body = anthropicBodyWithThinking()
+	run(t, build(t, sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)), pctx)
+	assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
+}
+
+// A session moved to its own provider and back carries that provider's signed
+// thinking: the return strips it, whichever server the session returns to.
+func TestRouter_AMoveToOwnAndBackStripsTheProvidersReasoning(t *testing.T) {
+	for _, back := range []string{"ete", "glm"} {
+		t.Run(back, func(t *testing.T) {
+			store := newStore(t)
+			first := request(store, "api.anthropic.com", claudeUA, "s1")
+			first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+			run(t, build(t, routerConfig(`"claude-code": "ete"`)), first)
+
+			mid := request(store, "api.anthropic.com", claudeUA, "s1")
+			mid.Body = anthropicBodyWithThinking()
+			run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": ""`)), mid)
+			assertUntouched(t, mid, "api.anthropic.com")
+			if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
+				t.Errorf("origin after the move to own = %v, want %q", v, originForeign)
+			}
+
+			last := request(store, "api.anthropic.com", claudeUA, "s1")
+			last.Body = anthropicBodyWithThinking()
+			run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": "`+back+`"`)), last)
+			assertAnyRecord(t, last, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
+		})
+	}
+}
+
+// Under observe a move to own moves nothing, so it records no origin either.
+func TestRouter_UnderObserveAMoveToOwnRecordsNoOrigin(t *testing.T) {
+	store := newStore(t)
+	first := request(store, eteHost, claudeUA, "s1")
+	first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+	run(t, build(t, routerConfig(`"claude-code": "ete"`)), first)
+
+	mid := request(store, eteHost, claudeUA, "s1")
+	run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": ""`), pipeline.WithPolicies(pipeline.ErrorPolicyObserve)), mid)
+	if v, _ := store.Get(originPrefix + "s1"); v != "ete" {
+		t.Errorf("origin = %v, want ete: observe moves nothing", v)
+	}
+}
