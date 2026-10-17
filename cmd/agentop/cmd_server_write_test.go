@@ -1038,3 +1038,23 @@ func TestServerAdd_RefusesTheNameOwn(t *testing.T) {
 		t.Error("asked for a key for a server named own")
 	}
 }
+
+// A listing that holds no session at all — the archive off after a restart, or
+// just cleared — sees nothing dead: the move prunes no other session's entry,
+// whose move may not have taken effect yet.
+func TestServerMove_AnEmptyListingPrunesNothing(t *testing.T) {
+	sessions := serveSessions(t, session.New(0, 0, 0))
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            pending: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "moved", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "pending: glm") {
+		t.Errorf("an empty listing pruned another session's override:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "moved: ete") {
+		t.Errorf("config:\n%s", cfg)
+	}
+}

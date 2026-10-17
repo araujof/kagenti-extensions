@@ -648,6 +648,9 @@ func pruneFrom(sessionsURL string, c routerconfig.Config, moved string) []edit.C
 	if err != nil {
 		return nil
 	}
+	if len(list.Sessions) == 0 {
+		return nil
+	}
 	live := map[string]bool{moved: true}
 	for _, s := range list.Sessions {
 		live[s.ID] = true
