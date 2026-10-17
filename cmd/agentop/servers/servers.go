@@ -96,12 +96,15 @@ func AgentChanges(agent, server string) []edit.ConfigChange {
 // stop routing it: the changes `agentop server move` and the TUI's S picker on a
 // session row make. Unlike AgentChanges there are no retired spellings to fold:
 // a session id is opaque. Per-key, for the same reason AgentChanges is.
+//
+// "" IS A VALUE, NOT A REMOVAL: the entry must stay, because the session's pin
+// would otherwise route it right back — the pin the move (or the routing the user
+// is undoing) settled. The entry is inert once the pin matches it.
 func SessionChanges(session, server string) []edit.ConfigChange {
-	c := edit.ConfigChange{Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", session}}
-	if server != "" {
-		c.Value = edit.ScalarValue(server)
-	}
-	return []edit.ConfigChange{c}
+	return []edit.ConfigChange{{
+		Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", session},
+		Value: edit.ScalarValue(server),
+	}}
 }
 
 // PruneSessions is the removals for every sessions: override whose session is

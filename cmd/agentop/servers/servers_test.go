@@ -176,10 +176,12 @@ func TestSessionChanges(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SessionChanges = %+v, want %+v", got, want)
 	}
-	// "" removes the entry: the session goes where the client sent it.
+	// "" is a value, not a removal: the entry must stay, or the session's pin
+	// would route it right back.
 	got = SessionChanges("s1", "")
 	want = []edit.ConfigChange{{
 		Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", "s1"},
+		Value: edit.ScalarValue(""),
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SessionChanges(\"\") = %+v, want %+v", got, want)

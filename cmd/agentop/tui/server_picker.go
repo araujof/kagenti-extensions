@@ -222,10 +222,17 @@ func (m *model) openSessionServerPicker() tea.Cmd {
 	if summary != nil && summary.PromptContext != nil {
 		p.sessionTokens = summary.PromptContext.Tokens
 	}
+	// What is in force: the override's server when one names the session, else the
+	// server the session's inference actually went to — so Enter on the opening is
+	// a no-op, never an accidental unroute of a running session.
+	inForce := router.Sessions[id]
+	if inForce == "" && summary != nil {
+		inForce, _ = servers.ForHost(router, summary.InferenceHost)
+	}
 	for _, name := range slices.Sorted(maps.Keys(router.Servers)) {
 		s := router.Servers[name]
 		p.entries = append(p.entries, serverChoice{name: name, host: servers.Host(s), mapping: servers.Mapping(s)})
-		if router.Sessions[id] == name {
+		if name == inForce {
 			p.cursor = len(p.entries) - 1
 		}
 	}

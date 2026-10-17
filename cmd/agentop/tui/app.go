@@ -2290,7 +2290,7 @@ func (m *model) View() string {
 	if m.serverPicker != nil && (m.pane == paneAgents || m.pane == paneSessions) {
 		return overlayCenter(base, renderServerPicker(m.serverPicker, m.width), m.width, m.height)
 	}
-	if m.serverNotice != "" && m.pane == paneAgents {
+	if m.serverNotice != "" && (m.pane == paneAgents || m.pane == paneSessions) {
 		return overlayCenter(base, renderServerNotice(m.serverNotice, m.width), m.width, m.height)
 	}
 	// Same paneEvents scoping as the key block: an async pane change must not leave

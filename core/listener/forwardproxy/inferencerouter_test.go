@@ -355,4 +355,21 @@ func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
 	if got := turn("running"); got != "FROM-GLM" {
 		t.Fatalf("post-override turn reached %q, want glm: the pin must follow the move", got)
 	}
+
+	// own: the entry STAYS as "" — removing it would let the pin route the session
+	// right back — and the next request goes where the client sent it, unstripped.
+	if err := router.Configure(json.RawMessage(`{
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
+		"agents": {"claude-code": "ete"},
+		"sessions": {"running": ""}
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if got := turn("running"); got != "FROM-ETE" {
+		t.Fatalf("own turn reached %q, want ete: the empty entry must stop the routing", got)
+	}
+	if body := ete.lastBody(); !strings.Contains(body, `"thinking"`) {
+		t.Errorf("ete's own turn lost its thinking blocks: %s", body)
+	}
 }

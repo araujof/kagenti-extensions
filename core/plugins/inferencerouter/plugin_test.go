@@ -1129,3 +1129,52 @@ func TestRouter_AnOverrideBeatsAnotherAgentsPin(t *testing.T) {
 		t.Errorf("pin = %q, want ete", pin)
 	}
 }
+
+// A sessions: override reaches a request whose agent is not routed and whose
+// session holds no pin: the move is the user's instruction, and capture must not
+// strand it because no agents: entry names the agent.
+func TestRouter_AnOverrideReachesAnUnroutedAgentsCapturedRequest(t *testing.T) {
+	store := newStore(t)
+	p := build(t, sessionsConfig(``, `"s1": "glm"`))
+	pctx := request(store, "api.anthropic.com", claudeUA, "s1") // no server's host: captured
+	run(t, p, pctx)
+	assertRouted(t, pctx, glmHost, "glm-key")
+	d := detailsOf(t, pctx, "routed")
+	if d["captured"] != "/v1/messages" {
+		t.Errorf("captured = %q, want /v1/messages", d["captured"])
+	}
+	if pin, _ := pinOf(t, store, "s1"); pin != "glm" {
+		t.Errorf("pin = %q, want glm", pin)
+	}
+}
+
+// Under observe an override moves no pin: nothing moves under observe, and a pin
+// the override would have moved must survive it intact.
+func TestRouter_UnderObserveAnOverrideMovesNoPin(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": "ete"`),
+		pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	pctx := request(store, eteHost, claudeUA, "running")
+	run(t, after, pctx)
+	assertUntouched(t, pctx, eteHost)
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Errorf("pin = %q, want glm: observe must not move it", pin)
+	}
+}
+
+// detailsOf is the Details of the router's invocation with reason, scanned from
+// all of them: the routed record is appended after the strip's, so the last one
+// alone cannot be read.
+func detailsOf(t *testing.T, pctx *pipeline.Context, reason string) map[string]string {
+	t.Helper()
+	for _, inv := range pctx.Extensions.Invocations.Outbound {
+		if inv.Plugin == Name && inv.Reason == reason {
+			return inv.Details
+		}
+	}
+	t.Fatalf("no %s invocation", reason)
+	return nil
+}

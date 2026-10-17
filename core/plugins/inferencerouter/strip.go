@@ -121,6 +121,24 @@ func (p *Router) keepOrigin(pctx *pipeline.Context, key, v string) {
 	}
 }
 
+// hasPriorPin reports whether the session holds any pin at all, its agent's or
+// another's, "not routed" included. Such a session had requests before this one,
+// so the reasoning in its history came from somewhere other than the target; a
+// session with no pin is the only one whose history cannot hold reasoning from a
+// life the router saw.
+func (p *Router) hasPriorPin(pctx *pipeline.Context, key string) bool {
+	_, id, ok := strings.Cut(key, originPrefix)
+	if !ok {
+		return false
+	}
+	store := p.pinsFor(pctx)
+	if store == nil {
+		return false
+	}
+	_, had := store.load(pinPrefix + id)
+	return had
+}
+
 // stripForeign drops the reasoning a request carries that its target cannot have
 // produced, and records the target as the session's reasoning origin. It runs only
 // where the router applied a server (Redirected), for a session's
@@ -145,6 +163,12 @@ func (p *Router) stripForeign(pctx *pipeline.Context, server string) {
 		if origin == server {
 			return
 		}
+		p.keepOrigin(pctx, key, originForeign)
+	} else if p.hasPriorPin(pctx, key) {
+		// A session with a pin has a prior inference life the router saw: unrouted,
+		// on the client's own provider, with that provider's signed reasoning in its
+		// history. Seeding the origin with the target would never strip it, and a
+		// target that cannot verify foreign blocks would refuse it for good.
 		p.keepOrigin(pctx, key, originForeign)
 	} else {
 		p.keepOrigin(pctx, key, server)

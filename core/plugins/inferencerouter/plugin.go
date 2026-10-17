@@ -308,7 +308,10 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	addressed := p.byHost[routerconfig.Key(pctx.Host)] // the server the request named, "" for none
 	if _, ok := p.byHost[routerconfig.Key(pctx.Host)]; !ok {
 		path, ok := capture(pctx)
-		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx)) {
+		// A sessions: override admits the capture too: the move is the user's
+		// instruction, and it must reach a session whose agent is not routed and
+		// holds no pin, which no other rule would route.
+		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
 			pctx.Skip("not_an_inference_server")
 			return cont
 		}
@@ -355,8 +358,14 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// redirect: a pipeline admits one WritesDestination plugin.
 	if !pctx.Redirected() {
 		// The request stayed put, so that is what a first request pins: a session that
-		// started under observe stays put once enforce is on.
-		pin.settle("")
+		// started under observe stays put once enforce is on. A session an override
+		// would have moved keeps its pin instead: nothing moved — this is observe —
+		// and the pin is the state the move, once enforce is on, will replace.
+		if pin.state == pinMoved {
+			pin.forgo()
+		} else {
+			pin.settle("")
+		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
 	}
@@ -433,7 +442,7 @@ func (pn *pinning) settle(server string) {
 // forgo leaves a session unpinned after a first request that went nowhere, so its
 // next request decides again. A session already pinned keeps its pin.
 func (pn *pinning) forgo() {
-	if pn.state == pinNew {
+	if pn.state == pinNew || pn.state == pinMoved {
 		pn.state = pinNone
 	}
 }
@@ -509,6 +518,14 @@ func (p *Router) overrideFor(pctx *pipeline.Context) (string, bool) {
 	}
 	over, ok := p.sessions[pctx.Session.ID]
 	return over, ok
+}
+
+// overrideRoutes reports whether a sessions: entry moves pctx's session to a
+// server. An entry to "" stops routing the session, which no capture needs: the
+// request is already going where the client sent it.
+func (p *Router) overrideRoutes(pctx *pipeline.Context) bool {
+	over, ok := p.overrideFor(pctx)
+	return ok && over != ""
 }
 
 // pinnedToServer reports whether pctx's session holds its agent's pin to a server.

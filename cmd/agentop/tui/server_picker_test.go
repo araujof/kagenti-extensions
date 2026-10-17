@@ -758,7 +758,9 @@ func TestServerPicker_EnterOnAServerMovesTheSession(t *testing.T) {
 	if m.serverPicker == nil {
 		t.Fatalf("no picker; flash %q", m.flash)
 	}
-	m.handleKey(keyDown) // own choice → ete: the first server by name
+	// The picker opens on glm, the server on-glm's inference went to (not own
+	// choice: Enter there must be a no-op), so ete is one up.
+	m.handleKey(keyUp)
 	cmd := m.handleKey(keyEnter)
 	if cmd == nil {
 		t.Fatalf("↵ started no write; flash %q", m.flash)
@@ -804,5 +806,42 @@ func TestServerPicker_AMoveStatesTheUncachedContext(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "81234 tokens of its context go uncached") {
 		t.Errorf("the picker states no cache cost:\\n%s", m.View())
+	}
+}
+
+// A refusal landing on the sessions pane is drawn there: an invisible modal that
+// eats keys would look like a frozen pane.
+func TestServerPicker_ARefusalShowsOnTheSessionsPane(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	m.sessions = append(m.sessions, session.SessionSummary{ID: session.DefaultSessionID, Agent: "claude-code"})
+	m.rebuildSessionsTable()
+	onSessionRow(t, m, session.DefaultSessionID)
+	m.handleKey(keyRune('S'))
+	if m.serverPicker != nil {
+		t.Fatalf("the default bucket opened a picker")
+	}
+	if m.serverNotice == "" {
+		t.Fatalf("no notice; flash %q", m.flash)
+	}
+	if !strings.Contains(m.View(), "synthetic session") {
+		t.Errorf("the notice is not drawn on the sessions pane:\n%s", m.View())
+	}
+}
+
+// The picker opens on the server the session actually uses — its inference host —
+// not on own choice, when no override names it. Enter on the opening must be a
+// no-op, not an accidental unroute.
+func TestServerPicker_OpensOnTheSessionInForceServer(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	onSessionRow(t, m, "on-glm") // inference went to glm.example.com:8443
+	m.handleKey(keyRune('S'))
+	p := m.serverPicker
+	if p == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	if got := p.entries[p.cursor].name; got != "glm" {
+		t.Errorf("cursor on %q, want glm: the server the session uses", got)
 	}
 }

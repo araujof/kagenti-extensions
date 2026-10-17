@@ -263,6 +263,17 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
 		return 1
 	}
+	if moved := sessionsOn(c, name); len(moved) > 0 {
+		// Not rewritten to "": a remove the user asked for should not edit the
+		// moves they made, and a config that names no listed server cannot reload —
+		// or, with the proxy stopped, start.
+		fmt.Fprintf(stderr, "agentop server remove: %d %s moved to %s; stop routing %s with:\n",
+			len(moved), sessionWord(len(moved)), name, moved[0])
+		for _, id := range moved {
+			fmt.Fprintf(stderr, "  agentop server move %s own\n", id)
+		}
+		return 1
+	}
 	if len(agents) > 0 {
 		var other string
 		for _, s := range slices.Sorted(maps.Keys(c.Servers)) {
@@ -330,6 +341,26 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 		}
 	}
 	return n
+}
+
+// sessionsOn is the session ids whose sessions: entry names server, sorted.
+func sessionsOn(c routerconfig.Config, server string) []string {
+	var out []string
+	for id, s := range c.Sessions {
+		if s == server {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// sessionWord is "session" or "sessions", for a count.
+func sessionWord(n int) string {
+	if n == 1 {
+		return "session"
+	}
+	return "sessions"
 }
 
 // runningSessions is "1 running session" or "n running sessions".
@@ -602,12 +633,15 @@ func pruneFrom(sessionsURL string, c routerconfig.Config) []edit.ConfigChange {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	list, err := apiclient.New(sessionsURL).ListSessions(ctx)
+	// THE ARCHIVED LIST, not the live one: a session the archive holds — evicted
+	// from memory, or resumed after a restart — still has its pin, kept in the
+	// plugin store, so its override must survive the prune too.
+	list, err := apiclient.New(sessionsURL).ListSessionsArchived(ctx)
 	if err != nil {
 		return nil
 	}
 	live := map[string]bool{}
-	for _, s := range list {
+	for _, s := range list.Sessions {
 		live[s.ID] = true
 	}
 	return servers.PruneSessions(c, live)

@@ -247,3 +247,26 @@ func assertNoInvocation(t *testing.T, pctx *pipeline.Context, reason string) {
 		}
 	}
 }
+
+// A session that ran unrouted — pinned "", on the client's own provider, its
+// history carrying that provider's signed thinking — strips on its first routed
+// request: the first-recorded rule would seed the origin with the target and never
+// strip, so a strict target 403s forever. A session with a pin has a prior
+// inference life; only one with no pin at all is new.
+func TestRouter_AMovedUnroutedSessionStrips(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(``)) // no agent routed: the session pins ""
+	run(t, before, request(store, eteHost, claudeUA, "s1"))
+	if pin, _ := pinOf(t, store, "s1"); pin != "" {
+		t.Fatalf("pin = %q, want not routed", pin)
+	}
+
+	after := build(t, sessionsConfig(``, `"s1": "ete"`))
+	pctx := request(store, eteHost, claudeUA, "s1")
+	pctx.Body = anthropicBodyWithThinking()
+	run(t, after, pctx)
+	assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
+	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
+		t.Errorf("origin = %v, want %q", v, originForeign)
+	}
+}

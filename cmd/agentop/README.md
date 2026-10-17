@@ -606,8 +606,9 @@ In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
 On the sessions pane, `S` moves the highlighted session to a server (or to its own
 provider), confirming what the move costs first: the session's context is re-sent
-uncached on its first turn at the new server. A move also prunes the config's
-`sessions:` entries for sessions that are neither live nor archived.
+uncached on its first turn at the new server. A `server move` from the shell also
+prunes the config's `sessions:` entries for sessions that are neither live nor
+archived; the TUI's move does not.
 
 The listing after `use` reads:
 
