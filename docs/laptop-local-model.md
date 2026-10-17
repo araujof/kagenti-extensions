@@ -30,8 +30,9 @@ Two things to know before starting:
 | macOS | the app from [ollama.com/download](https://ollama.com/download) |
 | Linux | `curl -fsSL https://ollama.com/install.sh \| sh` |
 
-Start Ollama — the macOS app does this at login; on Linux, `ollama serve` or
-the service the installer sets up — and pull the model:
+Start Ollama — the macOS app does this at login, and on Linux the installer
+starts an `ollama` service (where there is no systemd, run `ollama serve`) —
+and pull the model:
 
 ```sh
 ollama pull granite4.2:8b      # a 5.3 GB download
@@ -50,19 +51,34 @@ translation gateway between.
 
 ### Context length
 
-This is the one setting that matters. A fresh Ollama install runs every model
-in a **4096-token window**, whatever
-the model declares, and does not refuse a prompt too large for the window: it
-trims it silently. Claude Code's opening turn can pass 64k tokens, so routed
-to an unconfigured Ollama its instructions would be cut down with no error
-anywhere — the agent would simply behave strangely, and nothing would say why.
+This is the one setting that matters. Ollama does not refuse a prompt too
+large for its window: it trims it silently. And a fresh install does not give
+a model its own window. It picks one from the GPU memory it finds — **4k
+below about 24 GB, 32k below about 48 GB**, the model's full window only
+above that. On Apple silicon that is part of the unified memory: a 64 GB Mac
+reports 51.8 GB. Claude Code's opening turn can pass 64k tokens, so routed
+to an Ollama that picked 4k or 32k its instructions would be cut down with
+no error anywhere — the agent would simply behave strangely, and nothing
+would say why.
 
-Raise the window to the model's full 131k and restart the server:
+Set the window to the model's full 131k where the server is started:
 
-```sh
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072    # the macOS app; restart it after
-OLLAMA_CONTEXT_LENGTH=131072 ollama serve        # or a server run from a shell
-```
+- **The macOS app:** Settings → Context length → 128k, the slider's name for
+  131072. The app restarts its server when the value changes. Use the slider
+  rather than `launchctl setenv`: the app overrides `OLLAMA_CONTEXT_LENGTH`
+  with the slider's value once the slider has been set, and `launchctl
+  setenv` does not survive a reboot.
+- **The Linux service the installer set up:** it already holds port 11434,
+  so a second `ollama serve` cannot start. Set the variable on the service:
+  run `sudo systemctl edit ollama.service`, add
+
+  ```ini
+  [Service]
+  Environment="OLLAMA_CONTEXT_LENGTH=131072"
+  ```
+
+  where the editor says, save, then `sudo systemctl restart ollama`.
+- **A server run from a shell:** `OLLAMA_CONTEXT_LENGTH=131072 ollama serve`.
 
 Then check what actually loaded. With the model running, `ollama ps` shows
 the window in its CONTEXT column — that is the truth, whatever was
@@ -103,9 +119,13 @@ agentop server use ollama --agent claude-code
 - `--main` and `--helper` are model words. `add` reads the server's model
   list and refuses a word that names none of its models — which is also what
   catches a wrong URL, or a server that is not running. A word names the
-  newest model whose name contains it; the full tag pins the exact one.
-  `main` is sent for a request with tools, the agent's main work; `helper`
-  for one without, such as a title.
+  newest model whose name contains it, judged by the numbers in the name, so
+  give the full tag: a bare `granite` names granite3.3 if that is pulled too.
+  Even the full tag only matches, and pulling another tag of the model, such
+  as `granite4.2:8b-q8_0`, can move it there. `add` prints what each word
+  names — `main granite4.2:8b → granite4.2:8b` — and `agentop server` shows
+  it again at any time. `main` is sent for a request with tools, the agent's
+  main work; `helper` for one without, such as a title.
 - `--agent` takes the name agentop shows the agent — `agentop configure
   status` lists yours. In the TUI, `S` on the agents pane makes the same
   choice.
@@ -127,10 +147,12 @@ server](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
   word's model: one refused round trip, then the substitute is remembered
   for an hour and sent from the start, and the session keeps the model it
   was given.
-- **Where it shows.** agentop's sessions table carries a `SERVER` column
-  naming where each session's inference went; the detail pane's `redirected:`
-  and `model:` lines name the host and the model the agent asked for when
-  they were others.
+- **Where it shows.** agentop's agents pane carries a `SERVER` column naming
+  the server each agent's new sessions go to. The sessions table gains one,
+  naming where each session's inference went, once more than one server is
+  configured and where the terminal has room for it. The detail pane's
+  `redirected:` and `model:` lines name the host and the model the agent
+  asked for when they were others.
 - **What it costs.** Tokens are counted as for any server, and the model
   reports unpriced until you give it a rate ([pricing](pricing.md)) — a
   local model's marginal cost is electricity.
