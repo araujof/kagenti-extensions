@@ -319,8 +319,11 @@ func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
 	if got := turn("running"); got != "FROM-ETE" {
 		t.Fatalf("first turn reached %q, want ete", got)
 	}
-	if body := ete.lastBody(); !strings.Contains(body, `"thinking"`) {
-		t.Errorf("ete's first turn lost the thinking block before any move: %s", body)
+	// The first turn is stripped: it is this session's first routed request, it
+	// holds no pin and no origin, and its body carries a signed thinking block the
+	// router never saw produced.
+	if body := ete.lastBody(); strings.Contains(body, `"thinking"`) {
+		t.Errorf("ete's first turn carried thinking blocks the router never saw produced: %s", body)
 	}
 
 	// agentop server move: one reload, the agents choice unchanged, a sessions:

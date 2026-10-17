@@ -121,6 +121,20 @@ func (p *Router) keepOrigin(pctx *pipeline.Context, key, v string) {
 	}
 }
 
+// hasPriorRequests reports whether the session's recorded history holds an
+// earlier inference request of its agent's. Requests the router itself skipped
+// are recorded too, so a session that ran on its own provider counts. Read once
+// per request, by the unpinned rules, and carried on the pinning; the override
+// path, which decides before those rules run, reads it here — the one archive
+// walk a moved pinless session pays.
+func (p *Router) hasPriorRequests(pctx *pipeline.Context, prior pinning) bool {
+	if prior.read {
+		return prior.history
+	}
+	_, ok := p.wentTo(pctx.Session, agentOf(pctx))
+	return ok
+}
+
 // hasPriorPin reports whether the session holds any pin at all, its agent's or
 // another's, "not routed" included. Such a session had requests before this one,
 // so the reasoning in its history came from somewhere other than the target; a
@@ -141,13 +155,14 @@ func (p *Router) hasPriorPin(pctx *pipeline.Context, key string) bool {
 
 // stripForeign drops the reasoning a request carries that its target cannot have
 // produced, and records the target as the session's reasoning origin. It runs only
-// where the router applied a server (Redirected), for a session's
-// first routed request it records and strips nothing, and once a session's target
+// where the router applied a server (Redirected). A session new to routing — no
+// origin recorded, no pin, no reasoning in its body — records the target and
+// strips nothing; any other first routed request strips, and once a session's target
 // has differed from its recorded origin the origin is foreign for good and every
 // switched request strips, the target's own reasoning included: a server that
 // cannot verify foreign blocks may not get them, and one that can loses only
 // reasoning text, which no measured continuation needed.
-func (p *Router) stripForeign(pctx *pipeline.Context, server string) {
+func (p *Router) stripForeign(pctx *pipeline.Context, server string, prior pinning) {
 	// Redirected, not switched: a moved session's client asks its own provider,
 	// which after the move is the target's own host, and a same-host redirect is
 	// not "switched" — but the reasoning in its history still came from elsewhere.
@@ -159,22 +174,26 @@ func (p *Router) stripForeign(pctx *pipeline.Context, server string) {
 	if key == "" {
 		return
 	}
-	if origin := p.origin(pctx, key); origin != "" {
-		if origin == server {
-			return
-		}
-		p.keepOrigin(pctx, key, originForeign)
-	} else if p.hasPriorPin(pctx, key) {
-		// A session with a pin has a prior inference life the router saw: unrouted,
-		// on the client's own provider, with that provider's signed reasoning in its
-		// history. Seeding the origin with the target would never strip it, and a
-		// target that cannot verify foreign blocks would refuse it for good.
-		p.keepOrigin(pctx, key, originForeign)
-	} else {
-		p.keepOrigin(pctx, key, server)
-		return
+	origin := p.origin(pctx, key)
+	if origin == server {
+		return // steady state, the common case: no body is parsed
 	}
 	body, dropped := stripReasoning(pctx.Body)
+	if origin == "" {
+		// A session with no origin is new only when nothing of a prior life shows:
+		// no pin the router wrote, no reasoning in the body it did not see produced
+		// (a conversation a client carried to a new session id), and no earlier
+		// request in the session's recorded history — which is what a pinless
+		// session that ran on its own provider leaves, its requests skipped at the
+		// capture gate, and the one a reasoning-free one-shot would otherwise hide.
+		// Seeding the origin with the target for any of them would never strip, and
+		// a target that cannot verify foreign blocks would refuse it for good.
+		if !p.hasPriorPin(pctx, key) && dropped == 0 && !p.hasPriorRequests(pctx, prior) {
+			p.keepOrigin(pctx, key, server)
+			return
+		}
+	}
+	p.keepOrigin(pctx, key, originForeign)
 	if dropped == 0 {
 		return
 	}

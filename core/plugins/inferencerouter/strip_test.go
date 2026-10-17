@@ -2,6 +2,7 @@ package inferencerouter
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -130,12 +131,15 @@ func TestStrip_NothingToDropReturnsTheBody(t *testing.T) {
 // These tests drive the whole plugin through build/run, like plugin_test.go does.
 
 // A session's first routed request records the server as its reasoning origin and
-// strips nothing: nothing foreign can be in the history yet.
+// strips nothing — when its body carries no reasoning. A first request CAN carry
+// foreign reasoning (the client's own prior turns, a conversation carried to a new
+// session id), which the pinless-session test covers; this is the genuinely new
+// conversation.
 func TestRouter_AFirstRoutedRequestRecordsItsOrigin(t *testing.T) {
 	store := newStore(t)
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	pctx := request(store, eteHost, claudeUA, "s1")
-	pctx.Body = anthropicBodyWithThinking()
+	pctx.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
 	run(t, p, pctx)
 	if v, ok := store.Get(originPrefix + "s1"); !ok || v != "glm" {
 		t.Errorf("origin = %v %v, want glm", v, ok)
@@ -171,13 +175,14 @@ func TestRouter_AMovedSessionStripsAndGoesForeign(t *testing.T) {
 	assertAnyRecord(t, next, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
 }
 
-// Steady state on one server keeps its own reasoning: the ordinary routed agent
-// keeps its tool loops whole.
+// Steady state on one server keeps its own reasoning: a conversation that began
+// under routing keeps its tool loops whole. Its first request carries no
+// reasoning; the turns after it carry the server's own.
 func TestRouter_SteadyStateKeepsItsOwnReasoning(t *testing.T) {
 	store := newStore(t)
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	first := request(store, eteHost, claudeUA, "s1")
-	first.Body = anthropicBodyWithThinking()
+	first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
 	run(t, p, first)
 	second := request(store, eteHost, claudeUA, "s1")
 	second.Body = anthropicBodyWithThinking()
@@ -269,4 +274,90 @@ func TestRouter_AMovedUnroutedSessionStrips(t *testing.T) {
 	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
 		t.Errorf("origin = %v, want %q", v, originForeign)
 	}
+}
+
+// A session that ran on its own provider and holds no pin — its requests were
+// skipped at the capture gate before anything pinned it — carries that provider's
+// reasoning. Its first routed request strips: reasoning already in a body the
+// router never routed is reasoning it did not see produced. Both formats that
+// carry producer-bound reasoning.
+func TestRouter_AMovedPinlessSessionStrips(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		body []byte
+	}{
+		{"anthropic thinking", "/v1/messages", anthropicBodyWithThinking()},
+		{"responses reasoning", "/v1/responses", []byte(`{"model":"m","input":[
+			{"type":"reasoning","id":"rs_1","encrypted_content":"abc"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"12121"}]},
+			{"role":"user","content":[{"type":"input_text","text":"add 1"}]}]}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			// The prior life: the agent unrouted, its request to its own provider, a
+			// host no server has — skipped before serverFor, so nothing is pinned.
+			before := build(t, routerConfig(``))
+			prior := request(store, "api.anthropic.com", claudeUA, "s1")
+			prior.Path = tc.path
+			run(t, before, prior)
+			if _, had := pinOf(t, store, "s1"); had {
+				t.Fatalf("the prior request pinned the session; this case needs none")
+			}
+
+			after := build(t, sessionsConfig(``, `"s1": "ete"`))
+			pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+			pctx.Path, pctx.Body = tc.path, tc.body
+			run(t, after, pctx)
+			assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
+			if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
+				t.Errorf("origin = %v, want %q", v, originForeign)
+			}
+		})
+	}
+}
+
+// A genuinely new session — no pin, no reasoning in its body — records its target
+// and strips nothing: there is nothing foreign to drop.
+func TestRouter_ANewSessionWithNoReasoningRecordsItsTarget(t *testing.T) {
+	store := newStore(t)
+	p := build(t, sessionsConfig(``, `"s1": "ete"`))
+	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+	pctx.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+	run(t, p, pctx)
+	if v, _ := store.Get(originPrefix + "s1"); v != "ete" {
+		t.Errorf("origin = %v, want ete", v)
+	}
+	assertNoInvocation(t, pctx, "reasoning_stripped")
+}
+
+// A moved pinless session whose first routed request is a one-shot — a title, a
+// classifier, no reasoning in its body — still has a prior life: the provider
+// requests the router skipped are recorded in the session's history. Seeding the
+// origin with the target there would let the conversation's next turn, which does
+// carry the provider's signed thinking, through unstripped, and a strict target
+// would refuse it for good.
+func TestRouter_AMovedPinlessSessionWhoseFirstRoutedRequestIsAOneShotSeedsForeign(t *testing.T) {
+	store := newStore(t)
+	// The prior life: requests to the client's own provider, recorded in the
+	// session's history with their method and path, no pin — the router skipped
+	// them at the capture gate. sent() carries no method or path, and serverOf
+	// needs the capture shape to read a provider request as evidence.
+	prior := sent("api.anthropic.com", claudeUA)
+	prior.HTTPMethod, prior.HTTPPath = http.MethodPost, "/v1/messages"
+
+	after := build(t, sessionsConfig(``, `"s1": "ete"`))
+	pctx := withHistory(request(store, "api.anthropic.com", claudeUA, "s1"), prior)
+	pctx.Body = []byte(`{"model":"claude-haiku-4-5","max_tokens":64,"messages":[{"role":"user","content":"name this conversation"}]}`)
+	run(t, after, pctx)
+	assertNoInvocation(t, pctx, "reasoning_stripped") // nothing to strip in a one-shot
+	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
+		t.Fatalf("origin = %v, want %q: a one-shot must not seed the target", v, originForeign)
+	}
+
+	// The conversation's next turn carries the provider's thinking; it strips.
+	next := withHistory(request(store, "api.anthropic.com", claudeUA, "s1"), prior)
+	next.Body = anthropicBodyWithThinking()
+	run(t, after, next)
+	assertAnyRecord(t, next, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
 }

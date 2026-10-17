@@ -321,7 +321,15 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	name, pin := p.serverFor(pctx, captured != "")
 	if name == "" {
 		// Not routed: the request, its key included, stays exactly as the client sent it.
-		pin.settle("")
+		// An own ("") override that cannot take effect — the router is observing, so
+		// nothing it does applies — moves no pin: the pin the move would replace
+		// stands until enforce is back. This branch returns before any redirect, so
+		// it reads the policy itself.
+		if pin.state == pinMoved && pctx.Observing() {
+			pin.forgo()
+		} else {
+			pin.settle("")
+		}
 		details := map[string]string{"pin": pin.state}
 		if pin.turn != "" {
 			details["turn"] = pin.turn
@@ -382,7 +390,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// changes nothing.
 	p.chooseModel(pctx, name)
 	// Before applyLimits, so limits are fitted to the stripped body.
-	p.stripForeign(pctx, name)
+	p.stripForeign(pctx, name, pin)
 	p.applyLimits(pctx, name, true)
 	pin.settle(name)
 	if addressed != name {
@@ -428,6 +436,13 @@ type pinning struct {
 	// turn is turnContinuation or turnAside when the request's own turn left an
 	// unpinned session unrouted, "" otherwise.
 	turn string
+	// history is whether the session's recorded history holds an earlier inference
+	// request of its agent's — the evidence wentTo read for this request, carried
+	// so the origin decision (stripForeign) needs no second archive walk. read says
+	// the walk happened: false on the override path, which decides before the
+	// unpinned rules run and walks there instead.
+	history bool
+	read    bool
 }
 
 // settle pins a session on its first request to where that request went: server
@@ -496,17 +511,17 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 	}
 	if pn, ok := store.load(key); ok {
 		if !pn.belongsTo(agent) {
-			server, _, _ := p.unpinned(pctx, agent, choice, captured)
-			return server, pinning{state: pinNone}
+			server, _, _, _ := p.unpinned(pctx, agent, choice, captured)
+			return server, pinning{state: pinNone, read: true}
 		}
 		store.keep(key, pn)
 		return pn.server, pinning{state: pinExisting}
 	}
-	server, turn, decides := p.unpinned(pctx, agent, choice, captured)
+	server, turn, decides, history := p.unpinned(pctx, agent, choice, captured)
 	if !decides {
-		return server, pinning{state: pinNone, turn: turn}
+		return server, pinning{state: pinNone, turn: turn, history: history, read: true}
 	}
-	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn}
+	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn, history: history, read: true}
 }
 
 // overrideFor is the sessions: entry for pctx's session, when one names it. A
@@ -555,19 +570,19 @@ func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
 //     routed when it is a subagent's to a server's host. turn names the last two,
 //     for the record.
 //  5. The agent's current choice.
-func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides bool) {
+func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides, history bool) {
 	if choice == "" {
-		return "", "", true
+		return "", "", true, false
 	}
 	if server, ok := p.wentTo(pctx.Session, agent); ok {
-		return server, "", true
+		return server, "", true, true
 	}
 	if pctx.Extensions.Inference == nil {
-		return choice, "", false
+		return choice, "", false, false
 	}
 	switch turnOf(pctx.Extensions.Inference) {
 	case turnContinuation:
-		return "", turnContinuation, true
+		return "", turnContinuation, true, false
 	case turnAside:
 		// A one-shot is sent beside the main conversation and is no part of it, so the
 		// agent's server answering it moves nothing. A subagent's request is a
@@ -575,11 +590,11 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured
 		// Claude Code sent it unless captured: then leaving it would send the user's
 		// credential to the provider the agent was routed away from.
 		if captured || pctx.Extensions.Inference.AgentRole == pipeline.AgentRoleMain {
-			return choice, turnAside, false
+			return choice, turnAside, false, false
 		}
-		return "", turnAside, false
+		return "", turnAside, false, false
 	}
-	return choice, "", true
+	return choice, "", true, false
 }
 
 // turnOf is a Claude Code request's place in its session's conversation, read from

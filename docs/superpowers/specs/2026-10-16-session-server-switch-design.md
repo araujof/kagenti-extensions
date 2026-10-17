@@ -166,7 +166,12 @@ the target — is one value per session in the plugin store
 (`inference-router/origin/<session>`, the pin's TTL, the substitutes'
 pattern):
 
-- A session's first routed request records the target and strips nothing.
+- A session's first routed request records the target and strips nothing, when
+  nothing of a prior life shows: no pin, no reasoning already in the body, and no
+  earlier request in the session's recorded history. A session that ran on its own
+  provider holds no pin — its requests were skipped at the capture gate — so its
+  history and its body are the evidence, and a reasoning-free one-shot must not
+  hide them.
 - A later request whose target differs from the recorded origin strips, and
   sets the origin to a sticky `foreign` sentinel, never again to a server
   name. The client's history never forgets the old server's blocks (see

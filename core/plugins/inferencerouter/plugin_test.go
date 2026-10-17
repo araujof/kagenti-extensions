@@ -1178,3 +1178,20 @@ func detailsOf(t *testing.T, pctx *pipeline.Context, reason string) map[string]s
 	t.Fatalf("no %s invocation", reason)
 	return nil
 }
+
+// Under observe an own ("") override moves no pin either: the not-routed branch
+// returns before any redirect, so it must read the policy itself.
+func TestRouter_UnderObserveAnOwnOverrideMovesNoPin(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": ""`),
+		pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	pctx := request(store, eteHost, claudeUA, "running")
+	run(t, after, pctx)
+	assertUntouched(t, pctx, eteHost)
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Errorf("pin = %q, want glm: observe must not move it", pin)
+	}
+}
