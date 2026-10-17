@@ -681,13 +681,16 @@ a malformed name, agent or URL included; 3 a replacement declined.
 
 Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
 of them checks the key unless started with one, but `add` needs one, so give any word.
-An agent keeps asking for its own model names, which a local server does not have;
+Setting the server itself up — installing it, picking a model, the context
+length — is walked in [Run an agent on a local
+model](../../docs/laptop-local-model.md). An agent keeps asking for its own
+model names, which a local server does not have;
 the server's refusal is answered with the `--main` or `--helper` model, as a
 LiteLLM refusal is:
 
 ```sh
 echo ollama | agentop server add ollama http://localhost:11434 \
-  --main granite3.3 --helper granite3.3 --key-stdin
+  --main granite4.2:8b --helper granite4.2:8b --key-stdin
 agentop server use ollama --agent bob
 ```
 

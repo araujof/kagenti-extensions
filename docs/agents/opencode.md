@@ -289,7 +289,9 @@ server's key in the `X-Api-Key` or `Authorization` header OpenCode sent, and add
 `Authorization: Bearer <key>` when it sent neither. Zen's paid models are only
 offered by OpenCode once it has a Zen key: any value in `OPENCODE_API_KEY` will
 do, since the router replaces it. A session already running on Zen when OpenCode
-is routed stays on Zen.
+is routed stays on Zen. A local model server such as Ollama works the same
+way, and [Run an agent on a local model](../laptop-local-model.md) walks
+setting one up.
 
 If the server's model has a smaller output limit or context window than the model
 the agent asked for, the router lowers the request's output limit (unless that would
