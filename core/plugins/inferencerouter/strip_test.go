@@ -374,3 +374,40 @@ func TestRouter_APinlessSessionsMoveDropsItsProvidersReasoning(t *testing.T) {
 	back := send(t, store, sessionsConfig(``, `"s1": ""`), history(thinkingTurn("p1"), thinkingTurn("e1"), thinkingTurn("e2")))
 	assertSignatures(t, back, "p1")
 }
+
+// The request that moves a session starts its record whatever it is: one no
+// parser read (count_tokens, a model list) uses up the move, so a record it did
+// not start would never start. Requests of the session it does not parse follow
+// the rule too, a count_tokens carrying the history included.
+func TestRouter_AnUnparsedMovingRequestStartsTheRecord(t *testing.T) {
+	store := newStore(t)
+	onGLM := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	onETE := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	send(t, store, onGLM, history())
+	send(t, store, onGLM, history(thinkingTurn("g1")))
+
+	count := request(store, eteHost, claudeUA, "s1")
+	count.Path, count.Body, count.Extensions.Inference = "/v1/messages/count_tokens", history(thinkingTurn("g1")), nil
+	run(t, build(t, onETE), count)
+	assertSignatures(t, count)
+
+	main := send(t, store, onETE, history(thinkingTurn("g1")))
+	assertSignatures(t, main)
+}
+
+// A conversation keeps its name across its requests though the client moves its
+// cache marker from one message to the next: a block the new server wrote stays
+// the new server's on the conversation's second request after the move.
+func TestRouter_AConversationsNameSurvivesItsCacheMarker(t *testing.T) {
+	store := newStore(t)
+	onGLM := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	onETE := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	send(t, store, onGLM, history())
+	send(t, store, onGLM, history(thinkingTurn("g1")))
+
+	marked := `{"role":"user","content":[{"type":"text","text":"A new task.","cache_control":{"type":"ephemeral"}}]}`
+	plain := `{"role":"user","content":[{"type":"text","text":"A new task."}]}`
+	send(t, store, onETE, []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[`+marked+`]}`))
+	second := send(t, store, onETE, []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[`+plain+`,`+thinkingTurn("e1")+`,`+marked+`]}`))
+	assertSignatures(t, second, "e1")
+}

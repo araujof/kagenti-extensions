@@ -95,13 +95,25 @@ func fingerprint(b gjson.Result, conv string, i, j int) (string, bool) {
 	return hex.EncodeToString(sum[:12]), true
 }
 
-// reasoningConversation is conversationKey, which names a messages body's
-// conversation, or for a responses body its first input item.
+// reasoningConversation names the conversation body carries by the text of its
+// first user turn: a session's main conversation, each subagent and each one-shot
+// open differently, and a client's history never rewrites that turn's text. Text
+// only, because the cache marker a client moves along its history changes the
+// turn's bytes from one request to the next.
 func reasoningConversation(body []byte) string {
-	if k := conversationKey(body); k != "" {
-		return k
+	first := gjson.GetBytes(body, `messages.#(role=="user")`)
+	if !first.Exists() {
+		first = gjson.GetBytes(body, `input.#(role=="user")`)
 	}
-	sum := sha256.Sum256([]byte(gjson.GetBytes(body, "input.0").Raw))
+	var text strings.Builder
+	if c := first.Get("content"); c.IsArray() {
+		for _, block := range c.Array() {
+			text.WriteString(block.Get("text").String())
+		}
+	} else {
+		text.WriteString(c.String())
+	}
+	sum := sha256.Sum256([]byte(text.String()))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -138,7 +150,7 @@ type reasoningRecord struct {
 // own provider is covered too.
 func (p *Router) keepOwnReasoning(pctx *pipeline.Context, dest string, moving bool, from string) {
 	key := reasoningKey(pctx)
-	if key == "" || pctx.Extensions.Inference == nil || pctx.Observing() {
+	if key == "" || pctx.Observing() {
 		return
 	}
 	p.reasoningMu.Lock()
