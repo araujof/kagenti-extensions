@@ -401,8 +401,9 @@ That stops new writes and leaves what is on disk; clear first with `X` if you wa
 ## Plugin state is kept in `~/.cortex/plugin-state.json`
 
 Plugins that need state to outlive a restart keep it here. Today that is the inference router:
-which server each session is on, as its session id, its agent's name and the server's name. It
-holds no prompts and no keys. A session's entry expires 29 to 30 days after its last request; `X`
+which server each session is on, as its session id, its agent's name and the server's name — plus,
+for each session moved to another server, which server wrote each reasoning block in its history,
+by a fingerprint of the block — never the reasoning itself. It holds no prompts and no keys. A session's entry expires 29 to 30 days after its last request; `X`
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
 
