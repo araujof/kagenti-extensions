@@ -220,7 +220,7 @@ func TestForwardProxy_ASessionRunningBeforeRoutingWasConfiguredStaysOnItsServer(
 	}
 }
 
-// bodyOrigin is keyOrigin that also records each request's body, so a test can
+// moveOriginSrv is an origin that records each request's body, so a test can
 // assert on what the destination received.
 type moveOriginSrv struct {
 	srv    *httptest.Server
@@ -242,6 +242,12 @@ func moveOrigin(t *testing.T, name string) *moveOriginSrv {
 	return o
 }
 
+func (o *moveOriginSrv) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.bodies)
+}
+
 func (o *moveOriginSrv) lastBody() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -252,8 +258,9 @@ func (o *moveOriginSrv) lastBody() string {
 }
 
 // A session moved by a sessions: override lands on the new server with the new
-// server's key, its thinking blocks stripped, and stays there once the override is
-// gone — the pin the move settled.
+// server's key, the old server's thinking dropped and the new server's kept, one
+// request per turn, and stays there once the override is gone — the pin the move
+// settled. A move to its own provider gets back the thinking that provider wrote.
 func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
 	ete := moveOrigin(t, "FROM-ETE")
 	glm := moveOrigin(t, "FROM-GLM")
@@ -280,13 +287,18 @@ func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
-	thinking := `{"model":"claude-opus-5-5","max_tokens":8,"messages":[
-		{"role":"user","content":"hi"},
-		{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"text","text":"hello"}]},
-		{"role":"user","content":"again"}]}`
-	turn := func(sessionID string) string {
+	// Each turn's body is the conversation so far: the client appends every
+	// answer, its thinking block included, and re-sends the whole history.
+	var turns []string
+	turn := func(sessionID, answerSig string) string {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, eteURL+"/v1/messages", strings.NewReader(thinking))
+		msgs := []string{`{"role":"user","content":"hi"}`}
+		for _, sig := range turns {
+			msgs = append(msgs, `{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"`+sig+`"},{"type":"text","text":"hello"}]}`,
+				`{"role":"user","content":"again"}`)
+		}
+		body := `{"model":"claude-opus-5-5","max_tokens":8,"messages":[` + strings.Join(msgs, ",") + `]}`
+		req, err := http.NewRequest(http.MethodPost, eteURL+"/v1/messages", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -300,79 +312,73 @@ func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
+		turns = append(turns, answerSig)
 		return string(b)
 	}
-
-	// The session starts on ete, claude-code routed there, its assistant turn
-	// carrying a signed thinking block.
-	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"}},
-		"agents": {"claude-code": "ete"}
-	}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	configure := func(sessions string) {
+		t.Helper()
+		if err := router.Configure(json.RawMessage(`{
+			"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+				"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
+			"agents": {"claude-code": "ete"},
+			"sessions": {` + sessions + `}
+		}`)); err != nil {
+			t.Fatalf("Configure: %v", err)
+		}
 	}
+	signatures := func(body string) []string {
+		var out []string
+		for _, part := range strings.Split(body, `"signature":"`)[1:] {
+			out = append(out, part[:strings.Index(part, `"`)])
+		}
+		return out
+	}
+
+	// The session runs on ete for two turns, and ete gets its own thinking back.
+	configure(``)
 	routed, err := pipeline.New([]pipeline.Plugin{inferenceparser.NewInferenceParser(), router})
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
 	holder.Store(routed)
-	if got := turn("running"); got != "FROM-ETE" {
-		t.Fatalf("first turn reached %q, want ete", got)
+	turn("running", "e1")
+	if got := turn("running", "e2"); got != "FROM-ETE" {
+		t.Fatalf("turn reached %q, want ete", got)
 	}
-	// The first turn is stripped: it is this session's first routed request, it
-	// holds no pin and no origin, and its body carries a signed thinking block the
-	// router never saw produced.
-	if body := ete.lastBody(); strings.Contains(body, `"thinking"`) {
-		t.Errorf("ete's first turn carried thinking blocks the router never saw produced: %s", body)
+	if got := signatures(ete.lastBody()); !slices.Equal(got, []string{"e1"}) {
+		t.Errorf("ete received %v, want its own e1", got)
 	}
 
-	// agentop server move: one reload, the agents choice unchanged, a sessions:
-	// entry moving the session to glm.
-	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
-			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
-		"agents": {"claude-code": "ete"},
-		"sessions": {"running": "glm"}
-	}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
-	if got := turn("running"); got != "FROM-GLM" {
+	// agentop server move to glm: one request, ete's thinking dropped before it is
+	// sent — only ete can read it — and the assistant text kept.
+	configure(`"running": "glm"`)
+	if got := turn("running", "g1"); got != "FROM-GLM" {
 		t.Fatalf("moved turn reached %q, want glm", got)
 	}
-	body := glm.lastBody()
-	if strings.Contains(body, `"thinking"`) || strings.Contains(body, `"signature"`) {
-		t.Errorf("glm received thinking blocks: %s", body)
-	}
-	if !strings.Contains(body, `"hello"`) {
-		t.Errorf("glm lost the assistant text: %s", body)
+	if body := glm.lastBody(); len(signatures(body)) != 0 || !strings.Contains(body, `"hello"`) {
+		t.Errorf("glm received %s, want ete's thinking gone and the text kept", body)
 	}
 
-	// The override gone, the session stays where the move put it.
-	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
-			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
-		"agents": {"claude-code": "ete"}
-	}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
-	if got := turn("running"); got != "FROM-GLM" {
+	// The override gone, the session stays on glm, and glm keeps its own thinking.
+	configure(``)
+	if got := turn("running", "g2"); got != "FROM-GLM" {
 		t.Fatalf("post-override turn reached %q, want glm: the pin must follow the move", got)
+	}
+	if got := signatures(glm.lastBody()); !slices.Equal(got, []string{"g1"}) {
+		t.Errorf("glm received %v, want only its own g1", got)
+	}
+	if n := glm.count(); n != 2 {
+		t.Errorf("glm received %d requests, want one per turn", n)
 	}
 
 	// own: the entry STAYS as "" — removing it would let the pin route the session
-	// right back — and the next request goes where the client sent it, unstripped.
-	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
-			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
-		"agents": {"claude-code": "ete"},
-		"sessions": {"running": ""}
-	}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
-	if got := turn("running"); got != "FROM-ETE" {
+	// right back — and the request goes where the client sent it, ete, which gets
+	// back the thinking it wrote and none of glm's.
+	configure(`"running": ""`)
+	if got := turn("running", "o1"); got != "FROM-ETE" {
 		t.Fatalf("own turn reached %q, want ete: the empty entry must stop the routing", got)
 	}
-	if body := ete.lastBody(); !strings.Contains(body, `"thinking"`) {
-		t.Errorf("ete's own turn lost its thinking blocks: %s", body)
+	if got := signatures(ete.lastBody()); !slices.Equal(got, []string{"e1", "e2"}) {
+		t.Errorf("ete's own turn received %v, want its own e1 and e2", got)
 	}
 }

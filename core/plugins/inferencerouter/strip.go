@@ -2,6 +2,9 @@ package inferencerouter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -12,16 +15,18 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// stripReasoning drops from body the reasoning only its producer can validate,
-// and returns the body it made with how many artifacts it dropped. Anthropic
-// messages carry it as thinking and redacted_thinking blocks in an assistant
-// message's content; responses carries it as items of type reasoning in input.
+// stripReasoning drops from body the reasoning artifacts drop reports true for —
+// the ones only their producer can validate — and returns the body it made with
+// how many it dropped. drop is given each artifact's fingerprint. Anthropic
+// messages carry them as thinking and redacted_thinking blocks in an assistant
+// message's content; responses carries them as items of type reasoning in input.
 // Chat completions carries reasoning as plain-text fields every measured server
 // accepts, and matches neither shape, so it is left alone — the artifacts name
 // themselves; no format is sniffed. An assistant message the drop empties goes
 // whole: an empty content array is refused at Anthropic, and a thinking-only
 // turn carries no tool_use for a tool_result to reference.
-func stripReasoning(body []byte) ([]byte, int) {
+func stripReasoning(body []byte, drop func(fingerprint string) bool) ([]byte, int) {
+	conv := reasoningConversation(body)
 	dropped := 0
 	if msgs := gjson.GetBytes(body, "messages"); msgs.IsArray() {
 		arr := msgs.Array()
@@ -36,13 +41,12 @@ func stripReasoning(body []byte) ([]byte, int) {
 			}
 			blocks := content.Array()
 			kept := make([]string, 0, len(blocks))
-			for _, b := range blocks {
-				switch b.Get("type").String() {
-				case "thinking", "redacted_thinking":
+			for j, b := range blocks {
+				if fp, ok := fingerprint(b, conv, i, j); ok && drop(fp) {
 					dropped++
-				default:
-					kept = append(kept, b.Raw)
+					continue
 				}
+				kept = append(kept, b.Raw)
 			}
 			if len(kept) == len(blocks) {
 				continue
@@ -58,7 +62,7 @@ func stripReasoning(body []byte) ([]byte, int) {
 	if items := gjson.GetBytes(body, "input"); items.IsArray() {
 		arr := items.Array()
 		for i := len(arr) - 1; i >= 0; i-- {
-			if arr[i].Get("type").String() == "reasoning" {
+			if fp, ok := fingerprint(arr[i], conv, i, 0); ok && drop(fp) {
 				body, _ = sjson.DeleteBytes(body, "input."+strconv.Itoa(i))
 				dropped++
 			}
@@ -67,172 +71,155 @@ func stripReasoning(body []byte) ([]byte, int) {
 	return body, dropped
 }
 
-const (
-	// originPrefix is where the router records, per session, the server that
-	// produced the reasoning its requests carry. It lives where pins do, with the
-	// pin's TTL, and X does not clear it.
-	originPrefix = "inference-router/origin/"
-	// originForeign marks a session whose reasoning has come from more than one
-	// server. It is sticky: the client's history is its own, so blocks from the
-	// old server stay in it however many turns pass on the new one, and the origin
-	// must never resolve back to a single server. No server name can collide with
-	// it: config refuses parentheses in a name.
-	originForeign = "(foreign)"
-)
+// fingerprint names a reasoning artifact by what its producer signed: a thinking
+// block's signature, a redacted_thinking block's data, a reasoning item's id and
+// content. ok is false for anything that is not one. An unsigned thinking block —
+// Ollama writes them, often empty — is named by its conversation, its text and
+// where it sits (message i, block j), since two of them can share a text; a client
+// appends to its history, so an earlier block keeps its place.
+func fingerprint(b gjson.Result, conv string, i, j int) (string, bool) {
+	var key string
+	switch b.Get("type").String() {
+	case "thinking":
+		if key = b.Get("signature").String(); key == "" {
+			key = "unsigned " + conv + " " + strconv.Itoa(i) + " " + strconv.Itoa(j) + " " + b.Get("thinking").String()
+		}
+	case "redacted_thinking":
+		key = b.Get("data").String()
+	case "reasoning":
+		key = b.Get("id").String() + " " + b.Get("encrypted_content").String()
+	default:
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:12]), true
+}
 
-// originKey is the store key for pctx's session's origin, "" when it has none a
-// record could name.
-func originKey(pctx *pipeline.Context) string {
+// reasoningConversation is conversationKey, which names a messages body's
+// conversation, or for a responses body its first input item.
+func reasoningConversation(body []byte) string {
+	if k := conversationKey(body); k != "" {
+		return k
+	}
+	sum := sha256.Sum256([]byte(gjson.GetBytes(body, "input.0").Raw))
+	return hex.EncodeToString(sum[:8])
+}
+
+// reasoningPrefix is where the router keeps a moved session's reasoningRecord. It
+// lives where pins do, with the pin's TTL, renewed with the pin, and X does not
+// clear it.
+const reasoningPrefix = "inference-router/reasoning/"
+
+// reasoningRecord says which server wrote each reasoning artifact in a moved
+// session's history. It is kept only once a session has moved: until then every
+// artifact in it is its one server's, and nothing is dropped or stored.
+//
+// An artifact first appears in the request after the answer that carried it, the
+// next request of the same conversation, so its writer is where that
+// conversation's previous request went: Last, or Base for a conversation not seen
+// since the first move.
+type reasoningRecord struct {
+	// Base is the server the session ran on before its first move, "" for the
+	// client's own provider.
+	Base string `json:"base"`
+	// Writers is each artifact's fingerprint, to the server that wrote it.
+	Writers map[string]string `json:"writers"`
+	// Last is each conversation's latest destination since the first move.
+	Last map[string]string `json:"last"`
+}
+
+// keepOwnReasoning drops from a request the reasoning artifacts another server
+// wrote — only their writer can read them, and Bedrock 4.6 stops thinking with
+// another's in its history — and keeps the ones dest wrote, so a session moved back
+// keeps its first server's. dest is where the request goes: a server's name, or ""
+// for a host no server has. moving says this request moves the session, from
+// where it ran. It runs before the request is sent, so a move costs no second
+// request, and on requests the router leaves unrouted, so a move to the client's
+// own provider is covered too.
+func (p *Router) keepOwnReasoning(pctx *pipeline.Context, dest string, moving bool, from string) {
+	key := reasoningKey(pctx)
+	if key == "" || pctx.Extensions.Inference == nil || pctx.Observing() {
+		return
+	}
+	p.reasoningMu.Lock()
+	defer p.reasoningMu.Unlock()
+	rec, ok := p.loadReasoning(pctx, key)
+	if !ok {
+		if !moving {
+			return
+		}
+		rec = reasoningRecord{Base: from, Writers: map[string]string{}, Last: map[string]string{}}
+	}
+	conv := reasoningConversation(pctx.Body)
+	writer, seen := rec.Last[conv]
+	if !seen {
+		writer = rec.Base
+	}
+	changed := !ok || writer != dest
+	body, dropped := stripReasoning(pctx.Body, func(fp string) bool {
+		w, known := rec.Writers[fp]
+		if !known {
+			w, rec.Writers[fp], changed = writer, writer, true
+		}
+		return w != dest
+	})
+	rec.Last[conv] = dest
+	if changed {
+		p.saveReasoning(pctx, key, rec)
+	}
+	if dropped > 0 && pctx.SetBody(body) {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "reasoning_stripped",
+			Details: map[string]string{"blocks": strconv.Itoa(dropped)}})
+	}
+}
+
+// renewReasoning keeps a moved session's record for another pinTTL, beside its pin.
+func (p *Router) renewReasoning(pctx *pipeline.Context) {
+	key := reasoningKey(pctx)
+	if key == "" {
+		return
+	}
+	p.reasoningMu.Lock()
+	defer p.reasoningMu.Unlock()
+	if rec, ok := p.loadReasoning(pctx, key); ok {
+		p.saveReasoning(pctx, key, rec)
+	}
+}
+
+// reasoningKey is the store key for pctx's session's record, "" when it has none a
+// record could name: a synthetic session holds many conversations.
+func reasoningKey(pctx *pipeline.Context) string {
 	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
 		return ""
 	}
-	return originPrefix + pctx.Session.ID
+	return reasoningPrefix + pctx.Session.ID
 }
 
-// origin is the session's recorded reasoning origin, "" when none is.
-func (p *Router) origin(pctx *pipeline.Context, key string) string {
+func (p *Router) loadReasoning(pctx *pipeline.Context, key string) (reasoningRecord, bool) {
+	var raw string
 	if p.store != nil {
-		v, err := p.store.Get(context.Background(), key)
-		if err != nil {
-			return ""
-		}
-		return v
-	}
-	if pctx.Shared != nil {
+		raw, _ = p.store.Get(context.Background(), key)
+	} else if pctx.Shared != nil {
 		if v, ok := pctx.Shared.Get(key); ok {
-			s, _ := v.(string)
-			return s
+			raw, _ = v.(string)
 		}
 	}
-	return ""
+	var rec reasoningRecord
+	if raw == "" || json.Unmarshal([]byte(raw), &rec) != nil || rec.Writers == nil || rec.Last == nil {
+		return reasoningRecord{}, false
+	}
+	return rec, true
 }
 
-// keepOrigin records v as the session's reasoning origin, for as long as a pin is
-// kept: the origin outlives a restart beside the pin it explains.
-func (p *Router) keepOrigin(pctx *pipeline.Context, key, v string) {
+func (p *Router) saveReasoning(pctx *pipeline.Context, key string, rec reasoningRecord) {
+	b, _ := json.Marshal(rec)
 	if p.store != nil {
-		if err := p.store.Set(context.Background(), key, v, pinTTL); err != nil {
-			slog.Warn("inference-router: could not record a session's reasoning origin", "error", err)
+		if err := p.store.Set(context.Background(), key, string(b), pinTTL); err != nil {
+			slog.Warn("inference-router: could not record which server wrote a moved session's reasoning", "error", err)
 		}
 		return
 	}
 	if pctx.Shared != nil {
-		pctx.Shared.Put(key, v, pinTTL)
-	}
-}
-
-// renewOrigin keeps pctx's session's recorded origin, if it has one, for another
-// pinTTL.
-func (p *Router) renewOrigin(pctx *pipeline.Context) {
-	key := originKey(pctx)
-	if key == "" {
-		return
-	}
-	if p.store != nil {
-		if err := p.store.Expire(context.Background(), key, pinTTL); err != nil {
-			slog.Warn("inference-router: could not renew a session's reasoning origin", "error", err)
-		}
-		return
-	}
-	if pctx.Shared != nil {
-		if v, ok := pctx.Shared.Get(key); ok {
-			pctx.Shared.Put(key, v, pinTTL)
-		}
-	}
-}
-
-// hasPriorRequests reports whether the session's recorded history holds an
-// earlier inference request of its agent's. Requests the router itself skipped
-// are recorded too, so a session that ran on its own provider counts. Read once
-// per request, by the unpinned rules, and carried on the pinning; the override
-// path, which decides before those rules run, reads it here — the one archive
-// walk a moved pinless session pays.
-func (p *Router) hasPriorRequests(pctx *pipeline.Context, prior pinning) bool {
-	if prior.read {
-		return prior.history
-	}
-	_, ok := p.wentTo(pctx.Session, agentOf(pctx))
-	return ok
-}
-
-// hasPriorPin reports whether the session holds any pin at all, its agent's or
-// another's, "not routed" included. Such a session had requests before this one,
-// so the reasoning in its history came from somewhere other than the target; a
-// session with no pin is the only one whose history cannot hold reasoning from a
-// life the router saw.
-func (p *Router) hasPriorPin(pctx *pipeline.Context, key string) bool {
-	_, id, ok := strings.Cut(key, originPrefix)
-	if !ok {
-		return false
-	}
-	store := p.pinsFor(pctx)
-	if store == nil {
-		return false
-	}
-	_, had := store.load(pinPrefix + id)
-	return had
-}
-
-// leaveServer records that pctx's session moved off a server to its own provider,
-// whose reasoning its history now carries.
-func (p *Router) leaveServer(pctx *pipeline.Context) {
-	if key := originKey(pctx); key != "" {
-		p.keepOrigin(pctx, key, originForeign)
-	}
-}
-
-// stripForeign drops the reasoning a request carries that its target cannot have
-// produced, and records the target as the session's reasoning origin. It runs only
-// where the router applied a server (Redirected). A session new to routing — no
-// origin recorded, no pin, no reasoning in its body — records the target and
-// strips nothing; once a session's target has differed from its recorded origin
-// the origin is foreign for good and every switched request strips, the target's
-// own reasoning included: a server that cannot verify foreign blocks may not get
-// them, and one that can loses only reasoning text, which no measured continuation
-// needed.
-func (p *Router) stripForeign(pctx *pipeline.Context, server string, prior pinning) {
-	// Redirected, not switched: a moved session's client asks its own provider,
-	// which after the move is the target's own host, and a same-host redirect is
-	// not "switched" — but the reasoning in its history still came from elsewhere.
-	// The router applying a server at all is the signal provenance needs.
-	if !pctx.Redirected() {
-		return
-	}
-	key := originKey(pctx)
-	if key == "" {
-		return
-	}
-	origin := p.origin(pctx, key)
-	if origin == server {
-		return // steady state, the common case: no body is parsed
-	}
-	if origin == "" && prior.state == pinExisting {
-		// The agent's pin names the target and no move recorded an origin, so the
-		// session's reasoning is the target's own.
-		p.keepOrigin(pctx, key, server)
-		return
-	}
-	body, dropped := stripReasoning(pctx.Body)
-	if origin == "" {
-		// A session with no origin is new only when nothing of a prior life shows:
-		// no pin the router wrote, no reasoning in the body it did not see produced
-		// (a conversation a client carried to a new session id), and no earlier
-		// request in the session's recorded history — which is what a pinless
-		// session that ran on its own provider leaves, its requests skipped at the
-		// capture gate, and the one a reasoning-free one-shot would otherwise hide.
-		// Seeding the origin with the target for any of them would never strip, and
-		// a target that cannot verify foreign blocks would refuse it for good.
-		if !p.hasPriorPin(pctx, key) && dropped == 0 && !p.hasPriorRequests(pctx, prior) {
-			p.keepOrigin(pctx, key, server)
-			return
-		}
-	}
-	p.keepOrigin(pctx, key, originForeign)
-	if dropped == 0 {
-		return
-	}
-	if pctx.SetBody(body) {
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "reasoning_stripped",
-			Details: map[string]string{"blocks": strconv.Itoa(dropped)}})
+		pctx.Shared.Put(key, string(b), pinTTL)
 	}
 }

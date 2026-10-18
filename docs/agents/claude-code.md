@@ -179,10 +179,10 @@ A running session can also be **moved** on purpose: `agentop server move
 agentop's sessions pane. The move is the one thing that moves a running
 conversation, it says what it costs first — the session's whole context is re-sent
 uncached on its first turn at the new server — and the reasoning blocks only the
-old server can verify are dropped from the moved history. What that loses:
-nothing, for Anthropic-origin thinking, whose text is empty (encrypted); the
-readable reasoning text, when the old server was GLM or Ollama. Claude Code
-notices nothing: its own transcript is unchanged, and it keeps naming the model it
+old server can read are dropped from what the new server is sent. A move back
+to that server gets them back. What a server loses: nothing, for Anthropic-origin
+thinking, whose text is empty (encrypted); the readable reasoning text, when the
+old server was GLM or Ollama. Claude Code notices nothing: its own transcript is unchanged, and it keeps naming the model it
 asked for.
 
 A conversation carried to a new session id is one Cortex did not see begin, so it

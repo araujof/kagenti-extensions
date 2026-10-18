@@ -2,7 +2,8 @@ package inferencerouter
 
 import (
 	"encoding/json"
-	"net/http"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -13,7 +14,7 @@ import (
 
 func stripBody(t *testing.T, body string) (string, int) {
 	t.Helper()
-	out, n := stripReasoning([]byte(body))
+	out, n := stripReasoning([]byte(body), func(string) bool { return true })
 	return string(out), n
 }
 
@@ -130,94 +131,197 @@ func TestStrip_NothingToDropReturnsTheBody(t *testing.T) {
 
 // These tests drive the whole plugin through build/run, like plugin_test.go does.
 
-// A session's first routed request records the server as its reasoning origin and
-// strips nothing — when its body carries no reasoning. A first request CAN carry
-// foreign reasoning (the client's own prior turns, a conversation carried to a new
-// session id), which the pinless-session test covers; this is the genuinely new
-// conversation.
-func TestRouter_AFirstRoutedRequestRecordsItsOrigin(t *testing.T) {
-	store := newStore(t)
-	p := build(t, routerConfig(`"claude-code": "glm"`))
-	pctx := request(store, eteHost, claudeUA, "s1")
-	pctx.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	run(t, p, pctx)
-	if v, ok := store.Get(originPrefix + "s1"); !ok || v != "glm" {
-		t.Errorf("origin = %v %v, want glm", v, ok)
+// thinkingTurn is an assistant turn carrying one thinking block signed sig.
+func thinkingTurn(sig string) string {
+	return `{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"` + sig + `"},{"type":"text","text":"12121"}]}`
+}
+
+// history is an Anthropic body: a user turn, then each assistant turn given,
+// each followed by a user turn.
+func history(turns ...string) []byte {
+	msgs := []string{`{"role":"user","content":"Compute 17*23*31."}`}
+	for _, t := range turns {
+		msgs = append(msgs, t, `{"role":"user","content":"Add 1."}`)
 	}
+	return []byte(`{"model":"claude-opus-5-5","max_tokens":1024,"messages":[` + strings.Join(msgs, ",") + `]}`)
+}
+
+// signatures is every thinking signature pctx's body carries, in order.
+func signatures(pctx *pipeline.Context) []string {
+	var out []string
+	for _, r := range gjson.GetBytes(pctx.Body, `messages.#.content.#(type=="thinking")#.signature`).Array() {
+		for _, s := range r.Array() {
+			out = append(out, s.String())
+		}
+	}
+	return out
+}
+
+// send runs one request of session s1 through config, carrying body.
+func send(t *testing.T, store pipeline.SharedStore, config string, body []byte) *pipeline.Context {
+	t.Helper()
+	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+	pctx.Body = body
+	run(t, build(t, config), pctx)
+	return pctx
+}
+
+func assertSignatures(t *testing.T, pctx *pipeline.Context, want ...string) {
+	t.Helper()
+	if got := signatures(pctx); !slices.Equal(got, want) {
+		t.Errorf("signatures = %v, want %v", got, want)
+	}
+}
+
+// A session that never moves keeps its reasoning, every turn.
+func TestRouter_ASessionThatNeverMovesKeepsItsReasoning(t *testing.T) {
+	store := newStore(t)
+	glm := routerConfig(`"claude-code": "glm"`)
+	send(t, store, glm, history())
+	send(t, store, glm, history(thinkingTurn("g1")))
+	pctx := send(t, store, glm, history(thinkingTurn("g1"), thinkingTurn("g2")))
+	assertSignatures(t, pctx, "g1", "g2")
 	assertNoInvocation(t, pctx, "reasoning_stripped")
 }
 
-// A request to a server other than the recorded origin strips, and the origin
-// goes foreign — permanently, because the client's history keeps the old
-// server's blocks however many turns pass on the new one.
-func TestRouter_AMovedSessionStripsAndGoesForeign(t *testing.T) {
-	store := newStore(t)
-	before := build(t, routerConfig(`"claude-code": "glm"`))
-	run(t, before, request(store, eteHost, claudeUA, "s1"))
+// A move drops, before the first request on the new server is sent, the blocks the
+// old server wrote — only that server can read them — and keeps the ones the new
+// server writes. Every destination: a server, and the client's own provider,
+// whose agent is routed or is moved by the override alone.
+func TestRouter_AMoveDropsOnlyTheOldServersReasoning(t *testing.T) {
+	for _, tc := range []struct{ name, agents, dest string }{
+		{"to a server", `"claude-code": "glm"`, "ete"},
+		{"to own, a routed agent", `"claude-code": "glm"`, ""},
+		{"to own, an agent the override alone routed", ``, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			before := sessionsConfig(tc.agents, `"s1": "glm"`)
+			after := sessionsConfig(tc.agents, `"s1": "`+tc.dest+`"`)
+			send(t, store, before, history())
+			send(t, store, before, history(thinkingTurn("g1")))
 
-	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`))
-	pctx := request(store, eteHost, claudeUA, "s1")
-	pctx.Body = anthropicBodyWithThinking()
-	run(t, after, pctx)
-	assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
-		t.Errorf("origin = %v, want %q", v, originForeign)
-	}
-	if got := gjson.GetBytes(pctx.Body, "messages.1.content.0.type").String(); got != "text" {
-		t.Errorf("body's first kept block = %q, want text (thinking still present?)", got)
-	}
+			moved := send(t, store, after, history(thinkingTurn("g1"), thinkingTurn("g2")))
+			assertSignatures(t, moved)
+			assertAnyRecord(t, moved, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "2"})
+			if got := gjson.GetBytes(moved.Body, "messages.1.content.0.text").String(); got != "12121" {
+				t.Errorf("the assistant text was lost: %s", moved.Body)
+			}
 
-	// And the next request, same server, still strips: the history is the
-	// client's, and it has not forgotten.
-	next := request(store, eteHost, claudeUA, "s1")
-	next.Body = anthropicBodyWithThinking()
-	run(t, after, next)
-	assertAnyRecord(t, next, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
+			next := send(t, store, after, history(thinkingTurn("g1"), thinkingTurn("g2"), thinkingTurn("e1")))
+			assertSignatures(t, next, "e1")
+		})
+	}
 }
 
-// Steady state on one server keeps its own reasoning: a conversation that began
-// under routing keeps its tool loops whole. Its first request carries no
-// reasoning; the turns after it carry the server's own.
-func TestRouter_SteadyStateKeepsItsOwnReasoning(t *testing.T) {
+// A session moved back to a server keeps the blocks that server wrote, and drops
+// the ones the server in between wrote.
+func TestRouter_AMoveBackKeepsTheServersOwnReasoning(t *testing.T) {
 	store := newStore(t)
-	p := build(t, routerConfig(`"claude-code": "glm"`))
-	first := request(store, eteHost, claudeUA, "s1")
-	first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	run(t, p, first)
-	second := request(store, eteHost, claudeUA, "s1")
-	second.Body = anthropicBodyWithThinking()
-	run(t, p, second)
-	assertNoInvocation(t, second, "reasoning_stripped")
+	onGLM := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	onETE := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	send(t, store, onGLM, history())
+	send(t, store, onGLM, history(thinkingTurn("g1")))
+	send(t, store, onETE, history(thinkingTurn("g1"), thinkingTurn("g2")))
+	send(t, store, onETE, history(thinkingTurn("g1"), thinkingTurn("g2"), thinkingTurn("e1")))
+	back := send(t, store, onGLM, history(thinkingTurn("g1"), thinkingTurn("g2"), thinkingTurn("e1"), thinkingTurn("e2")))
+	assertSignatures(t, back, "g1", "g2")
 }
 
-// Synthetic sessions are never recorded: their ids hold many conversations.
-func TestRouter_NoOriginForSyntheticSessions(t *testing.T) {
+// A side request — a title, count_tokens, a subagent — carries none of the
+// conversation's blocks, or only its own, and leaves the record of the rest as it
+// was: the main conversation's next turn after a move still drops the old blocks.
+func TestRouter_ASideRequestLeavesTheRecordAlone(t *testing.T) {
 	store := newStore(t)
-	p := build(t, routerConfig(`"claude-code": "glm"`))
+	before := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	after := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	send(t, store, before, history())
+	send(t, store, before, history(thinkingTurn("g1")))
+	send(t, store, after, []byte(`{"model":"claude-haiku-4-5","max_tokens":64,"messages":[{"role":"user","content":"name this"}]}`))
+	sub := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"Search the repo."}]}`)
+	send(t, store, after, sub)
+	main := send(t, store, after, history(thinkingTurn("g1"), thinkingTurn("g2")))
+	assertSignatures(t, main)
+}
+
+// A session first seen carrying reasoning — it ran before routing, or on its own
+// provider — has that reasoning taken as the destination's: it is not dropped on
+// a guess, and a server that cannot read it answers as it would without the router.
+func TestRouter_ReasoningFirstSeenIsTheDestinationsOwn(t *testing.T) {
+	pctx := send(t, newStore(t), routerConfig(`"claude-code": "glm"`), history(thinkingTurn("x1")))
+	assertSignatures(t, pctx, "x1")
+}
+
+// Unsigned thinking blocks with the same text — Ollama writes them, often empty —
+// are told apart by where they sit, so a new server's empty block is not taken for
+// the old server's.
+func TestRouter_EmptyUnsignedBlocksAreToldApart(t *testing.T) {
+	store := newStore(t)
+	unsigned := `{"role":"assistant","content":[{"type":"thinking","thinking":""},{"type":"text","text":"ok"}]}`
+	before := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	after := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	send(t, store, before, history())
+	send(t, store, before, history(unsigned))
+	send(t, store, after, history(unsigned))
+	next := send(t, store, after, history(unsigned, thinkingTurn("e1"), unsigned))
+	if n := strings.Count(string(next.Body), `"type":"thinking"`); n != 2 {
+		t.Errorf("thinking blocks = %d, want e1 and the new server's own unsigned block: %s", n, next.Body)
+	}
+}
+
+// Responses-format reasoning items are recorded and dropped the same way.
+func TestRouter_AMoveDropsTheOldServersResponsesReasoning(t *testing.T) {
+	store := newStore(t)
+	body := func(items ...string) []byte {
+		return []byte(`{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}` + strings.Join(items, "") + `]}`)
+	}
+	item := func(id string) string {
+		return `,{"type":"reasoning","id":"` + id + `","encrypted_content":"x"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}`
+	}
+	sendPath := func(config string, b []byte) *pipeline.Context {
+		pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+		pctx.Path, pctx.Body = "/v1/responses", b
+		run(t, build(t, config), pctx)
+		return pctx
+	}
+	onGLM := sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)
+	sendPath(onGLM, body())
+	sendPath(onGLM, body(item("rs_g")))
+	onETE := sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)
+	moved := sendPath(onETE, body(item("rs_g")))
+	if ids := gjson.GetBytes(moved.Body, `input.#(type=="reasoning")#.id`).Array(); len(ids) != 0 {
+		t.Errorf("moved request's reasoning ids = %v, want none", ids)
+	}
+	next := sendPath(onETE, body(item("rs_g"), item("rs_e")))
+	ids := gjson.GetBytes(next.Body, `input.#(type=="reasoning")#.id`).Array()
+	if len(ids) != 1 || ids[0].String() != "rs_e" {
+		t.Errorf("reasoning ids = %v, want only rs_e", ids)
+	}
+}
+
+// Under observe nothing moves, so nothing is dropped or recorded.
+func TestRouter_UnderObserveNoReasoningIsDropped(t *testing.T) {
+	store := newStore(t)
+	send(t, store, routerConfig(`"claude-code": "glm"`), history(thinkingTurn("g1")))
+	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+	pctx.Body = history(thinkingTurn("g1"))
+	run(t, build(t, sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`), pipeline.WithPolicies(pipeline.ErrorPolicyObserve)), pctx)
+	assertSignatures(t, pctx, "g1")
+}
+
+// Synthetic sessions hold many conversations, so nothing is recorded for them.
+func TestRouter_NoReasoningRecordForSyntheticSessions(t *testing.T) {
+	store := newStore(t)
 	pctx := request(store, eteHost, claudeUA, session.DefaultSessionID)
-	pctx.Body = anthropicBodyWithThinking()
-	run(t, p, pctx)
-	if _, ok := store.Get(originPrefix + session.DefaultSessionID); ok {
-		t.Error("an origin was recorded for the default bucket")
+	pctx.Body = history(thinkingTurn("g1"))
+	run(t, build(t, routerConfig(`"claude-code": "glm"`)), pctx)
+	if _, ok := store.Get(reasoningPrefix + session.DefaultSessionID); ok {
+		t.Error("a reasoning record was kept for the default bucket")
 	}
-}
-
-// anthropicBodyWithThinking is a two-turn Anthropic body whose assistant turn
-// carries a signed thinking block.
-func anthropicBodyWithThinking() []byte {
-	return []byte(`{"model":"claude-opus-5-5","max_tokens":1024,"messages":[
-		{"role":"user","content":"Compute 17*23*31."},
-		{"role":"assistant","content":[
-			{"type":"thinking","thinking":"","signature":"sig"},
-			{"type":"text","text":"12121"}
-		]},
-		{"role":"user","content":"Add 1."}
-	]}`)
 }
 
 // assertAnyRecord fails unless SOME invocation of the router is action/reason with
-// the details given — unlike assertRecord, which pins the last one: the routed
-// record is appended after the strip's, so the strip is never last.
+// the details given.
 func assertAnyRecord(t *testing.T, pctx *pipeline.Context, action pipeline.InvocationAction, reason string, details map[string]string) {
 	t.Helper()
 	invs := pctx.Extensions.Invocations
@@ -238,8 +342,7 @@ func assertAnyRecord(t *testing.T, pctx *pipeline.Context, action pipeline.Invoc
 	t.Errorf("no %s/%s invocation among %v", action, reason, invs.Outbound)
 }
 
-// assertNoInvocation fails when pctx holds an invocation with reason. The access
-// path is the one assertRecord reads: pctx.Extensions.Invocations.Outbound.
+// assertNoInvocation fails when pctx holds an invocation of the router with reason.
 func assertNoInvocation(t *testing.T, pctx *pipeline.Context, reason string) {
 	t.Helper()
 	invs := pctx.Extensions.Invocations
@@ -253,191 +356,21 @@ func assertNoInvocation(t *testing.T, pctx *pipeline.Context, reason string) {
 	}
 }
 
-// A session that ran unrouted — pinned "", on the client's own provider, its
-// history carrying that provider's signed thinking — strips on its first routed
-// request: the first-recorded rule would seed the origin with the target and never
-// strip, so a strict target 403s forever. A session with a pin has a prior
-// inference life; only one with no pin at all is new.
-func TestRouter_AMovedUnroutedSessionStrips(t *testing.T) {
+// A session an override moves while it holds no pin — it ran on its own provider,
+// its requests skipped at the capture gate — drops its provider's blocks on the
+// server it moved to, and gets them back on a move back to its own provider.
+func TestRouter_APinlessSessionsMoveDropsItsProvidersReasoning(t *testing.T) {
 	store := newStore(t)
-	before := build(t, routerConfig(``)) // no agent routed: the session pins ""
-	run(t, before, request(store, eteHost, claudeUA, "s1"))
-	if pin, _ := pinOf(t, store, "s1"); pin != "" {
-		t.Fatalf("pin = %q, want not routed", pin)
+	send(t, store, routerConfig(``), history())
+	send(t, store, routerConfig(``), history(thinkingTurn("p1")))
+	if _, had := pinOf(t, store, "s1"); had {
+		t.Fatal("the session is pinned; this case needs none")
 	}
-
-	after := build(t, sessionsConfig(``, `"s1": "ete"`))
-	pctx := request(store, eteHost, claudeUA, "s1")
-	pctx.Body = anthropicBodyWithThinking()
-	run(t, after, pctx)
-	assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
-		t.Errorf("origin = %v, want %q", v, originForeign)
-	}
-}
-
-// A session that ran on its own provider and holds no pin — its requests were
-// skipped at the capture gate before anything pinned it — carries that provider's
-// reasoning. Its first routed request strips: reasoning already in a body the
-// router never routed is reasoning it did not see produced. Both formats that
-// carry producer-bound reasoning.
-func TestRouter_AMovedPinlessSessionStrips(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path string
-		body []byte
-	}{
-		{"anthropic thinking", "/v1/messages", anthropicBodyWithThinking()},
-		{"responses reasoning", "/v1/responses", []byte(`{"model":"m","input":[
-			{"type":"reasoning","id":"rs_1","encrypted_content":"abc"},
-			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"12121"}]},
-			{"role":"user","content":[{"type":"input_text","text":"add 1"}]}]}`)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := newStore(t)
-			// The prior life: the agent unrouted, its request to its own provider, a
-			// host no server has — skipped before serverFor, so nothing is pinned.
-			before := build(t, routerConfig(``))
-			prior := request(store, "api.anthropic.com", claudeUA, "s1")
-			prior.Path = tc.path
-			run(t, before, prior)
-			if _, had := pinOf(t, store, "s1"); had {
-				t.Fatalf("the prior request pinned the session; this case needs none")
-			}
-
-			after := build(t, sessionsConfig(``, `"s1": "ete"`))
-			pctx := request(store, "api.anthropic.com", claudeUA, "s1")
-			pctx.Path, pctx.Body = tc.path, tc.body
-			run(t, after, pctx)
-			assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-			if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
-				t.Errorf("origin = %v, want %q", v, originForeign)
-			}
-		})
-	}
-}
-
-// A genuinely new session — no pin, no reasoning in its body — records its target
-// and strips nothing: there is nothing foreign to drop.
-func TestRouter_ANewSessionWithNoReasoningRecordsItsTarget(t *testing.T) {
-	store := newStore(t)
-	p := build(t, sessionsConfig(``, `"s1": "ete"`))
-	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
-	pctx.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	run(t, p, pctx)
-	if v, _ := store.Get(originPrefix + "s1"); v != "ete" {
-		t.Errorf("origin = %v, want ete", v)
-	}
-	assertNoInvocation(t, pctx, "reasoning_stripped")
-}
-
-// A moved pinless session whose first routed request is a one-shot — a title, a
-// classifier, no reasoning in its body — still has a prior life: the provider
-// requests the router skipped are recorded in the session's history. Seeding the
-// origin with the target there would let the conversation's next turn, which does
-// carry the provider's signed thinking, through unstripped, and a strict target
-// would refuse it for good.
-func TestRouter_AMovedPinlessSessionWhoseFirstRoutedRequestIsAOneShotSeedsForeign(t *testing.T) {
-	store := newStore(t)
-	// The prior life: requests to the client's own provider, recorded in the
-	// session's history with their method and path, no pin — the router skipped
-	// them at the capture gate. sent() carries no method or path, and serverOf
-	// needs the capture shape to read a provider request as evidence.
-	prior := sent("api.anthropic.com", claudeUA)
-	prior.HTTPMethod, prior.HTTPPath = http.MethodPost, "/v1/messages"
-
-	after := build(t, sessionsConfig(``, `"s1": "ete"`))
-	pctx := withHistory(request(store, "api.anthropic.com", claudeUA, "s1"), prior)
-	pctx.Body = []byte(`{"model":"claude-haiku-4-5","max_tokens":64,"messages":[{"role":"user","content":"name this conversation"}]}`)
-	run(t, after, pctx)
-	assertNoInvocation(t, pctx, "reasoning_stripped") // nothing to strip in a one-shot
-	if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
-		t.Fatalf("origin = %v, want %q: a one-shot must not seed the target", v, originForeign)
-	}
-
-	// The conversation's next turn carries the provider's thinking; it strips.
-	next := withHistory(request(store, "api.anthropic.com", claudeUA, "s1"), prior)
-	next.Body = anthropicBodyWithThinking()
-	run(t, after, next)
-	assertAnyRecord(t, next, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-}
-
-// A session its agent pinned to the target, with no origin recorded — pinned
-// before origins were, or its origin expired under a pin every request renews —
-// has only ever run on that server: the reasoning in its body is the target's own,
-// and nothing strips it. Both ways a request can find that pin.
-func TestRouter_APinnedSessionWithNoOriginKeepsItsOwnReasoning(t *testing.T) {
-	for _, tc := range []struct{ name, config string }{
-		{"its pin", routerConfig(`"claude-code": "glm"`)},
-		{"an override naming its pin", sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := newStore(t)
-			first := request(store, eteHost, claudeUA, "s1")
-			first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-			run(t, build(t, routerConfig(`"claude-code": "glm"`)), first)
-			store.Delete(originPrefix + "s1")
-
-			second := request(store, eteHost, claudeUA, "s1")
-			second.Body = anthropicBodyWithThinking()
-			run(t, build(t, tc.config), second)
-			assertNoInvocation(t, second, "reasoning_stripped")
-			if v, _ := store.Get(originPrefix + "s1"); v != "glm" {
-				t.Errorf("origin = %v, want glm", v)
-			}
-		})
-	}
-}
-
-// A pin to another server is no provenance for the target: a session moved off it
-// with no origin recorded still strips.
-func TestRouter_AMovedSessionWithNoOriginStrips(t *testing.T) {
-	store := newStore(t)
-	run(t, build(t, routerConfig(`"claude-code": "glm"`)), request(store, eteHost, claudeUA, "s1"))
-	store.Delete(originPrefix + "s1")
-
-	pctx := request(store, eteHost, claudeUA, "s1")
-	pctx.Body = anthropicBodyWithThinking()
-	run(t, build(t, sessionsConfig(`"claude-code": "glm"`, `"s1": "ete"`)), pctx)
-	assertAnyRecord(t, pctx, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-}
-
-// A session moved to its own provider and back carries that provider's signed
-// thinking: the return strips it, whichever server the session returns to.
-func TestRouter_AMoveToOwnAndBackStripsTheProvidersReasoning(t *testing.T) {
-	for _, back := range []string{"ete", "glm"} {
-		t.Run(back, func(t *testing.T) {
-			store := newStore(t)
-			first := request(store, "api.anthropic.com", claudeUA, "s1")
-			first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-			run(t, build(t, routerConfig(`"claude-code": "ete"`)), first)
-
-			mid := request(store, "api.anthropic.com", claudeUA, "s1")
-			mid.Body = anthropicBodyWithThinking()
-			run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": ""`)), mid)
-			assertUntouched(t, mid, "api.anthropic.com")
-			if v, _ := store.Get(originPrefix + "s1"); v != originForeign {
-				t.Errorf("origin after the move to own = %v, want %q", v, originForeign)
-			}
-
-			last := request(store, "api.anthropic.com", claudeUA, "s1")
-			last.Body = anthropicBodyWithThinking()
-			run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": "`+back+`"`)), last)
-			assertAnyRecord(t, last, pipeline.ActionModify, "reasoning_stripped", map[string]string{"blocks": "1"})
-		})
-	}
-}
-
-// Under observe a move to own moves nothing, so it records no origin either.
-func TestRouter_UnderObserveAMoveToOwnRecordsNoOrigin(t *testing.T) {
-	store := newStore(t)
-	first := request(store, eteHost, claudeUA, "s1")
-	first.Body = []byte(`{"model":"claude-opus-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	run(t, build(t, routerConfig(`"claude-code": "ete"`)), first)
-
-	mid := request(store, eteHost, claudeUA, "s1")
-	run(t, build(t, sessionsConfig(`"claude-code": "ete"`, `"s1": ""`), pipeline.WithPolicies(pipeline.ErrorPolicyObserve)), mid)
-	if v, _ := store.Get(originPrefix + "s1"); v != "ete" {
-		t.Errorf("origin = %v, want ete: observe moves nothing", v)
-	}
+	onETE := sessionsConfig(``, `"s1": "ete"`)
+	moved := send(t, store, onETE, history(thinkingTurn("p1")))
+	assertSignatures(t, moved)
+	next := send(t, store, onETE, history(thinkingTurn("p1"), thinkingTurn("e1")))
+	assertSignatures(t, next, "e1")
+	back := send(t, store, sessionsConfig(``, `"s1": ""`), history(thinkingTurn("p1"), thinkingTurn("e1"), thinkingTurn("e2")))
+	assertSignatures(t, back, "p1")
 }

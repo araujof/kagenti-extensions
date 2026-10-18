@@ -56,7 +56,7 @@ move. Probe scripts from the session that produced this spec: `/tmp/switch-probe
 
 | Format | Reasoning artifact | Crosses servers? |
 |---|---|---|
-| Anthropic `/v1/messages` | `thinking` block with `signature` | Sometimes: Bedrock-backed targets 403 a foreign signature and 400 a missing one; glm and ollama accept any |
+| Anthropic `/v1/messages` | `thinking` block with `signature` | Sometimes: Bedrock-backed targets 400 a missing one; glm and ollama accept any. A Bedrock 403 on a foreign signature, measured 2026-10-16, did not reproduce 2026-10-17; Bedrock 4.6 then stopped thinking with a foreign block in history instead |
 | Chat `/v1/chat/completions` | `reasoning_content`, `reasoning`, `thinking_blocks` | Always: every pairing 200, same server included |
 | Responses `/v1/responses` | `reasoning` item with `encrypted_content` | Sometimes: vLLM-backed glm 400s any input reasoning item; ollama and ete-int accept |
 
@@ -161,37 +161,35 @@ holds only history):
 - **Chat completions**: nothing. Measured: nothing in this format fails
   cross-server, so a strip would be pure loss.
 
-Provenance — deciding whether "the server that produced its reasoning" is
-the target — is one value per session in the plugin store
-(`inference-router/origin/<session>`, the pin's TTL, the substitutes'
-pattern):
+Provenance, revised 2026-10-17. A reasoning artifact is readable only by the
+server that wrote it, so each request of a moved session keeps the artifacts its
+destination wrote and drops the rest, before it is sent. One request stays one
+request, and a session moved back gets its first server's reasoning back. The
+first design stripped every artifact on every request after a move, the new
+server's own included; a second draft dropped only on a refusal and resent,
+which made every refused request two.
 
-- A session's first routed request records the target and strips nothing, when
-  nothing of a prior life shows: no pin, no reasoning already in the body, and no
-  earlier request in the session's recorded history. A session that ran on its own
-  provider holds no pin — its requests were skipped at the capture gate — so its
-  history and its body are the evidence, and a reasoning-free one-shot must not
-  hide them.
-- A later request whose target differs from the recorded origin strips, and
-  sets the origin to a sticky `foreign` sentinel, never again to a server
-  name. The client's history never forgets the old server's blocks (see
-  Evidence), so the provenance must not resolve back to the new server:
-  after a move the session strips on every switched request, its own
-  server's blocks included. Measured harmless: Bedrock accepts a tool-loop
-  continuation without thinking blocks, and glm completed a 4-turn loop with
-  its thinking stripped.
-- A steady state on one server — the ordinary routed agent, every request
-  "switched" — records and keeps origin == target and strips nothing: the
-  agent's own tool loops keep their reasoning.
-
-The strip runs on the same predicate as limit fitting (`switched()`:
-`RequestedHost() != ""` or a substituted model), in the same place, before
-`applyLimits`, on the body the pipeline holds. It records
-`modify/reasoning_stripped {blocks: N}` when it drops anything.
+- **Who wrote an artifact.** An artifact first appears in the request that
+  follows its writer's answer, the next request of the same conversation (the
+  router's `conversationKey`, so a subagent and a one-shot are their own). So
+  its writer is where that conversation's previous request went. The router
+  keeps, per moved session, each artifact's fingerprint to its writer, and each
+  conversation's latest destination (`inference-router/reasoning/<session>`, the
+  pin's TTL, renewed with the pin). Responses are never read, so streamed
+  answers need nothing.
+- **When it starts.** On the request that moves the session, from a pin or from
+  none: every artifact before the move is the server the session ran on
+  then. A session that never moves records nothing and drops nothing.
+- **What it covers.** Requests the router routes and requests it leaves
+  unrouted (a move to `own`, and an agent the override alone routed), so a move
+  to the client's own provider is covered. A fingerprint is the signature, a
+  redacted block's data, or a reasoning item's id and content; an unsigned block
+  (Ollama) adds its conversation and position, since two can share a text.
 
 Not done, on purpose:
 
-- No error-text matching, no learn-and-resend for reasoning. The signals are
+- No error-text matching, no learn-and-resend for reasoning: a resend makes one
+  request two. The signals are
   unusable: Bedrock's foreign-thinking 403 is AWS SigV4 signing language,
   indistinguishable from a real auth failure; vLLM's is a 157-error blob.
 - No signature-shape heuristics ("long base64 is Anthropic's"). The
@@ -231,16 +229,17 @@ confirmation text and the same running-session conventions as `use`/`reset`
 
 - Invocations: `routed` with `pin: moved` on the first request under an
   override that changed the server; `reasoning_stripped {blocks: N}` on
-  every request the strip touches. Both render in agentop's timeline
+  each request whose other servers' reasoning was dropped. Both render in agentop's timeline
   without new vocabulary (both are `modify`).
-- The plugin store gains one key family: `inference-router/origin/<session>`
-  (value: a server name, or `foreign`). It joins pins, refusals,
+- The plugin store gains one key family: `inference-router/reasoning/<session>`
+  (value: each reasoning artifact's fingerprint to the server that wrote it, and
+  each conversation's latest destination), for moved sessions only. It joins pins, refusals,
   substitutes, catalogs, limits and cuts in `~/.cortex/plugin-state.json`;
   `X` does not clear it, and it expires with the pin's TTL.
 - Docs: `docs/inference-router-plugin.md` (the sessions field, the strip,
   the moved pin), `docs/agents/claude-code.md` (moving a running session),
   `docs/plugin-catalog.md`, `cmd/agentop/README.md` (the `move` action and
-  the sessions-pane `S`), `docs/laptop-service.md` (the origin key in the
+  the sessions-pane `S`), `docs/laptop-service.md` (the reasoning key in the
   plugin-state paragraph).
 
 ## Testing
@@ -250,13 +249,14 @@ confirmation text and the same running-session conventions as `use`/`reset`
 - Unit (inferencerouter): the override beats pin and `unpinned`; the pin
   settles to the override; `pin: moved` recorded; removed-server 503 on an
   override's server; strip per format (thinking blocks, redacted_thinking,
-  empty-message drop, responses reasoning items, chat untouched); origin
-  state machine (first request records, mismatch strips and goes `foreign`,
-  `foreign` never resolves, steady state keeps); synthetic sessions never
+  empty-message drop, responses reasoning items, chat untouched); a session
+  that never moves keeps everything; a move drops the old server's artifacts and
+  keeps the new server's; a move back keeps the first server's; side requests,
+  pinless sessions and `own` are covered; synthetic sessions never
   overridden.
 - Integration (forwardproxy, the `inferencerouter_test.go` pattern): a
   session running on server A, config gains a `sessions:` entry for B, next
-  request goes to B with B's key and stripped reasoning; the timeline shows
+  request goes to B with B's key and A's reasoning dropped, one request per turn; the timeline shows
   the move; a second request stays on B.
 - agentop: the edit write/read of a sessions entry; the prune rule; TUI `S`
   on a session row applies to that session only.

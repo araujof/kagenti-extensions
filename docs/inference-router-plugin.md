@@ -6,7 +6,7 @@ and keeps every session on the
 server it started on, wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
 beyond going through the proxy. Routing is opt-in per agent: an agent not listed
-under `agents` is not routed, and its requests, keys included, pass untouched. Manage it
+under `agents` is not routed, and its requests go where it sent them, keys untouched. Manage it
 with [`agentop server`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server);
 the config stays hand-editable. Built for the laptop: it needs a listener that
 honors a redirect, so `cortex-envoy` and a config with an `mtls:` block refuse it
@@ -97,8 +97,9 @@ decides:
   entry's server (or, for `""`, where the client sent it), and the session's pin is
   settled to it, so removing the entry later leaves the session where the move put
   it. An entry applies to the session id whatever agent's request carries it; the
-  pin it settles keeps its agent binding. What makes the moved history acceptable
-  is the strip below; what it costs is the cache — the session's whole context is
+  pin it settles keeps its agent binding. The moved history loses only the
+  reasoning the new server cannot read (see Reasoning below); what a move costs is
+  the cache — the session's whole context is
   re-sent uncached on its first turn at the new server, which `agentop server move`
   and the TUI's confirmation say before the write.
 - A pin is its agent's. A request from another agent filed under the same session
@@ -118,7 +119,8 @@ decides:
   current server, unpinned, and so does one filed under a synthetic session — the
   `default` bucket or a `pending:<agent>` id — since each holds many conversations,
   not one.
-- Not routed: `skip/not_routed`, and the request is left as the client sent it.
+- Not routed: `skip/not_routed`, and the request goes where the client sent it, its key
+  untouched. Its body changes only for a moved session (see Reasoning).
 - Pinned to a server since removed: `deny/pinned_server_removed`, a 503 asking for
   a new session. The conversation is never moved to another server.
 - Otherwise the request is redirected to the server, and the key is replaced only
@@ -176,24 +178,24 @@ decides:
   one for which a limit is learned but fitting changes nothing is recorded as
   `skip/limit_not_fitted`. The agent is not told: its own display keeps the whole
   conversation.
-- **Reasoning.** A request the router sends to a server other than the one that
-  produced its reasoning has that reasoning dropped — the artifacts only their
-  producer can validate: `thinking` and `redacted_thinking` blocks in Anthropic
-  messages (a message the drop empties goes whole; an empty content array is
-  refused at Anthropic, and a thinking-only turn carries no tool use), and
-  `reasoning` items in a responses-format `input`. Chat-completions bodies are
-  never touched: their reasoning fields are plain text every server measured
-  accepts. What is decided per session, in the plugin store with the pin's TTL
-  (`inference-router/origin/<session>`): the server that produced the session's
-  reasoning, recorded on its first routed request. Once a request's target differs
-  from that record the origin is `(foreign)` for good — the client re-sends its own
-  history, so blocks from the old server stay in it however many turns pass on the
-  new one — and every routed request strips, the target's own reasoning included:
-  harmless where measured (Anthropic thinking text is empty, encrypted; a server
-  that can read its own blocks simply regenerates them), and required where a
-  server refuses blocks it cannot verify (Bedrock) or a producer left no signature
-  at all (Ollama). Each strip is recorded as `modify/reasoning_stripped` with the
-  number of artifacts dropped.
+- **Reasoning.** A session's reasoning artifacts can be read only by the server
+  that wrote them: `thinking` and `redacted_thinking` blocks in Anthropic messages,
+  and `reasoning` items in a responses-format `input`. Another server ignores them
+  at best; Bedrock 4.6 models stop thinking with another server's in their history,
+  and Bedrock refuses Ollama's unsigned blocks. So once a session has moved, each
+  request it sends keeps the artifacts its destination wrote and drops the rest,
+  before it is sent (a message the drop empties goes whole: an empty content array
+  is refused at Anthropic). A session moved back gets its first server's artifacts
+  back. Chat-completions bodies are never touched: their reasoning fields are plain
+  text every server measured accepts. A session that never moves has nothing
+  dropped and nothing recorded. To know who wrote what, the router keeps, per moved
+  session, which server each artifact was first sent after: an artifact first
+  appears in the request that follows its writer's answer, so its writer is where
+  that conversation's previous request went (`inference-router/reasoning/<session>`,
+  in the plugin store with the pin's TTL, renewed with the pin). Moves to the
+  client's own provider are covered too, though their requests are not routed.
+  Each drop is recorded as `modify/reasoning_stripped` with the number of
+  artifacts dropped.
 - A redirect the listener refuses: `deny/redirect_failed`, a 503.
 - Under `on_error: observe` nothing moves, the client's key stays and no model is
   chosen or re-sent. The timeline shows two rows: the framework's shadow
