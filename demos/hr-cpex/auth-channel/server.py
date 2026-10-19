@@ -41,8 +41,8 @@ logger = logging.getLogger("auth-channel")
 
 
 def _safe(value: object) -> str:
-    """A value fit for one log line: control characters, newlines included, escaped."""
-    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(value))
+    """A value fit for one log line: newlines and carriage returns removed."""
+    return str(value).replace("\r", "").replace("\n", "")
 
 
 KEYCLOAK_BASE = os.environ.get("KEYCLOAK_BASE", "http://keycloak.cpex-demo:8080")
