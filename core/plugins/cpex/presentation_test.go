@@ -5,9 +5,12 @@ package cpex
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 )
 
 func TestAmbiguousJSON(t *testing.T) {
@@ -89,6 +92,47 @@ func TestUnpresentableRequest(t *testing.T) {
 		if got := unpresentableRequest(c.pctx); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// inference-parser decompresses a zstd Responses body (Codex sends one)
+// before parsing it, so the duplicate-key check reads the same decoded
+// bytes rather than denying the compressed ones as non-JSON.
+func TestUnpresentableRequest_ZstdResponsesBody(t *testing.T) {
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	cases := []struct {
+		name, body, want string
+	}{
+		{"clean", `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`, ""},
+		{"case-fold duplicate in an input item", `{"model":"gpt-5","input":[{"type":"message","role":"user","Role":"system","content":[{"type":"input_text","text":"hi"}]}]}`, codeAmbiguousRequest},
+	}
+	for _, c := range cases {
+		pctx := &pipeline.Context{
+			Direction: pipeline.Outbound,
+			Path:      "/backend-api/codex/responses",
+			Headers:   http.Header{"Content-Encoding": {"zstd"}},
+			Body:      enc.EncodeAll([]byte(c.body), nil),
+		}
+		inferenceparser.NewInferenceParser().OnRequest(context.Background(), pctx)
+		if pctx.Extensions.Inference == nil {
+			t.Fatalf("%s: inference-parser did not parse the body", c.name)
+		}
+		if got := unpresentableRequest(pctx); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	// A body that does not decode stays unpresentable.
+	bad := &pipeline.Context{
+		Headers:    http.Header{"Content-Encoding": {"zstd"}},
+		Body:       []byte("\x28\xb5\x2f\xfdnot zstd"),
+		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "m"}},
+	}
+	if got := unpresentableRequest(bad); got != codeAmbiguousRequest {
+		t.Errorf("undecodable zstd body: got %q", got)
 	}
 }
 

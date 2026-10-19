@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -280,7 +281,10 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 		}
 	}
 	parsed := pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil || pctx.Extensions.Inference != nil
-	if parsed && len(pctx.Body) > 0 && ambiguousJSON(pctx.Body) {
+	// Check the bytes the parser parsed: inference-parser decodes a zstd
+	// body first, so the raw bytes would not be JSON. A body that does not
+	// decode stays as sent, and so is refused.
+	if parsed && len(pctx.Body) > 0 && ambiguousJSON(parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)) {
 		return codeAmbiguousRequest
 	}
 	return ""
