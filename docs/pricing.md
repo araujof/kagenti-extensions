@@ -124,16 +124,9 @@ this is vendor-specific: it is written on the rate, so the first Anthropic model
 bound goes the same way.
 
 A further 77 first-party rows carry no positive per-token rate, so there is nothing for
-this table to hold. Seventy-two bill in another unit — the image, video, speech and
-transcription models and a code-interpreter container, priced per image, pixel, second,
-character or session — and a `pricing:` entry cannot express those units either. The
-other five are OpenAI's moderation models (`omni-moderation-*`, `text-moderation-*`),
-which LiteLLM lists at $0 because OpenAI does not charge for them; the generator keeps
-only rates above zero, so they are skipped with the rest rather than shipped as free.
-Neither group is looked up in practice: inference-parser reads the model only from the
-Messages, Chat Completions and Responses endpoints, and these models are served from
-their own (`/v1/moderations`, `/v1/images` and the like), so a call to one never reaches
-this table.
+this table to hold. Most are image, video and audio models billed in other units, which a
+`pricing:` entry cannot express either; the other five are OpenAI's moderation models,
+which are free.
 
 ### Free models ship at zero
 
