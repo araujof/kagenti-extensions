@@ -39,6 +39,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("auth-channel")
 
+
+def _safe(value: object) -> str:
+    """A value fit for one log line: control characters, newlines included, escaped."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(value))
+
+
 KEYCLOAK_BASE = os.environ.get("KEYCLOAK_BASE", "http://keycloak.cpex-demo:8080")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "cpex-demo")
 CALLBACK_URL = f"{KEYCLOAK_BASE}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/ext/ciba/auth/callback"
@@ -69,7 +75,9 @@ async def ciba_auth(request: Request) -> JSONResponse:
             "received": time.strftime("%Y-%m-%d %H:%M:%S"),
             "token": auth[len("Bearer ") :],
         }
-    logger.info("approval request %s for %s: %s", rid, body.get("login_hint"), body.get("binding_message"))
+    logger.info(
+        "approval request %s for %s: %s", rid, _safe(body.get("login_hint")), _safe(body.get("binding_message"))
+    )
     # Keycloak treats anything but 201 as a failed delivery.
     return JSONResponse({"id": rid}, status_code=201)
 
@@ -97,11 +105,11 @@ def _answer(rid: str, status: str) -> tuple[int, dict[str, Any]]:
         logger.warning("callback to Keycloak failed: %s", e)
         return 502, {"error": "Keycloak unreachable"}
     if code != 200:
-        logger.warning("Keycloak refused the %s callback for %s: HTTP %d", status, rid, code)
+        logger.warning("Keycloak refused the %s callback for %s: HTTP %d", _safe(status), _safe(rid), code)
         return 502, {"error": f"Keycloak answered {code}"}
     with _lock:
         r["status"] = "approved" if status == "SUCCEED" else "denied"
-    logger.info("request %s %s", rid, r["status"])
+    logger.info("request %s %s", _safe(rid), r["status"])
     return 200, _public(rid, r)
 
 
