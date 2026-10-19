@@ -123,10 +123,17 @@ report as *priceable but unpriced* and take a `pricing:` entry of your own. Noth
 this is vendor-specific: it is written on the rate, so the first Anthropic model past the
 bound goes the same way.
 
-A further 77 first-party rows carry no per-token rate at all — the image, audio and
-realtime-transcription models, billed per image or per second — so there is nothing for
-this table to hold. They are not a gap this page can close, and a `pricing:` entry cannot
-express those units either.
+A further 77 first-party rows carry no positive per-token rate, so there is nothing for
+this table to hold. Seventy-two bill in another unit — the image, video, speech and
+transcription models and a code-interpreter container, priced per image, pixel, second,
+character or session — and a `pricing:` entry cannot express those units either. The
+other five are OpenAI's moderation models (`omni-moderation-*`, `text-moderation-*`),
+which LiteLLM lists at $0 because OpenAI does not charge for them; the generator keeps
+only rates above zero, so they are skipped with the rest rather than shipped as free.
+Neither group is looked up in practice: inference-parser reads the model only from the
+Messages, Chat Completions and Responses endpoints, and these models are served from
+their own (`/v1/moderations`, `/v1/images` and the like), so a call to one never reaches
+this table.
 
 ### Free models ship at zero
 
