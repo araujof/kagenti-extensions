@@ -289,7 +289,7 @@ func TestInferenceParser_ResponsesAPI_ZstdDecodeSizeCapped(t *testing.T) {
 		t.Fatal("decompression succeeded past parsercommon.MaxDecodedRequestSize — the cap did not apply")
 	}
 	// Rejected decompression falls back to the original (still-compressed) bytes per
-	// maybeDecompressRequest's documented contract.
+	// parsercommon.DecodeRequestBody's documented contract.
 	if !bytes.Equal(out, compressed) {
 		t.Error("expected the original compressed bytes back when the decoded size cap is exceeded")
 	}

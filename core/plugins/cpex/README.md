@@ -379,7 +379,9 @@ parsers decode into structs: the request envelope, JSON-RPC `params`, the A2A
 message and its parts, inference `messages[]` and content blocks, Responses
 `input[]` items, and tool definitions. It also counts at every depth under MCP
 `params.arguments`, which servers commonly bind into a struct with
-`encoding/json`. Everywhere else (tool schemas, A2A data parts, `metadata`,
+`encoding/json`; the body cannot tell a struct from a map, so a map-valued
+argument such as an `env` or `headers` map is denied too when two of its keys
+differ only in case. Everywhere else (tool schemas, A2A data parts, `metadata`,
 `response_format`, and inference tool calls, whose arguments are a JSON string
 or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than

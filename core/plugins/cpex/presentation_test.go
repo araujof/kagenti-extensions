@@ -43,6 +43,11 @@ func TestAmbiguousJSON(t *testing.T) {
 		`{"method":"tools/call","params":{"name":"t","arguments":{"opts":{"mode":"ro","Mode":"rw"}}}}`:                          true,
 		`{"method":"tools/call","params":{"name":"t","arguments":{"a":[[{"k":1,"K":2}]]}}}`:                                     true,
 		`{"method":"tools/call","params":{"name":"t","arguments":{"path":"/a","opts":{"mode":"ro"},"list":[{"x":1},{"x":2}]}}}`: false,
+		// A known false positive, accepted on purpose: the bytes cannot tell a
+		// struct from a map, so a map-valued argument with keys that differ
+		// only in case is denied too.
+		`{"method":"tools/call","params":{"name":"run_command","arguments":{"env":{"HTTPS_PROXY":"http://p","https_proxy":"http://p"}}}}`: true,
+		`{"method":"tools/call","params":{"name":"run_command","arguments":{"env":{"HTTPS_PROXY":"http://p"}}}}`:                          false,
 		// Keys inside data objects are not struct fields, so only exact
 		// repeats count there. A tool_use input in inference history is the
 		// model's earlier call, not one a server binds from this request,
