@@ -292,10 +292,10 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 
 // ambiguousJSON reports whether body is not valid JSON, or has an object
 // with a repeated key, or two keys equal under Unicode case folding in an
-// object the parsers decode into Go structs (see shapeOf). Everywhere else
-// (tool schemas and arguments, A2A data parts, metadata, response formats)
-// keys are data, which every side decodes as a map, so only exact repeats
-// count there.
+// object the parsers decode into Go structs or a server commonly binds to
+// one (MCP tool arguments, at any depth; see shapeOf). Everywhere else
+// (tool schemas, A2A data parts, metadata, response formats) keys are data,
+// which every side decodes as a map, so only exact repeats count there.
 func ambiguousJSON(body []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	type frame struct {
@@ -333,6 +333,8 @@ func ambiguousJSON(body []byte) bool {
 					top.expectKey = false
 				case d == '{':
 					f.shape = top.shape
+				case top.shape == shapeArguments:
+					f.shape = shapeArguments
 				default:
 					f.shape = shapeData // an array in an array
 				}
@@ -383,6 +385,10 @@ const (
 	shapeToolNamespace           // Responses input[].tools[] namespace
 	shapeTool                    // inference tools[] item, Responses tool def
 	shapeFunction                // OpenAI tools[].function
+	// shapeArguments is MCP params.arguments and everything under it. A
+	// server commonly binds arguments into a struct with encoding/json, so
+	// keys fold at every depth.
+	shapeArguments
 )
 
 // member is the shape of the value under one key of a struct-decoded
@@ -408,7 +414,7 @@ var shapeTransitions = func() map[jsonShape]map[string]member {
 			"tools":    list(shapeTool),
 			"system":   list(shapeBlock),
 		},
-		shapeParams:        {"message": obj(shapeA2AMessage)},
+		shapeParams:        {"message": obj(shapeA2AMessage), "arguments": obj(shapeArguments)},
 		shapeA2AMessage:    {"parts": list(shapeA2APart)},
 		shapeMessage:       {"content": list(shapeBlock)},
 		shapeBlock:         {"content": list(shapeBlock)},
@@ -429,6 +435,9 @@ var shapeTransitions = func() map[jsonShape]map[string]member {
 // shapeOf is the shape of the object, or with list of the objects in the
 // array, under key in an object of shape parent.
 func shapeOf(parent jsonShape, key string, list bool) jsonShape {
+	if parent == shapeArguments {
+		return shapeArguments
+	}
 	m, ok := shapeTransitions[parent][foldKey(key)]
 	if !ok || m.list != list {
 		return shapeData

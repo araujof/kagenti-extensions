@@ -27,7 +27,7 @@ func TestAmbiguousJSON(t *testing.T) {
 		`{"kind":"a","Kind":"b"}`:                                             true,
 		`{"params":{"arguments":{"path":"/ok"},"arguments":{"path":"/etc"}}}`: true,
 		`{"a":1`: true,
-		`{"params":{"arguments":{"Path":"/a","path":"/b"}}}`:                                  false,
+		`{"params":{"arguments":{"Path":"/a","path":"/b"}}}`:                                  true,
 		`{"tools":[{"input_schema":{"properties":{"ID":{},"id":{}}}}]}`:                       false,
 		`{"params":{"arguments":{"path":"/a","path":"/b"}}}`:                                  true,
 		`{"params":{"arguments":{"x":{}},"Name":"a","name":"b"}}`:                             true,
@@ -36,9 +36,17 @@ func TestAmbiguousJSON(t *testing.T) {
 		`{"input":[{"type":"function_call","arguments":"{}","call_id":"c"}]}`:                 false,
 		`{"input":{"Path":"/a","path":"/b"}}`:                                                 false,
 		`{"messages":[{"content":[{"type":"tool_use","input":{"ID":1,"id":2}}]}]}`:            false,
-		`{"params":{"arguments":{"list":[{"Path":"/a","path":"/b"}]}}}`:                       false,
+		`{"params":{"arguments":{"list":[{"Path":"/a","path":"/b"}]}}}`:                       true,
+		// MCP servers commonly bind tool arguments into a struct with
+		// encoding/json, so arguments fold at every depth.
+		`{"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/workspace/ok","Path":"/etc/shadow"}}}`:       true,
+		`{"method":"tools/call","params":{"name":"t","arguments":{"opts":{"mode":"ro","Mode":"rw"}}}}`:                          true,
+		`{"method":"tools/call","params":{"name":"t","arguments":{"a":[[{"k":1,"K":2}]]}}}`:                                     true,
+		`{"method":"tools/call","params":{"name":"t","arguments":{"path":"/a","opts":{"mode":"ro"},"list":[{"x":1},{"x":2}]}}}`: false,
 		// Keys inside data objects are not struct fields, so only exact
-		// repeats count there.
+		// repeats count there. A tool_use input in inference history is the
+		// model's earlier call, not one a server binds from this request,
+		// and function-call arguments are a JSON string.
 		`{"model":"m","messages":[],"response_format":{"type":"json_schema","json_schema":{"schema":{"properties":{"ID":{},"id":{}}}}}}`: false,
 		`{"model":"m","input":[],"text":{"format":{"type":"json_schema","schema":{"properties":{"ID":{},"id":{}}}}}}`:                    false,
 		`{"method":"message/send","params":{"message":{"parts":[{"kind":"data","data":{"ID":1,"id":2}}]}}}`:                              false,

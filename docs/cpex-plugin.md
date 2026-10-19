@@ -345,7 +345,7 @@ plugins:
 | `cpex.delegation_destination_mismatch` | 403 | A `delegate(...)` step minted a credential whose target `delegated_credential_hosts` does not bind to the request's host. Nothing is written to the request. |
 | `cpex.delegation_unavailable` | 403 | A `delegate(...)` step granted a token the plugin cannot forward: `delegated_credentials` is off, or the credential names a header outside `delegated_credential_headers`, or came back without its value. Forwarding would send the caller's own bearer where the policy asked for the delegated one, so the request is denied. |
 | `cpex.unnamed_entity` | 403 | An MCP `tools/call` or `prompts/get` with no name, or a `resources/read` with no URI. |
-| `cpex.ambiguous_request` | 403 | A parsed JSON body has a repeated key, or two keys equal under case folding in an object the parsers decode into a struct (the envelope, `params`, messages, content blocks, Responses `input[]` items, A2A message and parts, tool definitions), so policy and the server could read different requests. |
+| `cpex.ambiguous_request` | 403 | A parsed JSON body has a repeated key, or two keys equal under case folding in an object the parsers decode into a struct (the envelope, `params`, messages, content blocks, Responses `input[]` items, A2A message and parts, tool definitions) or a server commonly binds to one (MCP `params.arguments`, at any depth), so policy and the server could read different requests. |
 
 The last five are decided by the plugin rather than by policy, and
 `fail_open` does not apply to them.

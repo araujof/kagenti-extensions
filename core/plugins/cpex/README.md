@@ -377,9 +377,11 @@ the last repeat, a server may not, and policy would judge a different request
 from the one the server runs. Case folding counts only in the objects the
 parsers decode into structs: the request envelope, JSON-RPC `params`, the A2A
 message and its parts, inference `messages[]` and content blocks, Responses
-`input[]` items, and tool definitions. Everywhere else (tool arguments and
-schemas, A2A data parts, `metadata`, `response_format`) only exact repeats
-count. An MCP `tools/call` or `prompts/get` with no name, or a
+`input[]` items, and tool definitions. It also counts at every depth under MCP
+`params.arguments`, which servers commonly bind into a struct with
+`encoding/json`. Everywhere else (tool schemas, A2A data parts, `metadata`,
+`response_format`, and inference tool calls, whose arguments are a JSON string
+or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
 taking the global identification. Neither denial is subject to `fail_open`.
 
