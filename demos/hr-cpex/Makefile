@@ -66,7 +66,7 @@ MODEL        ?= ollama/llama3:latest
 # SPIRE (the workload scenario). Detected from the spire namespace, so a
 # plain `make apply` keeps a cluster `make spire` set up; WITH_SPIRE=0
 # overrides.
-WITH_SPIRE ?= $(if $(shell $(KUBECTL) get namespace spire -o name 2>/dev/null),1,0)
+WITH_SPIRE ?= $(if $(shell $(KUBECTL) --request-timeout=5s get namespace spire -o name 2>/dev/null),1,0)
 SPIRE_AGENT_ID := spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent
 SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server
 
@@ -76,7 +76,7 @@ SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /op
 # the live sidecar config, so a plain `make scenarios` matches how the
 # demo was applied; a plain `make apply` keeps the setting, and
 # CPEX_DELEGATION=pending|available overrides.
-CPEX_DELEGATION ?= $(if $(shell $(KUBECTL) -n $(NAMESPACE) get configmap authbridge-config -o jsonpath='{.data.authbridge\.yaml}' 2>/dev/null | grep -E '^[[:space:]]*delegated_credentials:[[:space:]]*true'),available,pending)
+CPEX_DELEGATION ?= $(if $(shell $(KUBECTL) --request-timeout=5s -n $(NAMESPACE) get configmap authbridge-config -o jsonpath='{.data.authbridge\.yaml}' 2>/dev/null | grep -E '^[[:space:]]*delegated_credentials:[[:space:]]*true'),available,pending)
 
 .PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy walkthrough record demo-check
 
