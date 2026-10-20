@@ -190,43 +190,63 @@ reset_upstream() {
     || note "warning: could not reach the upstream recorder at $UPSTREAM"
 }
 
-_upstream() { curl -fsS "$UPSTREAM/_requests" 2>/dev/null; }
+# The recorder's JSON, or nothing when it cannot be reached. Every check
+# below reports an empty read as a failure, never as a pass, and never
+# ends the scenario: under `set -euo pipefail` a bare curl failure would.
+_upstream() { curl -fsS "$UPSTREAM/_requests" 2>/dev/null || true; }
+
+# Usage: _upstream_read <var>; sets <var> to the recorder's JSON, or
+# reports a failure and returns 1.
+_upstream_read() {
+  local _json
+  _json="$(_upstream)"
+  if [ -z "$_json" ]; then
+    fail_ "could not read hr-mcp's recorder at $UPSTREAM"
+    return 1
+  fi
+  printf -v "$1" '%s' "$_json"
+}
 
 expect_upstream_calls() {
-  local want="$1" got
-  got="$(_upstream | jq -r '.count // empty')"
+  local want="$1" json got
+  _upstream_read json || return 0
+  got="$(printf '%s' "$json" | jq -r '.count // empty' 2>/dev/null)" || got=""
   if [ "$got" = "$want" ]; then
     if [ "$want" = "0" ]; then pass_ "hr-mcp never saw the call"; else pass_ "hr-mcp saw $want call(s)"; fi
   else
-    fail_ "expected $want hr-mcp call(s), got ${got:-<unreachable>}"
+    fail_ "expected $want hr-mcp call(s), got ${got:-<unreadable>}"
   fi
 }
 
 expect_upstream_header() {
-  local name="$1" want="$2" got
-  got="$(_upstream | jq -r --arg h "$name" '.requests[-1].headers[$h] // empty' 2>/dev/null)"
+  local name="$1" want="$2" json got
+  _upstream_read json || return 0
+  got="$(printf '%s' "$json" | jq -r --arg h "$name" '.requests[-1].headers[$h] // empty' 2>/dev/null)" || got=""
   if [ "$got" = "$want" ]; then pass_ "hr-mcp $name = $want"; else fail_ "expected hr-mcp $name = '$want', got '${got:-<absent>}'"; fi
 }
 
 expect_upstream_no_header() {
-  local name="$1"
-  if _upstream | jq -e --arg h "$name" '.requests[-1].headers | has($h)' >/dev/null 2>&1; then
-    fail_ "expected hr-mcp not to see $name, but it was present"
-  else
-    pass_ "hr-mcp never saw $name"
-  fi
+  local name="$1" seen
+  seen="$(_upstream | jq -r --arg h "$name" '.requests[-1].headers // error("no request") | has($h)' 2>/dev/null)" || seen=""
+  case "$seen" in
+    false) pass_ "hr-mcp never saw $name" ;;
+    true)  fail_ "expected hr-mcp not to see $name, but it was present" ;;
+    *)     fail_ "could not read hr-mcp's last request at $UPSTREAM" ;;
+  esac
 }
 
 expect_upstream_arg() {
-  local name="$1" want="$2" got
-  got="$(_upstream | jq -r --arg a "$name" '.requests[-1].arguments[$a] // empty' 2>/dev/null)"
+  local name="$1" want="$2" json got
+  _upstream_read json || return 0
+  got="$(printf '%s' "$json" | jq -r --arg a "$name" '.requests[-1].arguments[$a] // empty' 2>/dev/null)" || got=""
   if [ "$got" = "$want" ]; then pass_ "hr-mcp args.$name = $want"; else fail_ "expected hr-mcp args.$name = '$want', got '${got:-<absent>}'"; fi
 }
 
 # The token hr-mcp was handed: the IdP-minted one for its audience.
 expect_upstream_audience() {
-  local want="$1" got
-  got="$(_upstream | jq -r '.requests[-1].headers.authorization.jwt.aud // [] | join(",")' 2>/dev/null)"
+  local want="$1" json got
+  _upstream_read json || return 0
+  got="$(printf '%s' "$json" | jq -r '.requests[-1].headers.authorization.jwt.aud // [] | join(",")' 2>/dev/null)" || got=""
   case ",$got," in
     *",$want,"*) pass_ "hr-mcp authorization aud=$want (minted, not the caller's)" ;;
     *) fail_ "expected hr-mcp authorization aud=$want, got '${got:-<none>}'" ;;
@@ -316,7 +336,7 @@ expect_pending() {
 
 # Ids of the requests the channel already holds, so a scenario answers
 # only its own.
-approvals_seen() { curl -fsS "$AUTH_CHANNEL/requests" 2>/dev/null | jq -r '.[].id' 2>/dev/null; }
+approvals_seen() { { curl -fsS "$AUTH_CHANNEL/requests" 2>/dev/null || true; } | jq -r '.[].id' 2>/dev/null || true; }
 
 # Usage: seen=$(approvals_seen); <call>; answer_approval approve|deny <approver> "$seen"
 answer_approval() {
