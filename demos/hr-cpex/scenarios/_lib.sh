@@ -238,11 +238,13 @@ expect_upstream_header() {
 }
 
 expect_upstream_no_header() {
-  local name="$1" seen
-  seen="$(_upstream | jq -r --arg h "$name" '.requests[-1].headers // error("no request") | has($h)' 2>/dev/null)" || seen=""
+  local name="$1" json seen
+  _upstream_read json || return 0
+  seen="$(printf '%s' "$json" | jq -r --arg h "$name" 'if (.requests | length) == 0 then "none" else (.requests[-1].headers // error("no headers") | has($h)) end' 2>/dev/null)" || seen=""
   case "$seen" in
     false) pass_ "hr-mcp never saw $name" ;;
     true)  fail_ "expected hr-mcp not to see $name, but it was present" ;;
+    none)  fail_ "hr-mcp has recorded no request yet" ;;
     *)     fail_ "could not read hr-mcp's last request at $UPSTREAM" ;;
   esac
 }
