@@ -180,7 +180,7 @@ Options:
   --yes, -y          do not ask; apply the changes setup lists
   --cpex             install cortex built with the cpex policy plugin (macOS
                      arm64, Linux amd64/arm64). Re-run without it to switch back
-  --ref=REF         install from a git ref instead of the newest stable release —
+  --ref=REF          install from a git ref instead of the newest stable release —
                      both this script and the binaries (e.g. --ref=main for
                      unreleased changes, --ref=v0.8.1 to pin). The only way to
                      get a release candidate: --ref=v0.9.0-rc.1
