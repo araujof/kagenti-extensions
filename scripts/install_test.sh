@@ -2019,8 +2019,33 @@ MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 nocpex
 T_UNAME="Linux x86_64"
 run_install ok release --ref=v9.9.9 --cpex
 check "--cpex with no cortex-cpex entry in checksums.txt dies" "1 yes" \
-	"${T_ST} $(t_in 'checksums.txt has no usable entry for cortex-cpex_v9.9.9_linux_amd64.tar.gz' err)"
+	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err)"
 check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+
+# A release from before --cpex: no cortex-cpex archive at all. Refused once
+# checksums.txt is read, before any archive is fetched or a stage made, and the
+# installed cortex is left as it was.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
+T_UNAME="Linux x86_64"
+T_INSTALLED=plain
+run_install ok release --ref=v9.9.9 --cpex
+check "--cpex against a release with no cpex build: dies saying so" "1 yes" \
+	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err)"
+check "  fetching only checksums.txt, staging nothing" "1 0 0" \
+	"$(grep -c '/checksums\.txt$' "${T_RUN}/urls" || true) $(grep -c '\.tar\.gz$' "${T_RUN}/urls" || true) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ')"
+check "  running no agentop, and leaving the installed cortex alone" "0 0 cortex v9.9.9" \
+	"$(t_nlog probe) $(t_nlog argv) $("${T_RUN}/home/.local/bin/cortex" --version)"
+
+# Piped, the same release: the bootstrap refuses before re-execing that release's
+# install.sh, which would only say "unknown option: --cpex".
+cat >"${T_REL}/install.sh" <<'EOF'
+printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
+EOF
+T_UNAME="Linux x86_64"
+T_PIPE=1
+run_install ok release --ref=v9.9.9 --cpex
+check "piped --cpex against a release with no cpex build: dies before re-exec" "1 yes 0 0" \
+	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err) $(grep -c '^child' "${T_RUN}/out" || true) $(grep -c '/install\.sh$' "${T_RUN}/urls" || true)"
 
 # Leaving the cpex build is announced; staying on either build is not.
 _switch='Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it).'
@@ -2044,6 +2069,7 @@ check "default installed, re-run without --cpex: no notice" "0 no" "${T_ST} $(t_
 cat >"${T_REL}/install.sh" <<'EOF'
 printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
 EOF
+T_UNAME="Linux x86_64"
 T_PIPE=1
 run_install ok release --ref=v9.9.9 --cpex --yes
 check "piped: the released copy gets --cpex, and not --ref" "child [--cpex] [--yes]" \

@@ -388,6 +388,43 @@ ere_escape() {
 	printf '%s' "$1" | sed 's/[].[^$()*+?{}|\\]/\\&/g'
 }
 
+# detect_platform sets os and arch to the names the release archives use.
+detect_platform() {
+	os=$(uname -s)
+	case "$os" in
+		Darwin) os=darwin ;;
+		Linux) os=linux ;;
+		*) die "unsupported OS: $os (the installer supports macOS and Linux)" ;;
+	esac
+	arch=$(uname -m)
+	case "$arch" in
+		x86_64 | amd64) arch=amd64 ;;
+		arm64 | aarch64) arch=arm64 ;;
+		*) die "unsupported architecture: $arch (supported: amd64, arm64)" ;;
+	esac
+}
+
+# cpex_platform_check dies unless the release builds cortex-cpex for os/arch, which
+# it does only where CPEX publishes its FFI library for the platform.
+cpex_platform_check() {
+	case "${os}/${arch}" in
+		darwin/arm64 | linux/amd64 | linux/arm64) ;;
+		*) die "--cpex is not available for ${os}/${arch} (supported: darwin/arm64, linux/amd64, linux/arm64)" ;;
+	esac
+}
+
+# require_cpex_build dies unless release $1's checksums.txt lists the cortex-cpex
+# archive for os/arch, matched as verification matches it below. A release from
+# before --cpex has none, and its own install.sh rejects the flag as unknown, so this
+# runs before anything is staged and before the bootstrap hands off to that script.
+require_cpex_build() { # version
+	_rc_sums=$(curl -fsSL "https://github.com/${REPO}/releases/download/$1/checksums.txt" 2>/dev/null) \
+		|| die "could not fetch checksums.txt for $1"
+	_rc_re=$(ere_escape "cortex-cpex_$1_${os}_${arch}.tar.gz")
+	printf '%s\n' "${_rc_sums}" | grep -qE "^[0-9a-fA-F]+[[:space:]]+\*?(\./)?${_rc_re}\$" \
+		|| die "release $1 has no cpex build for ${os}/${arch}"
+}
+
 # --- run the released copy of this script, not the one from main ---
 #
 # The documented command fetches this file from main, which is whatever landed
@@ -451,6 +488,18 @@ if [ -n "${_reexec}" ]; then
 		SCRIPT_REF="main"
 		VERSION_REF="main"
 	else
+		# --cpex, checked here because a released script that predates it would only
+		# say "unknown option". Only a release tag names binaries; any other ref's
+		# script resolves its own.
+		if [ -n "${CPEX:-}" ]; then
+			case "${want_ref}" in
+				v*)
+					detect_platform
+					cpex_platform_check
+					require_cpex_build "${want_ref}"
+					;;
+			esac
+		fi
 		# Rebuild the argument list without --ref: it is meta, consumed here, and a
 		# released script from before --ref existed rejects it as an unknown option.
 		# Rotating the positional parameters keeps arguments with spaces intact,
@@ -1074,19 +1123,7 @@ hand_off() {
 }
 
 # --- detect platform ---
-os=$(uname -s)
-case "$os" in
-	Darwin) os=darwin ;;
-	Linux) os=linux ;;
-	*) die "unsupported OS: $os (the installer supports macOS and Linux)" ;;
-esac
-
-arch=$(uname -m)
-case "$arch" in
-	x86_64 | amd64) arch=amd64 ;;
-	arm64 | aarch64) arch=arm64 ;;
-	*) die "unsupported architecture: $arch (supported: amd64, arm64)" ;;
-esac
+detect_platform
 
 # --- stop and exit, if asked ---
 # Placed after the helpers and platform detection (so stop_cortex has what it needs)
@@ -1098,13 +1135,9 @@ if [ "${MODE}" = "stop" ]; then
 fi
 
 # --- --cpex: only where the cpex build is published ---
-# Before anything is resolved or staged. The release builds cortex-cpex only where
-# CPEX publishes its FFI library for the platform.
+# Before anything is resolved or staged.
 if [ -n "${CPEX}" ]; then
-	case "${os}/${arch}" in
-		darwin/arm64 | linux/amd64 | linux/arm64) ;;
-		*) die "--cpex is not available for ${os}/${arch} (supported: darwin/arm64, linux/amd64, linux/arm64)" ;;
-	esac
+	cpex_platform_check
 	[ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" != "1" ] \
 		|| die "--cpex selects what to download, and AUTHBRIDGE_SKIP_DOWNLOAD=1 downloads nothing"
 fi
@@ -1125,6 +1158,8 @@ fi
 # binaries it installs are one tested set rather than two independently-moving things.
 version=$(resolve_version "${VERSION_REF}") \
 	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
+# The release may predate --cpex: say so before staging anything.
+[ -z "${CPEX}" ] || require_cpex_build "${version}"
 
 # --- download + verify ---
 # An explicit template under TMPDIR, not a bare `mktemp -d`: macOS's mktemp puts that

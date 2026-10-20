@@ -95,9 +95,9 @@ The tarballs carry build provenance as well as their `checksums.txt` entry:
 `gh attestation verify cortex-cpex_<version>_<os>_<arch>.tar.gz --repo rossoctl/cortex`.
 
 The choice is not remembered. Re-running the installer without `--cpex` installs the
-default build again, and says so first; keep passing `--cpex` to stay on it. A `--ref`
-that names a release from before `--cpex` existed fails: that release's installer rejects
-the flag, and the release has no cpex tarball.
+default build again, and says so first; keep passing `--cpex` to stay on it. Against a
+release from before `--cpex` existed, the installer stops before staging anything and
+says that release has no cpex build.
 
 ## How traffic is grouped into sessions
 
