@@ -138,8 +138,8 @@ run 09-cross-principal-taint-isolation.sh
 # ── Act 4 ───────────────────────────────────────────────────────────
 
 act "Act 4 · A human in the loop"
-beat "10 A \$5,000 change applies at once. A string amount, a NaN only a"
-beat "   lenient parser reads, and a tool with no route are refused."
+beat "10 A \$5,000 change applies at once. A string amount, a NaN or UTF-16"
+beat "   body only a lenient parser reads, and an unrouted tool are refused."
 run 10-adjust-under-threshold.sh
 
 beat "11 A \$15,000 change waits for Bob's manager, Alice, over CIBA."

@@ -174,6 +174,18 @@ expect_deny() {
   fi
 }
 
+# A request no parser read is refused as plain HTTP: there is no JSON-RPC
+# id to answer, so the code is in the body's top-level error.
+expect_http_deny() {
+  local want="$1" got
+  got="$(printf '%s' "${LAST_BODY:-}" | jq -r '.error // empty' 2>/dev/null)"
+  if [ "${LAST_STATUS:-}" = "403" ] && [ "$got" = "$want" ]; then
+    pass_ "denied: $want (HTTP 403)"
+  else
+    fail_ "expected HTTP 403 $want, got HTTP ${LAST_STATUS:-<none>} code '${got:-<none>}'"
+  fi
+}
+
 # The tool result is a JSON string in result.content[0].text.
 _result_text() { printf '%s' "${LAST_BODY:-}" | jq -r '.result.content[0].text // empty' 2>/dev/null; }
 

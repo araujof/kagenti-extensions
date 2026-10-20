@@ -2,8 +2,8 @@
 # adjust_compensation needs a manager's approval only over $10,000. At
 # $5,000, Bob (HR) passes the role gate and the change applies at once;
 # Alice (engineering) is stopped by the role gate. A string amount, a
-# body only a lenient parser reads, and a tool name with no route are all
-# refused.
+# body only a lenient parser reads (a NaN, or UTF-16), and a tool name
+# with no route are all refused.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
@@ -49,9 +49,22 @@ reset_upstream
 seen=$(approvals_seen)
 call_tool "$BOB" "$CLIENT" adjust_compensation '{"employee_id":"EMP-001234","amount":50000,"note":NaN}'
 
-expect_deny cpex.unparseable_request
+expect_http_deny cpex.unparseable_request
 expect_upstream_calls 0
 if [ "$(approvals_seen)" = "$seen" ]; then pass_ "no approval was requested"; else fail_ "an approval was requested"; fi
+
+step "Alice (engineering) → adjust_compensation +\$50,000, sent as UTF-16"
+note "Python's json reads UTF-16; the sidecar's parsers read UTF-8 only, so it is refused"
+reset_upstream
+utf16="$(mktemp)"
+_tool_body adjust_compensation '{"employee_id":"EMP-001234","amount":50000}' | iconv -f UTF-8 -t UTF-16BE >"$utf16"
+_print_response "$(curl -isS --max-time 10 -x "$PROXY" -X POST "$MCP_TARGET" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $CLIENT" \
+  -H "X-User-Token: $ALICE" --data-binary @"$utf16")"
+rm -f "$utf16"
+
+expect_http_deny cpex.unparseable_request
+expect_upstream_calls 0
 
 step "Bob → Adjust_Compensation (a tool name with no route)"
 note "A tool without its own route is refused, not passed with no policy"
