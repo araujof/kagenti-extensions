@@ -20,9 +20,15 @@ import (
 // the sidecar's outbound pipeline does.
 func rawCall(t *testing.T, p *CPEX, idp *hrIdP, user, body string) pipeline.Action {
 	t.Helper()
+	return rawCallTo(t, p, idp, "hr-mcp.cpex-demo:9100", user, body)
+}
+
+// rawCallTo is rawCall to host.
+func rawCallTo(t *testing.T, p *CPEX, idp *hrIdP, host, user, body string) pipeline.Action {
+	t.Helper()
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
-		Host:      "hr-mcp.cpex-demo:9100",
+		Host:      host,
 		Path:      "/mcp",
 		Method:    http.MethodPost,
 		Headers: http.Header{
@@ -82,6 +88,27 @@ func TestHRDemoUnparseableToolCallDenied(t *testing.T) {
 	// unparseable; hr-mcp refuses it itself.
 	if a := rawCall(t, p, idp, "alice", fmt.Sprintf(adjust, "5000")+`{"x":1}`); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
 		t.Errorf("trailing data: refused as unparseable")
+	}
+}
+
+// hr-mcp reached by address rather than name is still a strict_hosts
+// destination: the manifest lists kind's Service and pod ranges, so a
+// UTF-16 tool call to its cluster IP or pod IP is refused, as it is when
+// the address is also on bypass_hosts.
+func TestHRDemoUnparseableByAddress(t *testing.T) {
+	idp := newHRIdP(t)
+	body := string(utf16Body(true, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"adjust_compensation","arguments":{"employee_id":"EMP-001234","amount":50000}}}`))
+	for _, extra := range []map[string]any{nil, {"bypass_hosts": []string{"10.96.*", "10.244.*"}}} {
+		p := hrPluginWith(t, idp, nil, extra)
+		for _, host := range []string{"10.96.140.7:9100", "10.244.0.12:9100", "0x0a.0x60.0x8c.7:9100"} {
+			wantReject(t, host, rawCallTo(t, p, idp, host, "alice", body), "cpex.unparseable_request")
+		}
+		if a := rawCallTo(t, p, idp, "192.0.2.10:9100", "alice", body); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+			t.Errorf("address outside strict_hosts: refused as unparseable")
+		}
+	}
+	if n := idp.exchangeCount(); n != 0 {
+		t.Fatalf("token exchanges = %d, want 0", n)
 	}
 }
 

@@ -67,8 +67,23 @@ pipeline:
           # sidecar's parsers cannot (UTF-16, NaN, Infinity, 1e400, a byte
           # order mark), so such a body to it is refused rather than passed
           # to CPEX as traffic no tool route judges
-          # (cpex.unparseable_request).
-          strict_hosts: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
+          # (cpex.unparseable_request). The names cover hr-mcp reached
+          # by its Service name; the CIDRs cover it reached by address,
+          # since the agent can dial its cluster IP or pod IP directly and
+          # a name list alone would not see that. They are kind's default
+          # Service and pod ranges (--service-cluster-ip-range,
+          # --cluster-cidr); change them if your cluster uses others. A
+          # pinned clusterIP would be narrower but leaves the pod IP open,
+          # and pod IPs cannot be pinned, so the ranges are the narrowest
+          # form that covers both. Only unclaimed, unreadable JSON objects
+          # are refused, so other in-cluster traffic is unaffected.
+          strict_hosts:
+            - hr-mcp
+            - hr-mcp.cpex-demo
+            - hr-mcp.cpex-demo.svc
+            - hr-mcp.cpex-demo.svc.cluster.local
+            - 10.96.0.0/16
+            - 10.244.0.0/16
           # Bypass hosts default covers keycloak/SPIRE/observability so
           # those egress calls don't pay the FFI cost.
           #
