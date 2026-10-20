@@ -14,5 +14,5 @@ spec:
       volumes:
         - name: spire-agent-socket
           hostPath:
-            path: /run/spire/agent-sockets
+            path: /run/spire/cpex-demo-sockets
             type: Directory

@@ -88,7 +88,12 @@ the AuthBridge manifests, the agent, and the chat client. No sibling
 checkouts needed.
 
 The demo creates one namespace, `cpex-demo`. `make undeploy` removes it
-cleanly and leaves the rest of the cluster untouched.
+cleanly and leaves the rest of the cluster untouched. If you ran
+`make spire`, run `make spire-undeploy` first: `make undeploy` leaves the
+`spire` namespace and the `*-cpex-demo` ClusterRoles and
+ClusterRoleBindings behind. The demo's SPIRE agent listens in its own host
+directory, `/run/spire/cpex-demo-sockets`, so it does not replace the
+socket of a SPIRE that Rossoctl installed.
 
 [rossoctl]: https://github.com/rossoctl/rossoctl
 
@@ -491,7 +496,8 @@ fresh pod that mounts the new policy.
 ## Tear down
 
 ```bash
-make undeploy   # deletes the cpex-demo namespace
+make spire-undeploy   # only after `make spire`: the spire namespace and its ClusterRoles
+make undeploy         # deletes the cpex-demo namespace
 ```
 
 ## Troubleshooting

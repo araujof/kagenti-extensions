@@ -246,7 +246,7 @@ data:
       log_level = "INFO"
       server_address = "spire-server.spire"
       server_port = "8081"
-      socket_path = "/run/spire/agent-sockets/spire-agent.sock"
+      socket_path = "/run/spire/cpex-demo-sockets/spire-agent.sock"
       trust_domain = "cpex.demo"
       # DEMO ONLY: trust the first server bundle instead of a pinned one.
       insecure_bootstrap = true
@@ -297,12 +297,12 @@ spec:
           args: ["-config", "/run/spire/config/agent.conf"]
           livenessProbe:
             exec:
-              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/agent-sockets/spire-agent.sock"]
+              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/cpex-demo-sockets/spire-agent.sock"]
             initialDelaySeconds: 15
             periodSeconds: 30
           readinessProbe:
             exec:
-              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/agent-sockets/spire-agent.sock", "--shallow"]
+              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/cpex-demo-sockets/spire-agent.sock", "--shallow"]
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
@@ -310,7 +310,7 @@ spec:
               mountPath: /run/spire/config
               readOnly: true
             - name: agent-socket
-              mountPath: /run/spire/agent-sockets
+              mountPath: /run/spire/cpex-demo-sockets
             - name: psat-token
               mountPath: /var/run/secrets/tokens
       volumes:
@@ -319,7 +319,7 @@ spec:
             name: spire-agent
         - name: agent-socket
           hostPath:
-            path: /run/spire/agent-sockets
+            path: /run/spire/cpex-demo-sockets
             type: DirectoryOrCreate
         - name: psat-token
           projected:
