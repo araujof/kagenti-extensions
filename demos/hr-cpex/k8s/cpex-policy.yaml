@@ -3,7 +3,7 @@
 # DEMO ONLY — points at an in-cluster Keycloak over plaintext http. Do NOT
 # use in production without TLS to the IdP. Keycloak resolves to a private
 # cluster address, which CPEX's HTTP transport refuses unless the cpex
-# plugin sets `private_destinations: true` (see k8s/30-agent.yaml).
+# plugin sets `private_destinations: true` (see k8s/authbridge.yaml).
 #
 # The gateway client secret is read from a mounted Secret
 # (`client_secret_source.kind: file`, /etc/cpex-secrets), so its value is
