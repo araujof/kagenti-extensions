@@ -256,6 +256,9 @@ def tool_adjust_compensation(args: dict[str, Any]) -> dict[str, Any]:
         if not amount.is_integer():
             return {"error": "amount must be a whole number of dollars"}
         amount = int(amount)
+    # Past 2^53 the policy's float64 is not the integer applied here.
+    if abs(amount) > MAX_EXACT_INT:
+        return {"error": "amount is out of range"}
     employee = EMPLOYEES.get(employee_id)
     if not employee:
         return {"error": f"Employee {employee_id} not found"}
@@ -309,23 +312,86 @@ def _log_safe(value: Any) -> str:
     return "".join(ch if ch.isprintable() else " " for ch in s)
 
 
+# ---------------------------------------------------------------------------
+# Strict request parsing. The sidecar's policy judged the request as Go's
+# encoding/json read it; Python's json reads some bodies differently, and
+# a body read two ways is a call the policy did not see. Each difference
+# is refused here, so hr-mcp runs only what the sidecar could have read.
+# ---------------------------------------------------------------------------
+
+# Past 2^53 a float64, which is how the sidecar holds a JSON number, is no
+# longer the integer Python reads.
+MAX_EXACT_INT = 2**53
+
+
+class _Pairs(list):
+    """An object's members, kept in order until the walk checks them."""
+
+
 def _refuse_constant(name: str) -> Any:
+    # Python accepts NaN, Infinity and -Infinity; JSON does not.
     raise ValueError(f"{name} is not JSON")
 
 
 def _finite_float(text: str) -> float:
+    # Python reads 1e400 as infinity; Go refuses it as out of range.
     value = float(text)
     if not math.isfinite(value):
         raise ValueError(f"{text} is out of range")
     return value
 
 
+def _has_lone_surrogate(s: str) -> bool:
+    # Python keeps an unpaired \ud800 escape; Go replaces it with U+FFFD.
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in s)
+
+
+def _check(value: Any, path: tuple[str, ...] = ()) -> Any:
+    """Build the parsed value from _Pairs, refusing repeated keys (Python
+    keeps the last, as Go does, but a server might not), keys equal under
+    case folding where the sidecar's parsers match case-insensitively,
+    and lone surrogates. path is the lowercased keys down from the body,
+    up to params.arguments, below which everything folds."""
+    if isinstance(value, str):
+        if _has_lone_surrogate(value):
+            raise ValueError("lone surrogate in a string")
+        return value
+    if isinstance(value, _Pairs):
+        # The envelope, params, and everything under params.arguments are
+        # what the sidecar reads case-insensitively (cpex ambiguousJSON).
+        folds = path in ((), ("params",)) or path[:2] == ("params", "arguments")
+        out: dict[str, Any] = {}
+        seen: set[str] = set()
+        for key, member in value:
+            if _has_lone_surrogate(key):
+                raise ValueError("lone surrogate in a key")
+            k = key.casefold() if folds else key
+            if k in seen:
+                raise ValueError(f"repeated key {key!r}")
+            seen.add(k)
+            out[key] = _check(member, path + (key.lower(),))
+        return out
+    if isinstance(value, list):
+        return [_check(v, path) for v in value]
+    return value
+
+
 def parse_body(body: bytes) -> Any:
-    """Parse a request body as strictly as the sidecar did. Python's json
-    accepts NaN, Infinity and -Infinity, and reads 1e400 as infinity;
-    the sidecar refuses all of them, so a call carrying one would run
-    here without the policy having read it."""
-    return json.loads(body, parse_constant=_refuse_constant, parse_float=_finite_float)
+    """Parse a request body as strictly as the sidecar read it: UTF-8 only
+    (json.loads(bytes) also detects UTF-16 and UTF-32, and accepts a byte
+    order mark the sidecar refuses), no NaN or Infinity, no number out of
+    float64 range, no repeated or case-colliding keys, no lone surrogates,
+    and nothing after the value."""
+    text = body.decode("utf-8")  # raises UnicodeDecodeError, a ValueError
+    if text.startswith("\ufeff"):
+        raise ValueError("byte order mark")
+    raw = json.loads(
+        text,
+        parse_constant=_refuse_constant,
+        parse_float=_finite_float,
+        object_pairs_hook=_Pairs,
+    )
+    return _check(raw)
 
 
 @app.post("/mcp")
