@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
@@ -313,6 +315,12 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 // bodies, JSON-RPC with positional params included, are opaque egress
 // input and are left alone.
 func unparseableObject(body []byte) bool {
+	// Python's json.loads(bytes) also reads UTF-16 and UTF-32, which no
+	// parser here does, so an object in either is never one they read.
+	if wide := wideJSON(body); wide != nil {
+		trimmed := bytes.TrimLeft(wide, " \t\r\n")
+		return len(trimmed) > 0 && trimmed[0] == '{'
+	}
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	trimmed = bytes.TrimLeft(bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf")), " \t\r\n")
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -334,6 +342,60 @@ func unparseableObject(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// wideJSON returns body transcoded to UTF-8 when its first bytes mark it
+// as UTF-16 or UTF-32 the way Python's json.detect_encoding reads them (a
+// byte order mark, or the NUL pattern ASCII leaves), and nil otherwise.
+// Bytes that do not transcode become U+FFFD; only the leading structure
+// matters to the caller.
+func wideJSON(b []byte) []byte {
+	var unit int
+	var big bool
+	switch {
+	case bytes.HasPrefix(b, []byte{0, 0, 0xfe, 0xff}):
+		unit, big, b = 4, true, b[4:]
+	case bytes.HasPrefix(b, []byte{0xff, 0xfe, 0, 0}):
+		unit, big, b = 4, false, b[4:]
+	case bytes.HasPrefix(b, []byte{0xfe, 0xff}):
+		unit, big, b = 2, true, b[2:]
+	case bytes.HasPrefix(b, []byte{0xff, 0xfe}):
+		unit, big, b = 2, false, b[2:]
+	case len(b) >= 4 && b[0] == 0 && b[1] == 0:
+		unit, big = 4, true
+	case len(b) >= 4 && b[0] == 0:
+		unit, big = 2, true
+	case len(b) >= 4 && b[1] == 0 && b[2] == 0 && b[3] == 0:
+		unit, big = 4, false
+	case len(b) >= 2 && b[1] == 0:
+		unit, big = 2, false
+	default:
+		return nil
+	}
+	units := make([]uint32, 0, len(b)/unit)
+	for i := 0; i+unit <= len(b); i += unit {
+		var u uint32
+		for j := 0; j < unit; j++ {
+			k := j
+			if !big {
+				k = unit - 1 - j
+			}
+			u = u<<8 | uint32(b[i+k])
+		}
+		units = append(units, u)
+	}
+	var out []byte
+	for i := 0; i < len(units); i++ {
+		r := rune(units[i])
+		if unit == 2 && utf16.IsSurrogate(r) && i+1 < len(units) {
+			if d := utf16.DecodeRune(r, rune(units[i+1])); d != utf8.RuneError {
+				r = d
+				i++
+			}
+		}
+		out = utf8.AppendRune(out, r)
+	}
+	return out
 }
 
 // undecodableJSON reports whether encoding/json's tokenizer rejects body

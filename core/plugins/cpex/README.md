@@ -390,7 +390,8 @@ taking the global identification. A body no parser claimed is denied as
 `cpex.unparseable_request` when it is a JSON object by its first byte (after
 whitespace and a byte order mark) that `encoding/json` cannot decode (`NaN`,
 `Infinity`, a number out of float64 range, a byte order mark, a truncated
-object), or when it has a top-level `method` key, in any case, whose value
+object), when it is a JSON object in UTF-16 or UTF-32 (detected as Python's
+`json` detects it), or when it has a top-level `method` key, in any case, whose value
 does not decode as a string or whose keys collide. A parser declines such a
 body, so it would otherwise take the global identification, while a lenient
 server (Python's `json` accepts all of these) may still run it as the tool

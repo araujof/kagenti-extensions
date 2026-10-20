@@ -109,6 +109,14 @@ func TestUnpresentableRequest(t *testing.T) {
 		{"out-of-range number", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":{"arguments":{"x":1e400}}}`)}, codeUnparseableRequest},
 		{"byte order mark", &pipeline.Context{Body: []byte("\xef\xbb\xbf" + `{"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
 		{"truncated object", &pipeline.Context{Body: []byte(` {"method":"tools/call"`)}, codeUnparseableRequest},
+		// Python's json.loads(bytes) detects UTF-16 and UTF-32 from the
+		// leading bytes; Go reads only UTF-8.
+		{"UTF-16BE object", &pipeline.Context{Body: utf16Body(true, `{"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
+		{"UTF-16LE object", &pipeline.Context{Body: utf16Body(false, `{"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
+		{"UTF-16LE object with a BOM", &pipeline.Context{Body: append([]byte{0xff, 0xfe}, utf16Body(false, `{"a":1}`)...)}, codeUnparseableRequest},
+		{"UTF-32BE object", &pipeline.Context{Body: []byte{0, 0, 0, '{', 0, 0, 0, '}'}}, codeUnparseableRequest},
+		{"UTF-16 array is egress input", &pipeline.Context{Body: utf16Body(true, `[1]`)}, ""},
+		{"binary body", &pipeline.Context{Body: []byte{0x89, 'P', 'N', 'G', 0, 0}}, ""},
 		{"case-variant method of another type", &pipeline.Context{Body: []byte(`{"Method":5,"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
 		{"case-variant method", &pipeline.Context{Body: []byte(`{"method":"tools/call","METHOD":"x/y","params":{"name":"a"}}`)}, codeUnparseableRequest},
 		{"unparsed JSON-RPC with params of another shape", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":"x"}`)}, ""},
@@ -220,4 +228,17 @@ func TestDispatch_EgressIgnoresOutboundBypass(t *testing.T) {
 	if a := p.OnRequest(context.Background(), egressRequest("POST", "otel.internal", "/v1/traces", "", nil)); a.Type != pipeline.Continue {
 		t.Fatalf("explicit bypass host: %v", a.Type)
 	}
+}
+
+// utf16Body encodes an ASCII string as UTF-16, big- or little-endian.
+func utf16Body(bigEndian bool, s string) []byte {
+	out := make([]byte, 0, 2*len(s))
+	for i := 0; i < len(s); i++ {
+		if bigEndian {
+			out = append(out, 0, s[i])
+		} else {
+			out = append(out, s[i], 0)
+		}
+	}
+	return out
 }

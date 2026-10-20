@@ -41,8 +41,8 @@ func rawCall(t *testing.T, p *CPEX, idp *hrIdP, user, body string) pipeline.Acti
 }
 
 // A tool call the mcp-parser cannot decode would otherwise reach CPEX as
-// global traffic, which no tool route judges, while hr-mcp's Python json
-// reads NaN, Infinity, 1e400 and a byte order mark and runs the tool.
+// global traffic, which no tool route judges, while Python's json reads
+// NaN, Infinity, 1e400, a byte order mark and UTF-16 and runs the tool.
 // Each is refused before CPEX sees it.
 func TestHRDemoUnparseableToolCallDenied(t *testing.T) {
 	idp := newHRIdP(t)
@@ -56,6 +56,9 @@ func TestHRDemoUnparseableToolCallDenied(t *testing.T) {
 		"1e400 amount":             fmt.Sprintf(adjust, "1e400"),
 		"byte order mark":          "\xef\xbb\xbf" + fmt.Sprintf(adjust, "50000"),
 		"Method of another type":   `{"jsonrpc":"2.0","id":1,"Method":5,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234"}}}`,
+		"UTF-16BE body":            string(utf16Body(true, fmt.Sprintf(adjust, "50000"))),
+		"UTF-16LE body with a BOM": "\xff\xfe" + string(utf16Body(false, fmt.Sprintf(adjust, "50000"))),
+		"trailing data":            fmt.Sprintf(adjust, "5000") + `{"x":1}`,
 	} {
 		wantReject(t, label, rawCall(t, p, idp, "alice", body), "cpex.unparseable_request")
 	}
