@@ -386,7 +386,15 @@ differ only in case. Everywhere else (tool schemas, A2A data parts, `metadata`,
 `response_format`, and inference tool calls, whose arguments are a JSON string
 or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
-taking the global identification. Neither denial is subject to `fail_open`.
+taking the global identification. A body no parser claimed is denied as
+`cpex.unparseable_request` when it is a JSON object by its first byte (after
+whitespace and a byte order mark) that `encoding/json` cannot decode (`NaN`,
+`Infinity`, a number out of float64 range, a byte order mark, a truncated
+object), or when it has a top-level `method` key, in any case, whose value
+does not decode as a string or whose keys collide. A parser declines such a
+body, so it would otherwise take the global identification, while a lenient
+server (Python's `json` accepts all of these) may still run it as the tool
+call no route judged. None of these denials is subject to `fail_open`.
 
 ### Plain egress as a tool call
 
@@ -491,8 +499,8 @@ vocabulary:
 - **observe**: audit-only outcome, recorded, request continues.
 
 Some denials come from the plugin rather than from policy, and `fail_open`
-does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
-(above), `cpex.principal_unavailable` (above),
+does not apply to them: `cpex.ambiguous_request`, `cpex.unnamed_entity` and
+`cpex.unparseable_request` (above), `cpex.principal_unavailable` (above),
 `cpex.delegation_destination_mismatch` (below), and
 `cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
 step granted a token the plugin cannot forward: `delegated_credentials` is

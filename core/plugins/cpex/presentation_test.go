@@ -100,6 +100,20 @@ func TestUnpresentableRequest(t *testing.T) {
 		{"a2a duplicate", &pipeline.Context{Body: []byte(`{"method":"message/send","Method":"tasks/get"}`),
 			Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "tasks/get"}}}, codeAmbiguousRequest},
 		{"unparsed duplicate is egress input, not refused", &pipeline.Context{Body: []byte(`{"a":1,"a":2}`)}, ""},
+		{"unparsed non-JSON body", &pipeline.Context{Body: []byte("raw")}, ""},
+		{"unparsed positional JSON-RPC params", &pipeline.Context{Body: []byte(`{"jsonrpc":"2.0","method":"eth_call","params":[1]}`)}, ""},
+		// An object no parser could decode, which a lenient server may
+		// still read: Python's json accepts every one of these.
+		{"NaN", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":{"name":"a","arguments":{"x":NaN}}}`)}, codeUnparseableRequest},
+		{"Infinity", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":{"arguments":{"x":-Infinity}}}`)}, codeUnparseableRequest},
+		{"out-of-range number", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":{"arguments":{"x":1e400}}}`)}, codeUnparseableRequest},
+		{"byte order mark", &pipeline.Context{Body: []byte("\xef\xbb\xbf" + `{"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
+		{"truncated object", &pipeline.Context{Body: []byte(` {"method":"tools/call"`)}, codeUnparseableRequest},
+		{"case-variant method of another type", &pipeline.Context{Body: []byte(`{"Method":5,"method":"tools/call","params":{"name":"a"}}`)}, codeUnparseableRequest},
+		{"case-variant method", &pipeline.Context{Body: []byte(`{"method":"tools/call","METHOD":"x/y","params":{"name":"a"}}`)}, codeUnparseableRequest},
+		{"unparsed JSON-RPC with params of another shape", &pipeline.Context{Body: []byte(`{"method":"tools/call","params":"x"}`)}, ""},
+		{"plain JSON object", &pipeline.Context{Body: []byte(`{"query":"x","Query":"y"}`)}, ""},
+		{"large integer in range", &pipeline.Context{Body: []byte(`{"x":9007199254740993,"y":-0,"z":1.5e4}`)}, ""},
 	}
 	for _, c := range cases {
 		if got := unpresentableRequest(c.pctx); got != c.want {

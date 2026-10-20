@@ -370,6 +370,7 @@ var pluginCodes = map[string]bool{
 	"cpex." + codeDelegationDestinationMismatch: true,
 	"cpex." + codeAmbiguousRequest:              true,
 	"cpex." + codeUnnamedEntity:                 true,
+	"cpex." + codeUnparseableRequest:            true,
 }
 
 // resolveYAML returns the CPEX YAML string the operator supplied —

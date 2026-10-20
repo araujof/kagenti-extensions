@@ -263,6 +263,13 @@ const (
 	// keep the last duplicate; a server may not, so policy could judge a
 	// different request from the one the server runs.
 	codeAmbiguousRequest = "ambiguous_request"
+	// codeUnparseableRequest: a body no parser claimed that is a JSON object
+	// by its first byte but that encoding/json cannot decode (NaN, Infinity,
+	// a number out of float64 range, a byte order mark, a truncated object).
+	// The parsers decline such a body, so it would reach CPEX as global
+	// traffic, while a lenient server (Python's json, for one) may still
+	// read it as the tool call no route judged.
+	codeUnparseableRequest = "unparseable_request"
 )
 
 // unpresentableRequest returns the violation code for a request that must
@@ -284,10 +291,74 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 	// Check the bytes the parser parsed: inference-parser decodes a zstd
 	// body first, so the raw bytes would not be JSON. A body that does not
 	// decode stays as sent, and so is refused.
-	if parsed && len(pctx.Body) > 0 && ambiguousJSON(parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)) {
+	if len(pctx.Body) == 0 {
+		return ""
+	}
+	body := parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)
+	if parsed && ambiguousJSON(body) {
 		return codeAmbiguousRequest
 	}
+	if !parsed && unparseableObject(body) {
+		return codeUnparseableRequest
+	}
 	return ""
+}
+
+// unparseableObject reports whether body looks like a JSON object, after
+// whitespace and any byte order mark, that the parsers could not read as
+// a server might: encoding/json cannot decode it, or it has a top-level
+// "method" key in any case and either a method that does not decode as a
+// string (a "Method": 5 beside the real one) or colliding keys. A parser
+// declines such a body, so it would reach CPEX as global traffic. Other
+// bodies, JSON-RPC with positional params included, are opaque egress
+// input and are left alone.
+func unparseableObject(body []byte) bool {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	trimmed = bytes.TrimLeft(bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf")), " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return false
+	}
+	if undecodableJSON(body) {
+		return true
+	}
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(body, &keys) != nil {
+		return true
+	}
+	for k := range keys {
+		if strings.EqualFold(k, "method") {
+			var rpc struct {
+				Method string `json:"method"`
+			}
+			return json.Unmarshal(body, &rpc) != nil || ambiguousJSON(body)
+		}
+	}
+	return false
+}
+
+// undecodableJSON reports whether encoding/json's tokenizer rejects body
+// or finds it incomplete.
+func undecodableJSON(body []byte) bool {
+	// Tokens, not a decoded tree: a number decodes to float64 here as it
+	// does in the parsers, so one out of range is an error too.
+	dec := json.NewDecoder(bytes.NewReader(body))
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return depth != 0
+		}
+		if err != nil {
+			return true
+		}
+		if d, ok := tok.(json.Delim); ok {
+			if d == '{' || d == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		}
+	}
 }
 
 // ambiguousJSON reports whether body is not valid JSON, or has an object
