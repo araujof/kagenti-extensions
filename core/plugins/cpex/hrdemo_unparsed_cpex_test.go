@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/mcpparser"
 )
@@ -26,6 +27,13 @@ func rawCall(t *testing.T, p *CPEX, idp *hrIdP, user, body string) pipeline.Acti
 // rawCallTo is rawCall to host.
 func rawCallTo(t *testing.T, p *CPEX, idp *hrIdP, host, user, body string) pipeline.Action {
 	t.Helper()
+	return rawCallEncoded(t, p, idp, host, user, "", []byte(body))
+}
+
+// rawCallEncoded is rawCallTo with body sent under Content-Encoding
+// encoding ("" for none).
+func rawCallEncoded(t *testing.T, p *CPEX, idp *hrIdP, host, user, encoding string, body []byte) pipeline.Action {
+	t.Helper()
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Host:      host,
@@ -36,7 +44,10 @@ func rawCallTo(t *testing.T, p *CPEX, idp *hrIdP, host, user, body string) pipel
 			"Authorization": {"Bearer " + idp.clientToken(t)},
 			"X-User-Token":  {idp.userToken(t, user)},
 		},
-		Body: []byte(body),
+		Body: body,
+	}
+	if encoding != "" {
+		pctx.Headers.Set("Content-Encoding", encoding)
 	}
 	parser := mcpparser.NewMCPParser()
 	if err := parser.Configure(json.RawMessage(`{}`)); err != nil {
@@ -153,4 +164,23 @@ func TestHRDemoAdjustAmountForms(t *testing.T) {
 		"9007199254740993", "-9007199254740993", "1e300"} {
 		wantPending(t, "amount "+amount, rawCall(t, p, idp, "bob", fmt.Sprintf(adjust, amount)))
 	}
+}
+
+// A zstd-encoded tool call to hr-mcp is parsed like a plain one, so its
+// tool route judges it: a change over $10,000 waits for approval and a
+// smaller one goes through, rather than passing as global traffic.
+func TestHRDemoZstdToolCallRouted(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	const adjust = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"adjust_compensation","arguments":{"employee_id":"EMP-001234","amount":%d}}}`
+	call := func(amount int) pipeline.Action {
+		return rawCallEncoded(t, p, idp, "hr-mcp.cpex-demo:9100", "bob", "zstd", enc.EncodeAll([]byte(fmt.Sprintf(adjust, amount)), nil))
+	}
+	wantPending(t, "zstd bob +15000", call(15000))
+	wantContinue(t, "zstd bob +5000", call(5000))
 }

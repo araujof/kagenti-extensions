@@ -294,9 +294,9 @@ func unpresentableRequest(pctx *pipeline.Context, strict bool) string {
 		}
 	}
 	parsed := pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil || pctx.Extensions.Inference != nil
-	// Check the bytes the parser parsed: inference-parser decodes a zstd
-	// body first, so the raw bytes would not be JSON. A body that does not
-	// decode stays as sent, and so is refused.
+	// Check the bytes the parsers parsed: each decodes a zstd body first
+	// with the same DecodeRequestBody, so the raw bytes would not be JSON.
+	// A body that does not decode stays as sent, and so is refused.
 	if len(pctx.Body) == 0 {
 		return ""
 	}
