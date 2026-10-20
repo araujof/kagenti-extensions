@@ -7,8 +7,11 @@ listener:
   reverse_proxy_addr: ":8000"
   reverse_proxy_backend: "http://localhost:8001"
   # Forward proxy is where the agent's MCP tool calls egress; cpex runs
-  # on this outbound path.
-  forward_proxy_addr: ":8081"
+  # on this outbound path. Loopback only: the agent reaches it over
+  # localhost, and get_headcount authenticates with the agent's own
+  # workload identity, so anything else that could reach the pod IP
+  # could call it as the agent. `kubectl port-forward` still reaches it.
+  forward_proxy_addr: "127.0.0.1:8081"
   # Session API and stats bind to localhost only — both expose raw
   # user content / internal state and have no auth. Reach them via
   # `kubectl port-forward` (works against the pod regardless of
