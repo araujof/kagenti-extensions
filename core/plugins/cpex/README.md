@@ -345,7 +345,7 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `worker_threads` | `0` | CPEX tokio worker pool size; 0 lets CPEX pick |
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
-| `strict_hosts` | empty | host globs of tool servers whose unclaimed, unreadable JSON-object bodies are refused (`cpex.unparseable_request`), outbound only |
+| `strict_hosts` | empty | tool servers, as host globs, IP addresses or CIDRs, whose unclaimed, unreadable JSON-object bodies are refused (`cpex.unparseable_request`), outbound only, before `bypass_hosts` and `bypass_paths` are consulted |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
 | `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names, but only where Cortex has process attribution — `cortex` bound to loopback, as the laptop install is; in the `authbridge-cpex` sidecar `resolved` trusts the dedicated header, which the sender sets) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
@@ -403,6 +403,19 @@ traffic to every other host (a `{"loss": NaN}` metrics post, NDJSON uploads) is
 not checked. Only the first value is read, so trailing data and NDJSON are not
 refused on a strict host either. None of these denials is subject to
 `fail_open`.
+
+`strict_hosts` protects only the destinations it lists. An entry is a host glob
+(lowercased, matched without the port or a trailing dot), an IP address, or a
+CIDR such as `10.96.0.0/12` or `fd00:10:96::/112`, matched when the request's
+host is an IP literal (IPv4, IPv6 with or without brackets, IPv4-mapped IPv6, or
+a numeric IPv4 spelling such as `0x0a.0x60.0.1`), port removed. A name list
+alone does not cover a tool server reached by its cluster IP or pod IP, so list
+those addresses or ranges too. A CIDR that covers every address (`0.0.0.0/0`,
+`::/0`) and an entry carrying a port are refused at Configure. The check runs
+before `bypass_hosts` and `bypass_paths`, so a destination on both lists is
+still checked. It is a backstop, not a substitute for a strict tool server:
+the server should also refuse what it cannot parse strictly, as the HR demo's
+`hr-mcp` does.
 
 ### Plain egress as a tool call
 

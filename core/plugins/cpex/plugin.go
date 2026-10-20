@@ -372,6 +372,18 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
+	// strict_hosts wins over both bypass lists: a strict destination's
+	// unreadable body is refused even when its host or path is also
+	// bypassed, so a bypass entry cannot reopen what strict_hosts closes.
+	// Outbound only: inbound, the Host header is the caller's.
+	strict := pctx.Direction == pipeline.Outbound && p.strictHosts.match(pctx.Host)
+	if strict && pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
+		if code := unpresentableRequest(pctx, true); code == codeUnparseableRequest {
+			code = "cpex." + code
+			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
+		}
+	}
+
 	// Fast-skip bypass: traffic to infrastructure (Keycloak, SPIRE,
 	// liveness probes) shouldn't pay the FFI round-trip. Check paths
 	// first since most bypass traffic is health/discovery rather
@@ -394,7 +406,6 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	}
 
 	if pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
-		strict := pctx.Direction == pipeline.Outbound && p.strictHosts.match(pctx.Host)
 		if code := unpresentableRequest(pctx, strict); code != "" {
 			code = "cpex." + code
 			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
