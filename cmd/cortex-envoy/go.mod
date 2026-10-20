@@ -1,6 +1,6 @@
 module github.com/rossoctl/cortex/cmd/cortex-envoy
 
-go 1.26.5
+go 1.26.10
 
 replace (
 	github.com/rossoctl/cortex/core => ../../core

@@ -265,7 +265,7 @@ cortex/
 **Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` and `authbridge-cpex` **images** are build variants of the proxy binary (not separate binaries) — see below.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
-**Language:** Go 1.26.5 (`go.work` and the eight workspace modules; the
+**Language:** Go 1.26.10 (`go.work` and the eight workspace modules; the
 three self-contained `demos/*` modules are still on 1.24)
 **Deployment shapes:** [`cmd/README.md`](cmd/README.md) — which binary pins which shape
 **Framework internals:** [`docs/framework-architecture.md`](docs/framework-architecture.md), [`docs/plugin-reference.md`](docs/plugin-reference.md), [`docs/architecture.md`](docs/architecture.md)
@@ -865,8 +865,8 @@ touched one of the four unvetted modules.
 
 | Area | Technology |
 |------|------------|
-| AuthBridge sidecar binaries | Go 1.26.5, envoy-control-plane, lestrrat-go/jwx |
-| agentop (TUI) | Go 1.26.5, bubbletea |
+| AuthBridge sidecar binaries | Go 1.26.10, envoy-control-plane, lestrrat-go/jwx |
+| agentop (TUI) | Go 1.26.10, bubbletea |
 | keycloak_sync.py / setup scripts | Python 3.12, python-keycloak (`>=7.1.1,<8`) |
 | sparc-service | Python 3.10+, FastAPI, agent-lifecycle-toolkit |
 | Proxy | Envoy v1.37.1 (pinned by digest in `cmd/cortex-envoy/Dockerfile`) |
