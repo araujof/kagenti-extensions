@@ -146,9 +146,12 @@ check, so 08 and 09 keep their outcomes. Redaction is verified on the
 engine by the cpex-tagged test in `core/plugins/cpex` (`TestHRDemo*`).
 To forward the token, deploy with `make deploy CPEX_DELEGATION=available`
 (or `make apply` with it), which turns on the cpex plugin's
-`delegated_credentials`, and `make scenarios CPEX_DELEGATION=available`
-asserts the full outcomes: 01 and 04 allowed with the minted token, 03
-redacted at hr-mcp and in the reply. The token goes only to the hosts
+`delegated_credentials`. The Makefile reads that setting back from the
+live `authbridge-config`, so a plain `make scenarios` then asserts the
+full outcomes, and a plain `make apply` keeps it;
+`CPEX_DELEGATION=pending` turns it back off. The full outcomes are: 01
+and 04 allowed with the minted token, 03 redacted at hr-mcp and in the
+reply. The token goes only to the hosts
 `delegated_credential_hosts` binds its target to (hr-mcp, for workday-api
 and github-api alike); the same call to another host is denied with
 `cpex.delegation_destination_mismatch`

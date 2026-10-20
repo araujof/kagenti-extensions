@@ -70,10 +70,13 @@ WITH_SPIRE ?= $(if $(shell $(KUBECTL) get namespace spire -o name 2>/dev/null),1
 SPIRE_AGENT_ID := spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent
 SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server
 
-# `pending` (default) leaves the cpex plugin's delegated_credentials off,
-# so a call whose route delegates fails closed; see scenarios/_lib.sh.
-# `available` makes `apply` turn it on, and the scenarios expect that.
-CPEX_DELEGATION ?= pending
+# `pending` leaves the cpex plugin's delegated_credentials off, so a call
+# whose route delegates fails closed; see scenarios/_lib.sh. `available`
+# makes `apply` turn it on, and the scenarios expect that. Detected from
+# the live sidecar config, so a plain `make scenarios` matches how the
+# demo was applied; a plain `make apply` keeps the setting, and
+# CPEX_DELEGATION=pending|available overrides.
+CPEX_DELEGATION ?= $(if $(shell $(KUBECTL) -n $(NAMESPACE) get configmap authbridge-config -o jsonpath='{.data.authbridge\.yaml}' 2>/dev/null | grep -E '^[[:space:]]*delegated_credentials:[[:space:]]*true'),available,pending)
 
 .PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy walkthrough record demo-check
 
