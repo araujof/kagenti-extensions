@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -72,7 +73,7 @@ def record(demo_dir: Path, pace: str, out: Path) -> int:
         print("asciinema is not on PATH", file=sys.stderr)
         return 1
     cast = out.with_suffix(".cast")
-    cmd = f"{demo_dir / 'walkthrough.sh'} --pace {pace}"
+    cmd = f"{shlex.quote(str(demo_dir / 'walkthrough.sh'))} --pace {shlex.quote(pace)}"
     rc = subprocess.call(
         ["asciinema", "rec", "--overwrite", "--cols", "100", "--rows", "40", "-c", cmd, str(cast)],
         env=os.environ.copy(),

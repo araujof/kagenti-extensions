@@ -378,7 +378,11 @@ retry_until_answered() {
   body="$(_tool_body adjust_compensation "{\"employee_id\":\"EMP-001234\",\"amount\":$3}")"
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 6
-    raw="$(ELICITATION_ID="$4" _post_tool "$1" "$2" "$body")"
+    raw="$(ELICITATION_ID="$4" _post_tool "$1" "$2" "$body")" || raw=""
+    if [ -z "$raw" ]; then
+      note "retry $i: no answer from the sidecar at $PROXY"
+      continue
+    fi
     printf '%s' "$raw" | grep -q '"code":-32120' || break
     note "retry $i: still pending"
   done

@@ -372,7 +372,7 @@ plugins:
 | `cpex.unparseable_request` | 403 | A body no parser claimed that is a JSON object `encoding/json` cannot decode (`NaN`, `Infinity`, a number out of float64 range, a byte order mark, a truncated object), a JSON object in UTF-16 or UTF-32, or one with a top-level `method` key in any case whose value is not a string or whose keys collide. The parsers decline it, so it would otherwise reach CPEX as global traffic, while a lenient server may still run it. |
 | `cpex.ambiguous_request` | 403 | A parsed JSON body has a repeated key, or two keys equal under case folding in an object the parsers decode into a struct (the envelope, `params`, messages, content blocks, Responses `input[]` items, A2A message and parts, tool definitions) or a server commonly binds to one (MCP `params.arguments`, at any depth, map-valued arguments such as an `env` or `headers` map included), so policy and the server could read different requests. |
 
-The last five are decided by the plugin rather than by policy, and
+The last six are decided by the plugin rather than by policy, and
 `fail_open` does not apply to them.
 
 On a deny, the `Invocation.Reason` field and the response carry the
