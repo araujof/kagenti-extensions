@@ -523,11 +523,8 @@ func TestHRDemoAliceCompensationDenied(t *testing.T) {
 	idp := newHRIdP(t)
 	p := hrPlugin(t, idp)
 	pctx := hrCall{user: "alice", tool: "get_compensation", args: compensationArgs(false)}.pctx(t, idp)
-	a := p.OnRequest(context.Background(), pctx)
-	if a.Type != pipeline.Reject || a.Violation == nil || a.Violation.Code == "cpex.delegation_unavailable" {
-		t.Fatalf("alice get_compensation: %v %+v, want a policy deny", a.Type, a.Violation)
-	}
-	t.Logf("deny code: %s", a.Violation.Code)
+	wantReject(t, "alice get_compensation", p.OnRequest(context.Background(), pctx),
+		"cpex.routes_tool_get_compensation_pre_invocation_0_")
 	if got := idp.exchangeCount(); got != 0 {
 		t.Fatalf("token exchanges = %d, want 0", got)
 	}
@@ -621,10 +618,7 @@ func TestHRDemoSearchRepos(t *testing.T) {
 
 	// 06: the APL team gate denies Bob before Cedar.
 	a = p.OnRequest(ctx, repo("bob", "", "internal"))
-	if a.Type != pipeline.Reject || a.Violation == nil || a.Violation.Code == "cpex.cedar_default_deny" {
-		t.Fatalf("bob search_repos: %v %+v, want the APL gate's deny", a.Type, a.Violation)
-	}
-	t.Logf("deny code: %s", a.Violation.Code)
+	wantReject(t, "bob search_repos", a, "cpex.routes_tool_search_repos_pre_invocation_0_")
 	if got := idp.exchangeCount(); got != 1 {
 		t.Fatalf("token exchanges after 05/06 = %d, want still 1", got)
 	}
