@@ -355,7 +355,7 @@ answer_approval() {
   local verb="$1" approver="$2" seen="$3" id="" i
   for i in 1 2 3 4 5 6 7 8 9 10; do
     id=$(curl -fsS "$AUTH_CHANNEL/requests?login_hint=$approver&status=pending" 2>/dev/null \
-      | jq -r --arg seen "$seen" '($seen | split("\n")) as $s | [.[] | select(.id | IN($s[]) | not)] | last.id // empty' 2>/dev/null)
+      | jq -r --arg seen "$seen" '($seen | split("\n")) as $s | [.[] | select(.id | IN($s[]) | not)] | last.id // empty' 2>/dev/null) || id=""
     [ -n "$id" ] && break
     sleep 1
   done
