@@ -1,8 +1,10 @@
 # cpex plugin
 
-> **`cortex-cpex` is a build variant** of the AuthBridge proxy-sidecar
-> (`cortex`), deployed *in place of* `cortex` when
-> CPEX policy enforcement is needed — not an additional sidecar.
+> **The `authbridge-cpex` image is a build variant** of the AuthBridge
+> proxy-sidecar — `cortex` built with cgo and `-tags cpex` — deployed *in
+> place of* the `authbridge` image when CPEX policy enforcement is needed, not
+> as an additional sidecar. On a laptop, `install.sh --cpex` installs the
+> released build of it (see [On a laptop](#on-a-laptop)).
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
 runtime inside AuthBridge so operators can drive policy with CPEX's
@@ -18,7 +20,7 @@ sub-plugins those hooks dispatch to.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ cortex-cpex (binary built with -tags cpex, links libcpex_ffi)│
+│ cortex (built with -tags cpex, links libcpex_ffi)                │
 │                                                                  │
 │  pipeline:                                                       │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
@@ -69,15 +71,37 @@ It is **not** the right home for:
   body. cpex requires at least one of `mcp-parser` /
   `inference-parser` / `a2a-parser` upstream in the chain.
 
+## On a laptop
+
+Each release publishes `cortex-cpex_<version>_<os>_<arch>.tar.gz` for macOS arm64
+and Linux amd64/arm64 (static, so glibc and musl hosts alike). It holds `cortex`
+built with the `fullcpex` profile: the default plugin set plus `cpex`. Install it
+with the laptop installer's `--cpex` flag:
+
+```sh
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --cpex
+```
+
+The binary is still `cortex`, run by the same service with the same
+`~/.cortex/config.yaml`; the plugin does nothing until that config names it.
+`cortex --version` prints `cortex (cpex) <version>`, and `/v1/plugins` on the
+session API lists `cpex`. The install binds to loopback, so Cortex has process
+attribution there and `session_source: resolved` keeps a child process in its
+parent's session. Re-running the installer without `--cpex` switches back.
+[The cpex build](laptop-service.md#the-cpex-build) covers verification and
+switching. To build it from a checkout instead, `make cortex-cpex` writes
+`bin/cortex-cpex/cortex`.
+
 ## Architecture
 
 ### Build constraint
 
-The cpex plugin links `libcpex_ffi.a` via cgo. The `cortex-cpex`
-binary (`cmd/cortex-cpex/`) is the only build target that compiles
-the plugin — built with `-tags cpex` and `CGO_ENABLED=1`. Other
-binaries (`cortex`, `cortex-envoy`, `authbridge-lite`)
-stay pure-Go and never import the plugin.
+The cpex plugin links `libcpex_ffi.a` via cgo. Only `cortex` built with
+`-tags cpex`, `CGO_ENABLED=1` and a profile that carries the plugin compiles
+it: `cpex` for the `authbridge-cpex` image, `fullcpex` for the `cortex-cpex`
+release tarballs and `make cortex-cpex`. Every other build (the `authbridge`,
+`authbridge-lite` and `authbridge-envoy` images, the default `cortex` tarballs)
+stays pure-Go and never imports the plugin.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
 is tag-free; only the cgo adapter that talks to `cpex.PolicyEngine`
@@ -159,7 +183,7 @@ plugins:
 | `bypass_hosts` | `[]string` | Keycloak, SPIRE, observability | Host globs that skip CPEX, on outbound traffic only. Setting the list replaces the default rather than extending it. With `synthetic_egress` the default is dropped; an explicit list is kept. See [Bypass list curation](#bypass-list-curation). |
 | `bypass_paths` | `[]string` | `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*` | URL path globs that skip CPEX in both directions, or inbound only with `synthetic_egress`. Setting the list replaces the default. |
 | `fallback_identification` | string | `global` | How a request naming no tool, prompt, resource or model (A2A, MCP `tools/list` and `initialize`, unparsed traffic) is identified: `global` sends CPEX's global entity (`http`/`*`), so `http:` routes and the global policy govern it; `none` sends no identification, which CPEX denies as `unidentified_request` when the config declares any policy. Inference requests are identified as `llm`/<model>. |
-| `session_source` | string | `header` | The session id CPEX keys session state (taint labels) on. `header` reads `X-Session-Id`, or the A2A context id. `resolved` uses the session the forward proxy resolved, but only when a dedicated agent session header (such as `X-Claude-Code-Session-Id`) or the process chain named it; a guessed session (most recent, User-Agent affinity, pending or default bucket) and the generic `X-Session-Id` and `Session-Id` headers give none, and the caller's `X-Session-Id` and A2A context id are ignored. When the process chain shows the sender was started by an agent that named a session, that session is used even if the sender named one of its own, so a child process cannot leave its parent's taint. That protection needs process attribution, which Cortex has only in the laptop `cortex` binary bound to loopback; the `cortex-cpex` sidecar has none, so there `resolved` trusts the dedicated session header, which the sender sets, and does not stop a process from leaving its session's taint. CPEX binds session state to the subject, so a request with no subject has none either way. |
+| `session_source` | string | `header` | The session id CPEX keys session state (taint labels) on. `header` reads `X-Session-Id`, or the A2A context id. `resolved` uses the session the forward proxy resolved, but only when a dedicated agent session header (such as `X-Claude-Code-Session-Id`) or the process chain named it; a guessed session (most recent, User-Agent affinity, pending or default bucket) and the generic `X-Session-Id` and `Session-Id` headers give none, and the caller's `X-Session-Id` and A2A context id are ignored. When the process chain shows the sender was started by an agent that named a session, that session is used even if the sender named one of its own, so a child process cannot leave its parent's taint. That protection needs process attribution, which Cortex has only when bound to loopback, as the laptop install is; the `authbridge-cpex` sidecar has none, so there `resolved` trusts the dedicated session header, which the sender sets, and does not stop a process from leaving its session's taint. CPEX binds session state to the subject, so a request with no subject has none either way. |
 | `private_destinations` | bool | `false` | Let CPEX builtins (JWKS fetches, token exchange, CIBA, Vault) reach loopback, private and link-local addresses, cloud metadata included. Turn on only for trusted policies on a trusted network, such as a local IdP in development. |
 | `synthetic_egress` | bool | `false` | Present every outbound request that names no tool, prompt, resource or model as a call to the tool `http_egress`, including bodies a parser claimed as an MCP protocol method (`tools/list`, `initialize`) or an A2A message, with arguments `method`, `host` (port stripped), `path` (no query), `body` (first 8 KiB), `truncated` and `content_encoding`. A `CONNECT` tunnel carries its method and host only. CEL reads them as `args.<name>` on a `tool: http_egress` route. The excerpt is never recorded; the invocation keeps only its size and the truncated flag. Because the outbound host and path are the caller's choice, `bypass_paths` then applies inbound only and the default `bypass_hosts` is dropped (an explicit list is kept). |
 | `principal.token_file` | string | empty | File holding a caller JWT Cortex asserts on outbound tool calls (MCP tools and `http_egress`) and inference requests: it is supplied to CPEX identity resolution and never forwarded to the destination. The file is read again when it changes. A missing file logs a warning at startup and denies those requests with `cpex.principal_unavailable`. |
@@ -500,8 +524,8 @@ need to route background results separately from foreground logs.
 
 - [`core/plugins/cpex/README.md`](../core/plugins/cpex/README.md) — the
   plugin's own reference: CMF mapping, APL examples, building and testing.
-- [`cmd/README.md`](../cmd/README.md) — the `cortex-cpex` binary and the
-  `authbridge-cpex` image it ships in.
+- [`cmd/README.md`](../cmd/README.md) — the cpex builds of `cortex` and the
+  `authbridge-cpex` image.
 - `cmd/cortex-cpex/CPEX_FFI_VERSION` — the CPEX release tag the FFI is
   pinned to. `CPEX_FFI_ABI` beside it holds the FFI ABI integer, and
   `CPEX_FFI_SHA256` the digest of each target's tarball;

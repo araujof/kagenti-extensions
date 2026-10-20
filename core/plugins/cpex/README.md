@@ -1,9 +1,10 @@
 # CPEX
 
-> **Deployment note:** `cortex-cpex` is a **build variant** of the
-> AuthBridge proxy-sidecar (`cortex`), deployed *in place of*
-> `cortex` — not an additional sidecar. The operator selects
-> the image when CPEX policy enforcement is needed for a workload.
+> **Deployment note:** the `authbridge-cpex` image is a **build variant** of
+> the AuthBridge proxy-sidecar — `cortex` built with cgo and the `cpex` tag —
+> deployed *in place of* the `authbridge` image, not as an additional sidecar.
+> The operator selects the image when CPEX policy enforcement is needed for a
+> workload. `make cortex-cpex` builds the same variant for a laptop.
 
 The CPEX plugin routes AuthBridge pipeline hooks through the [CPEX](https://github.com/contextforge-org/cpex) framework,
 so operators can define authorization flows inline and declaratively, and turn decisions into ordered effects (including invoking CPEX plugins).
@@ -57,11 +58,11 @@ the plugin and ship a policy update later.
 
 ### Build tag
 
-The CPEX backend uses cgo and links `libcpex_ffi.a`. Only the `cortex-cpex`
-binary compiles this package with `-tags cpex`; the `cortex`,
-`cortex-envoy`, and `authbridge-lite` binaries do not import it. Configuring
-the `cpex` plugin in any other binary fails at boot with a clear "build the
-cpex binary" error rather than registering a silent no-op. The package itself
+The CPEX backend uses cgo and links `libcpex_ffi.a`. Only `cortex` built with
+`-tags cpex` and an `include_plugin_cpex` profile (`cpex` for the
+`authbridge-cpex` image, `fullcpex` for `make cortex-cpex`) links it; other
+builds do not register the plugin, so a config naming it fails at boot with an
+unknown-plugin error rather than running a silent no-op. The package itself
 compiles tag-free for unit tests via a fake manager, so
 `go test ./core/plugins/cpex/...` runs with `CGO_ENABLED=0`.
 
@@ -345,7 +346,7 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
-| `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names, but only where Cortex has process attribution — the laptop `cortex` binary bound to loopback; in the `cortex-cpex` sidecar `resolved` trusts the dedicated header, which the sender sets) |
+| `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names, but only where Cortex has process attribution — `cortex` bound to loopback, as the laptop install is; in the `authbridge-cpex` sidecar `resolved` trusts the dedicated header, which the sender sets) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
 | `synthetic_egress` | `false` | present requests no parser claimed as calls to the tool `http_egress` (see below) |
 | `principal.token_file` | empty | file holding a caller JWT that Cortex asserts on outbound tool calls and inference requests; empty turns it off |
@@ -571,15 +572,20 @@ FFI=$(scripts/fetch-cpex-ffi.sh)
 CGO_ENABLED=1 CGO_LDFLAGS="-L$FFI" go -C core test -tags cpex ./plugins/cpex/...
 
 # Build the image: links libcpex_ffi.a, -tags cpex, CGO on
-podman build -f cmd/cortex-cpex/Dockerfile -t authbridge-cpex:latest .
+podman build -f cmd/cortex-cpex/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . cpex)" \
+  -t authbridge-cpex:latest .
+
+# Build cortex with cpex for this host, to ./bin/cortex-cpex/cortex
+make cortex-cpex
 ```
 
 The tagged run also loads every CPEX policy in this README and in
 `docs/cpex-plugin.md` on the real engine. The pins live in `cmd/cortex-cpex/`:
 `CPEX_FFI_VERSION` is the CPEX release tag, `CPEX_FFI_ABI` the FFI ABI integer,
 and `CPEX_FFI_SHA256` the digest of each target's tarball. On macOS, set
-`MACOSX_DEPLOYMENT_TARGET` to the version the library was built for if the
-linker warns about it.
+`MACOSX_DEPLOYMENT_TARGET` to the SDK version (`xcrun --show-sdk-version`) if
+the linker warns that objects target a newer macOS; `make cortex-cpex` does.
 
 ## See also
 
