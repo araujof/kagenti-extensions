@@ -379,9 +379,10 @@ def _check(value: Any, path: tuple[str, ...] = ()) -> Any:
 def parse_body(body: bytes) -> Any:
     """Parse a request body as strictly as the sidecar read it: UTF-8 only
     (json.loads(bytes) also detects UTF-16 and UTF-32, and accepts a byte
-    order mark the sidecar refuses), no NaN or Infinity, no number out of
+    order mark the sidecar refuses), no NaN or Infinity, no float out of
     float64 range, no repeated or case-colliding keys, no lone surrogates,
-    and nothing after the value."""
+    and nothing after the value. Integers are read at any size, as Python
+    reads them; the amount check bounds the one the demo applies."""
     text = body.decode("utf-8")  # raises UnicodeDecodeError, a ValueError
     if text.startswith("\ufeff"):
         raise ValueError("byte order mark")
