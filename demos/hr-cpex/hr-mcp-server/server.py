@@ -30,6 +30,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import sys
 import time
 from collections import deque
@@ -308,6 +309,25 @@ def _log_safe(value: Any) -> str:
     return "".join(ch if ch.isprintable() else " " for ch in s)
 
 
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is out of range")
+    return value
+
+
+def parse_body(body: bytes) -> Any:
+    """Parse a request body as strictly as the sidecar did. Python's json
+    accepts NaN, Infinity and -Infinity, and reads 1e400 as infinity;
+    the sidecar refuses all of them, so a call carrying one would run
+    here without the policy having read it."""
+    return json.loads(body, parse_constant=_refuse_constant, parse_float=_finite_float)
+
+
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> JSONResponse:
     body_bytes = await request.body()
@@ -328,7 +348,7 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
         if v is not None:
             logger.info("  %-25s = %s", name, _redact_token(v))
     try:
-        rpc = json.loads(body_bytes)
+        rpc = parse_body(body_bytes)
         logger.info("  body.method               = %s", _log_safe(rpc.get("method")))
         params = rpc.get("params", {})
         logger.info("  body.params.name          = %s", _log_safe(params.get("name")))

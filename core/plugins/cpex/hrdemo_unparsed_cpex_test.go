@@ -66,3 +66,21 @@ func TestHRDemoUnparseableToolCallDenied(t *testing.T) {
 		t.Fatalf("CIBA requests = %d, want 0", n)
 	}
 }
+
+// Every JSON number form reaches the decision the tool would act on.
+// The policy reads the amount as a float64 and hr-mcp as the integer it
+// applies, so the two sides differ only past 2^53, where both are far
+// over the threshold: every such amount needs an approval whose scope
+// (|amount| <= 25000) then refuses it (TestHRDemoAdjustNeedsApproval).
+func TestHRDemoAdjustAmountForms(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	const adjust = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"adjust_compensation","arguments":{"employee_id":"EMP-001234","amount":%s}}}`
+	for _, amount := range []string{"5000", "5000.0", "5e3", "-5000", "-0", "0", "10000", "-10000", "10000.0", "1.0e4", "-1e4"} {
+		wantContinue(t, "amount "+amount, rawCall(t, p, idp, "bob", fmt.Sprintf(adjust, amount)))
+	}
+	for _, amount := range []string{"10001", "-10001", "1.5e4", "15000.0", "25000", "-25000", "25001", "-25001",
+		"9007199254740993", "-9007199254740993", "1e300"} {
+		wantPending(t, "amount "+amount, rawCall(t, p, idp, "bob", fmt.Sprintf(adjust, amount)))
+	}
+}

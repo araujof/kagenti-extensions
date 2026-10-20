@@ -223,9 +223,13 @@ walkthrough:  ## Narrated run of every scenario (WALKTHROUGH_ARGS=--fast for no 
 record:  ## Record the walkthrough with asciinema (demo/hr-cpex-demo.cast, .gif with agg)
 	@$(SCENARIO_ENV) python3 $(CURDIR)/demo/record_demo.py --record
 
-demo-check:  ## Check demo/steps.md and walkthrough.sh against scenarios/, and test the check
+demo-check:  ## Check demo/steps.md and walkthrough.sh against scenarios/, and test the check and hr-mcp
 	python3 $(CURDIR)/demo/record_demo.py --check
 	cd $(CURDIR)/demo && python3 -m unittest -q test_record_demo
+	@# hr-mcp's own checks need fastapi, which server.py imports.
+	@if python3 -c 'import fastapi' 2>/dev/null; then \
+		cd $(CURDIR)/hr-mcp-server && python3 -m unittest -q test_server; \
+	else echo "skip: hr-mcp test_server (pip install -r hr-mcp-server/requirements.txt)"; fi
 
 spire:  ## Add SPIRE (scenario 13): server, agent, the agent's SPIFFE ID, then redeploy
 	$(KUBECTL) apply -f k8s/spire/spire.yaml
