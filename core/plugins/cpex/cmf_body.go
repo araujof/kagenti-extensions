@@ -265,18 +265,22 @@ const (
 	// keep the last duplicate; a server may not, so policy could judge a
 	// different request from the one the server runs.
 	codeAmbiguousRequest = "ambiguous_request"
-	// codeUnparseableRequest: a body no parser claimed that is a JSON object
-	// by its first byte but that encoding/json cannot decode (NaN, Infinity,
-	// a number out of float64 range, a byte order mark, a truncated object).
-	// The parsers decline such a body, so it would reach CPEX as global
-	// traffic, while a lenient server (Python's json, for one) may still
-	// read it as the tool call no route judged.
+	// codeUnparseableRequest: a body no parser claimed, sent to a
+	// strict_hosts destination, that is a JSON object the parsers cannot
+	// read (UTF-16 or UTF-32, a byte order mark, NaN, Infinity, a number
+	// out of float64 range, invalid UTF-8, a truncated object, colliding
+	// keys, a method that is not one string). The parsers decline such a
+	// body, so it would reach CPEX as global traffic, while a lenient
+	// server (Python's json, for one) may still read it as the tool call
+	// no route judged.
 	codeUnparseableRequest = "unparseable_request"
 )
 
 // unpresentableRequest returns the violation code for a request that must
 // be denied before CPEX sees it, or "". Call it on the request phase only.
-func unpresentableRequest(pctx *pipeline.Context) string {
+// strict is whether the request goes to a strict_hosts destination, the
+// only requests whose unclaimed bodies are checked by unparseableObject.
+func unpresentableRequest(pctx *pipeline.Context, strict bool) string {
 	if m := pctx.Extensions.MCP; m != nil {
 		switch m.Method {
 		case "tools/call", "prompts/get":
@@ -300,37 +304,51 @@ func unpresentableRequest(pctx *pipeline.Context) string {
 	if parsed && ambiguousJSON(body) {
 		return codeAmbiguousRequest
 	}
-	if !parsed && unparseableObject(body) {
+	if strict && !parsed && unparseableObject(body) {
 		return codeUnparseableRequest
 	}
 	return ""
 }
 
-// unparseableObject reports whether body looks like a JSON object, after
-// whitespace and any byte order mark, that the parsers could not read as
-// a server might: encoding/json cannot decode it, or it has a top-level
-// "method" key in any case and either a method that does not decode as a
-// string (a "Method": 5 beside the real one) or colliding keys. A parser
-// declines such a body, so it would reach CPEX as global traffic. Other
-// bodies, JSON-RPC with positional params included, are opaque egress
-// input and are left alone.
+// unparseableObject reports whether body opens with a JSON object that the
+// parsers could not read as a lenient tool server might: one in UTF-16 or
+// UTF-32 or after a byte order mark (Python's json.loads(bytes) reads all
+// three; no parser here does), or whose first value encoding/json cannot
+// decode (NaN, Infinity, a number out of float64 range, invalid UTF-8, a
+// truncated object), or whose keys collide (see ambiguousJSON), or whose
+// top-level "method" key, in any case, does not decode as a string. A
+// parser declines such a body, so it would reach CPEX as global traffic
+// while the server may still run it as the tool call no route judged.
+// Nothing about the body's own shape decides this, so a caller cannot opt
+// out by dropping or renaming a key; the caller limits it to strict_hosts
+// instead. Only the first value is read: what follows it (NDJSON, a stream
+// of values) does not make the body unparseable.
 func unparseableObject(body []byte) bool {
-	// Python's json.loads(bytes) also reads UTF-16 and UTF-32, which no
-	// parser here does, so an object in either is never one they read.
 	if wide := wideJSON(body); wide != nil {
 		trimmed := bytes.TrimLeft(wide, " \t\r\n")
 		return len(trimmed) > 0 && trimmed[0] == '{'
 	}
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
-	trimmed = bytes.TrimLeft(bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf")), " \t\r\n")
+	withoutBOM := bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf"))
+	if len(withoutBOM) != len(trimmed) {
+		withoutBOM = bytes.TrimLeft(withoutBOM, " \t\r\n")
+		return len(withoutBOM) > 0 && withoutBOM[0] == '{'
+	}
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return false
 	}
-	if undecodableJSON(body) {
+	if undecodableJSON(trimmed) {
+		return true
+	}
+	var first json.RawMessage
+	if json.NewDecoder(bytes.NewReader(trimmed)).Decode(&first) != nil {
+		return true
+	}
+	if !utf8.Valid(first) || ambiguousJSON(first) {
 		return true
 	}
 	var keys map[string]json.RawMessage
-	if json.Unmarshal(body, &keys) != nil {
+	if json.Unmarshal(first, &keys) != nil {
 		return true
 	}
 	for k := range keys {
@@ -338,7 +356,7 @@ func unparseableObject(body []byte) bool {
 			var rpc struct {
 				Method string `json:"method"`
 			}
-			return json.Unmarshal(body, &rpc) != nil || ambiguousJSON(body)
+			return json.Unmarshal(first, &rpc) != nil
 		}
 	}
 	return false
@@ -398,8 +416,9 @@ func wideJSON(b []byte) []byte {
 	return out
 }
 
-// undecodableJSON reports whether encoding/json's tokenizer rejects body
-// or finds it incomplete.
+// undecodableJSON reports whether encoding/json's tokenizer rejects the
+// first value in body or finds it incomplete. What follows that value is
+// not read.
 func undecodableJSON(body []byte) bool {
 	// Tokens, not a decoded tree: a number decodes to float64 here as it
 	// does in the parsers, so one out of range is an error too.
@@ -408,7 +427,7 @@ func undecodableJSON(body []byte) bool {
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
-			return depth != 0
+			return true
 		}
 		if err != nil {
 			return true
@@ -419,6 +438,9 @@ func undecodableJSON(body []byte) bool {
 			} else {
 				depth--
 			}
+		}
+		if depth == 0 {
+			return false
 		}
 	}
 }

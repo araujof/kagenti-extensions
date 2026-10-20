@@ -40,33 +40,73 @@ func rawCall(t *testing.T, p *CPEX, idp *hrIdP, user, body string) pipeline.Acti
 	return p.OnRequest(context.Background(), pctx)
 }
 
-// A tool call the mcp-parser cannot decode would otherwise reach CPEX as
-// global traffic, which no tool route judges, while Python's json reads
-// NaN, Infinity, 1e400, a byte order mark and UTF-16 and runs the tool.
-// Each is refused before CPEX sees it.
+// A tool call to hr-mcp (a strict_hosts destination) that the mcp-parser
+// cannot decode would otherwise reach CPEX as global traffic, which no tool
+// route judges, while Python's json reads NaN, Infinity, 1e400, a byte
+// order mark and UTF-16 and runs the tool. Each is refused before CPEX sees
+// it, with or without a jsonrpc key, and so are colliding keys.
 func TestHRDemoUnparseableToolCallDenied(t *testing.T) {
 	idp := newHRIdP(t)
 	p := hrPlugin(t, idp)
 	const adjust = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"adjust_compensation","arguments":{"employee_id":"EMP-001234","amount":%s}}}`
+	const bare = `{"id":1,"method":"tools/call","params":{"name":"adjust_compensation","arguments":{"employee_id":"EMP-001234","amount":%s}}}`
 	for label, body := range map[string]string{
-		"NaN beside the arguments": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234","include_ssn":true,"x":NaN}}}`,
-		"NaN amount":               fmt.Sprintf(adjust, "NaN"),
-		"Infinity amount":          fmt.Sprintf(adjust, "Infinity"),
-		"-Infinity amount":         fmt.Sprintf(adjust, "-Infinity"),
-		"1e400 amount":             fmt.Sprintf(adjust, "1e400"),
-		"byte order mark":          "\xef\xbb\xbf" + fmt.Sprintf(adjust, "50000"),
-		"Method of another type":   `{"jsonrpc":"2.0","id":1,"Method":5,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234"}}}`,
-		"UTF-16BE body":            string(utf16Body(true, fmt.Sprintf(adjust, "50000"))),
-		"UTF-16LE body with a BOM": "\xff\xfe" + string(utf16Body(false, fmt.Sprintf(adjust, "50000"))),
-		"trailing data":            fmt.Sprintf(adjust, "5000") + `{"x":1}`,
+		"NaN beside the arguments":  `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234","include_ssn":true,"x":NaN}}}`,
+		"NaN amount":                fmt.Sprintf(adjust, "NaN"),
+		"NaN amount, no jsonrpc":    fmt.Sprintf(bare, "NaN"),
+		"NaN amount, JSONRPC":       `{"JSONRPC":"2.0",` + fmt.Sprintf(bare, "NaN")[1:],
+		"NaN amount, renamed":       `{"json-rpc":"2.0",` + fmt.Sprintf(bare, "NaN")[1:],
+		"Infinity amount":           fmt.Sprintf(adjust, "Infinity"),
+		"-Infinity amount":          fmt.Sprintf(bare, "-Infinity"),
+		"1e400 amount":              fmt.Sprintf(bare, "1e400"),
+		"byte order mark":           "\xef\xbb\xbf" + fmt.Sprintf(bare, "50000"),
+		"Method of another type":    `{"id":1,"Method":5,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234"}}}`,
+		"UTF-16BE body":             string(utf16Body(true, fmt.Sprintf(adjust, "50000"))),
+		"UTF-16BE body, no jsonrpc": string(utf16Body(true, fmt.Sprintf(bare, "50000"))),
+		"UTF-16LE body with a BOM":  "\xff\xfe" + string(utf16Body(false, fmt.Sprintf(adjust, "50000"))),
+		"UTF-32BE body":             string(utf32BEBody(fmt.Sprintf(bare, "50000"))),
 	} {
 		wantReject(t, label, rawCall(t, p, idp, "alice", body), "cpex.unparseable_request")
 	}
+	// A repeated method the mcp-parser does claim is refused as ambiguous.
+	wantReject(t, "repeated method", rawCall(t, p, idp, "alice",
+		`{"method":"tools/list","method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234"}}}`),
+		"cpex.ambiguous_request")
 	if n := idp.exchangeCount(); n != 0 {
 		t.Fatalf("token exchanges = %d, want 0", n)
 	}
 	if n := idp.cibaCount(); n != 0 {
 		t.Fatalf("CIBA requests = %d, want 0", n)
+	}
+	// What follows the first value is not read, so trailing data is not
+	// unparseable; hr-mcp refuses it itself.
+	if a := rawCall(t, p, idp, "alice", fmt.Sprintf(adjust, "5000")+`{"x":1}`); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+		t.Errorf("trailing data: refused as unparseable")
+	}
+}
+
+// The check is scoped to strict_hosts: the same bodies to any other host
+// are opaque egress input and reach CPEX as global traffic.
+func TestHRDemoUnparseableOnlyOnStrictHosts(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	for label, body := range map[string]string{
+		"NDJSON":            "{\"a\":1}\n{\"b\":2}\n",
+		"NaN metrics":       `{"loss":NaN,"step":3}`,
+		"non-string method": `{"method":{"type":"card"},"amount":5}`,
+		"UTF-16 object":     string(utf16Body(true, `{"a":1}`)),
+	} {
+		pctx := &pipeline.Context{
+			Direction: pipeline.Outbound,
+			Host:      "metrics.example.com",
+			Path:      "/v1/push",
+			Method:    http.MethodPost,
+			Headers:   http.Header{"Content-Type": {"application/json"}},
+			Body:      []byte(body),
+		}
+		if a := p.OnRequest(context.Background(), pctx); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+			t.Errorf("%s to another host: refused as unparseable", label)
+		}
 	}
 }
 

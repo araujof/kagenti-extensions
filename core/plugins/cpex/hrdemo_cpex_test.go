@@ -318,9 +318,14 @@ func hrPluginForwarding(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 	})
 }
 
-// hrCredentialHosts returns the cpex plugin's delegated_credential_hosts
-// from k8s/authbridge.yaml.
-func hrCredentialHosts(t *testing.T) map[string][]string {
+// hrCPEXConfig is the cpex plugin's config in k8s/authbridge.yaml, the
+// keys these tests copy from it.
+type hrCPEXConfig struct {
+	Hosts       map[string][]string `yaml:"delegated_credential_hosts"`
+	StrictHosts []string            `yaml:"strict_hosts"`
+}
+
+func hrManifestConfig(t *testing.T) hrCPEXConfig {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "authbridge.yaml"))
 	if err != nil {
@@ -330,10 +335,8 @@ func hrCredentialHosts(t *testing.T) map[string][]string {
 		Pipeline struct {
 			Outbound struct {
 				Plugins []struct {
-					Name   string `yaml:"name"`
-					Config struct {
-						Hosts map[string][]string `yaml:"delegated_credential_hosts"`
-					} `yaml:"config"`
+					Name   string       `yaml:"name"`
+					Config hrCPEXConfig `yaml:"config"`
 				} `yaml:"plugins"`
 			} `yaml:"outbound"`
 		} `yaml:"pipeline"`
@@ -342,12 +345,34 @@ func hrCredentialHosts(t *testing.T) map[string][]string {
 		t.Fatal(err)
 	}
 	for _, p := range cfg.Pipeline.Outbound.Plugins {
-		if p.Name == "cpex" && len(p.Config.Hosts) > 0 {
-			return p.Config.Hosts
+		if p.Name == "cpex" {
+			return p.Config
 		}
 	}
-	t.Fatal("k8s/authbridge.yaml binds no delegated_credential_hosts")
-	return nil
+	t.Fatal("k8s/authbridge.yaml has no cpex plugin")
+	return hrCPEXConfig{}
+}
+
+// hrCredentialHosts returns the cpex plugin's delegated_credential_hosts
+// from k8s/authbridge.yaml.
+func hrCredentialHosts(t *testing.T) map[string][]string {
+	t.Helper()
+	hosts := hrManifestConfig(t).Hosts
+	if len(hosts) == 0 {
+		t.Fatal("k8s/authbridge.yaml binds no delegated_credential_hosts")
+	}
+	return hosts
+}
+
+// hrStrictHosts returns the cpex plugin's strict_hosts from
+// k8s/authbridge.yaml.
+func hrStrictHosts(t *testing.T) []string {
+	t.Helper()
+	hosts := hrManifestConfig(t).StrictHosts
+	if len(hosts) == 0 {
+		t.Fatal("k8s/authbridge.yaml lists no strict_hosts")
+	}
+	return hosts
 }
 
 func hrPluginWith(t *testing.T, idp *hrIdP, svid spiffe.JWTSource, extra map[string]any) *CPEX {
@@ -363,6 +388,7 @@ func hrPluginWith(t *testing.T, idp *hrIdP, svid spiffe.JWTSource, extra map[str
 		"config":               hrPolicy(t, idp),
 		"fail_open":            false,
 		"private_destinations": true,
+		"strict_hosts":         hrStrictHosts(t),
 	}
 	for k, v := range extra {
 		cfg[k] = v

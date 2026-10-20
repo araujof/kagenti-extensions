@@ -63,6 +63,12 @@ pipeline:
           delegated_credential_hosts:
             workday-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
             github-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
+          # hr-mcp reads JSON with Python's json, which accepts bodies the
+          # sidecar's parsers cannot (UTF-16, NaN, Infinity, 1e400, a byte
+          # order mark), so such a body to it is refused rather than passed
+          # to CPEX as traffic no tool route judges
+          # (cpex.unparseable_request).
+          strict_hosts: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
           # Bypass hosts default covers keycloak/SPIRE/observability so
           # those egress calls don't pay the FFI cost.
           #

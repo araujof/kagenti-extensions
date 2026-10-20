@@ -345,6 +345,7 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `worker_threads` | `0` | CPEX tokio worker pool size; 0 lets CPEX pick |
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
+| `strict_hosts` | empty | host globs of tool servers whose unclaimed, unreadable JSON-object bodies are refused (`cpex.unparseable_request`), outbound only |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
 | `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names, but only where Cortex has process attribution — `cortex` bound to loopback, as the laptop install is; in the `authbridge-cpex` sidecar `resolved` trusts the dedicated header, which the sender sets) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
@@ -386,16 +387,22 @@ differ only in case. Everywhere else (tool schemas, A2A data parts, `metadata`,
 `response_format`, and inference tool calls, whose arguments are a JSON string
 or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
-taking the global identification. A body no parser claimed is denied as
-`cpex.unparseable_request` when it is a JSON object by its first byte (after
-whitespace and a byte order mark) that `encoding/json` cannot decode (`NaN`,
-`Infinity`, a number out of float64 range, a byte order mark, a truncated
-object), when it is a JSON object in UTF-16 or UTF-32 (detected as Python's
-`json` detects it), or when it has a top-level `method` key, in any case, whose value
-does not decode as a string or whose keys collide. A parser declines such a
-body, so it would otherwise take the global identification, while a lenient
-server (Python's `json` accepts all of these) may still run it as the tool
-call no route judged. None of these denials is subject to `fail_open`.
+taking the global identification. An outbound request to a host listed in
+`strict_hosts` (empty by default) whose body no parser claimed is denied as
+`cpex.unparseable_request` when that body is a JSON object the parsers cannot
+read: one in UTF-16 or UTF-32 (detected as Python's `json` detects it) or after
+a byte order mark, or one whose first value `encoding/json` cannot decode
+(`NaN`, `Infinity`, a number out of float64 range, invalid UTF-8, a truncated
+object), whose keys collide, or whose top-level `method` key, in any case, does
+not decode as a string. A parser declines such a body, so it would otherwise
+take the global identification, while a lenient server (Python's `json` accepts
+all of these) may still run it as the tool call no route judged. List the tool
+servers that read JSON that way. The check is scoped by destination, not by the
+body's shape: a caller cannot avoid it by dropping or renaming `jsonrpc`, and
+traffic to every other host (a `{"loss": NaN}` metrics post, NDJSON uploads) is
+not checked. Only the first value is read, so trailing data and NDJSON are not
+refused on a strict host either. None of these denials is subject to
+`fail_open`.
 
 ### Plain egress as a tool call
 
@@ -438,6 +445,12 @@ The excerpt is policy input only. The invocation records its size and whether
 it was cut (`egress_excerpt_bytes`, `egress_truncated`), never its content. A
 policy that inspects bodies should deny when `truncated` is true or
 `content_encoding` is set, since it cannot see the rest.
+
+With or without `synthetic_egress`, plain egress is refused before CPEX sees it
+in one case only: an unreadable JSON object sent to a `strict_hosts` host
+(`cpex.unparseable_request`, above), such as a UTF-16 tool call or one with a
+`NaN` in its arguments. That check is not subject to `fail_open`. Bodies to
+any other host, JSON or not, reach the egress policy as they were sent.
 
 ### Cortex-asserted principal
 

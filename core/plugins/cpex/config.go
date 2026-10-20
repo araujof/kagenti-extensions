@@ -81,6 +81,15 @@ type cpexConfig struct {
 	// jwt-validation, ibac, etc.
 	BypassPaths []string `json:"bypass_paths" description:"URL path globs whose requests skip CPEX. Defaults to /healthz, /readyz, /livez, /.well-known/*."`
 
+	// StrictHosts is a list of `.`-delimited host globs (as in
+	// delegated_credential_hosts, matched without the port) naming tool
+	// servers that may read a body more leniently
+	// than the parsers do. An outbound request to one of them whose body
+	// no parser claimed is refused as cpex.unparseable_request when it is
+	// a JSON object the parsers cannot read (see unparseableObject). Empty
+	// by default: no host is checked. Not subject to fail_open.
+	StrictHosts []string `json:"strict_hosts" description:"Host globs of tool servers whose unclaimed, unreadable JSON-object bodies are refused as cpex.unparseable_request. Default empty."`
+
 	// FallbackIdentification decides how a request that names no tool,
 	// prompt, resource or model is identified to CPEX: A2A, MCP protocol
 	// methods (tools/list, initialize) and unparsed traffic.

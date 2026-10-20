@@ -338,6 +338,55 @@ func TestConfigure_RejectsWildcardBypassPath(t *testing.T) {
 	}
 }
 
+func TestConfigure_StrictHosts(t *testing.T) {
+	for _, bad := range []string{`[""]`, `["*"]`, `["hr-mcp:9100"]`, `["["]`} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(`{"strict_hosts":` + bad + `}`)); err == nil {
+			t.Errorf("strict_hosts %s: Configure accepted it", bad)
+		}
+	}
+	p := setupFake(&FakeManager{})
+	if err := p.Configure([]byte(`{"strict_hosts":["hr-mcp","*.tools.svc"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]bool{
+		"hr-mcp": true, "HR-MCP:9100": true, "hr-mcp.": true, "a.tools.svc": true,
+		"hr-mcp.evil": false, "tools.svc": false, "": false,
+	} {
+		if got := p.strictHosts.match(host); got != want {
+			t.Errorf("strictHosts.match(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// Outside strict_hosts an unclaimed body is not checked; to one of them,
+// an unreadable JSON object is refused before the manager sees it.
+func TestOnRequest_UnparseableOnlyOnStrictHosts(t *testing.T) {
+	fake := &FakeManager{}
+	p := setupFake(fake)
+	if err := p.Configure([]byte(`{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"strict_hosts":["hr-mcp"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"method":"tools/call","params":{"name":"a","arguments":{"x":NaN}}}`)
+	for host, want := range map[string]string{"hr-mcp:9100": "cpex.unparseable_request", "metrics.example": ""} {
+		pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: host, Path: "/mcp", Body: body}
+		got := ""
+		if a := p.OnRequest(context.Background(), pctx); a.Violation != nil {
+			got = a.Violation.Code
+		}
+		if got != want {
+			t.Errorf("%s: code %q, want %q", host, got, want)
+		}
+	}
+	// Inbound, the Host header is the caller's, so it never selects the check.
+	pctx := &pipeline.Context{Direction: pipeline.Inbound, Host: "hr-mcp", Path: "/mcp", Body: body}
+	if a := p.OnRequest(context.Background(), pctx); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+		t.Error("inbound: refused as unparseable")
+	}
+}
+
 // --- Init / Shutdown / Ready ---
 
 func TestInit_FlipsReadyTrue(t *testing.T) {

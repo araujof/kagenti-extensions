@@ -22,6 +22,52 @@ const codeDelegationDestinationMismatch = "delegation_destination_mismatch"
 // port.
 type credentialHosts map[string][]*glob.Pattern
 
+// hostPatterns is a compiled list of `.`-delimited host globs, matched
+// as credentialHosts matches them.
+type hostPatterns []*glob.Pattern
+
+// newHostPatterns compiles the patterns of the config key name. A pattern
+// that is empty, carries a port, or matches every in-cluster host is
+// refused.
+func newHostPatterns(name string, patterns []string) (hostPatterns, error) {
+	var out hostPatterns
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		switch {
+		case p == "":
+			return nil, fmt.Errorf("%s: empty pattern", name)
+		case strings.Contains(p, ":"):
+			return nil, fmt.Errorf("%s: pattern %q must not carry a port", name, p)
+		}
+		g, err := hostglob.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid pattern %q: %w", name, p, err)
+		}
+		if hostglob.MatchesEverySingleLabel(g) {
+			return nil, fmt.Errorf("%s: pattern %q matches every host", name, p)
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+// match reports whether host, without its port, matches a pattern.
+func (h hostPatterns) match(host string) bool {
+	if host == "" {
+		return false
+	}
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		host = hh
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, g := range h {
+		if g.Match(host) {
+			return true
+		}
+	}
+	return false
+}
+
 // newCredentialHosts compiles delegated_credential_hosts. Every target
 // needs at least one pattern; a pattern that matches every in-cluster
 // host, or carries a port, is refused.
