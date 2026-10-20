@@ -71,9 +71,9 @@ install Rossoctl or create a cluster. You need:
 - A Rossoctl kind cluster named `rossoctl`. Install it from the
   [Rossoctl repository][rossoctl]. Override `KIND_CLUSTER` in the
   Makefile if yours has a different name.
-- Docker, to build the three local images (`hr-cpex-agent`,
-  `authbridge-cpex`, `hr-mcp`). They load into kind and are never pushed
-  to a registry.
+- Docker, to build the four local images (`hr-cpex-agent`,
+  `authbridge-cpex`, `hr-mcp`, `auth-channel`). They load into kind and
+  are never pushed to a registry.
 - kubectl, configured for the cluster.
 - An Ollama running on the host with a tool-capable model pulled
   (`ollama pull llama3`) — only needed for the interactive chat;
@@ -398,12 +398,19 @@ chat.py (host A2A client)
 +------------------------------------------------------------------+
          |                                    |
          |  delegate(): RFC 8693              |  on allow: forward proxy
-         |  token exchange                    |  to the MCP target
+         |  token exchange;                   |  to the MCP target
+         |  require_approval(): CIBA          |
          v                                    v
    Keycloak  svc:8080                    hr-mcp  svc:9100
    realm cpex-demo                       get_compensation
    clients: hr-copilot, cpex-gateway,    send_email
-            workday-api, github-api      search_repos, get_directory
+            workday-api, github-api,     search_repos, get_directory
+            hr-copilot-agent             adjust_compensation
+         |                               get_headcount
+         |  CIBA: deliver each approval request
+         v
+   auth-channel  svc:5001
+   the manager approves or denies here
 ```
 
 Response-side redaction (`result.ssn`) runs as the reply flows back
