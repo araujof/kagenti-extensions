@@ -69,6 +69,24 @@ class ParseBody(unittest.TestCase):
         self.assertEqual(rpc, {"a": 15000, "b": 15000.0, "c": 15000.0, "d": 0, "e": 9007199254740993})
 
 
+class ParseRPC(unittest.TestCase):
+    def test_refuses_what_is_not_json_rpc(self):
+        # hr-mcp speaks JSON-RPC 2.0 only; anything else is not a call,
+        # including a body Go could not read (a 400-digit integer, say).
+        call = b'"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"EMP-001234"}}'
+        for body in (
+            b"{" + call + b"}",
+            b'{"jsonrpc":"1.0",' + call + b"}",
+            b'{"JSONRPC":"2.0",' + call + b"}",
+            b'{"x":1' + b"0" * 400 + b"," + call + b"}",
+            b"[{" + call + b"}]",
+        ):
+            with self.assertRaises(ValueError, msg=body[:20]):
+                server.parse_rpc(body)
+        rpc = server.parse_rpc(b'{"jsonrpc":"2.0",' + call + b"}")
+        self.assertEqual(rpc["method"], "tools/call")
+
+
 class AdjustAmount(unittest.TestCase):
     def test_applies_whole_dollar_numbers(self):
         for amount, want in ((5000, 5000), (5000.0, 5000), (1.5e4, 15000), (-0.0, 0), (-25000, -25000), (2**53, 2**53)):

@@ -394,6 +394,16 @@ def parse_body(body: bytes) -> Any:
     return _check(raw)
 
 
+def parse_rpc(body: bytes) -> dict[str, Any]:
+    """Parse a request body as a JSON-RPC 2.0 object, or raise ValueError.
+    hr-mcp speaks JSON-RPC only, so a body that is not one is never a tool
+    call here, however the sidecar read it."""
+    rpc = parse_body(body)
+    if not isinstance(rpc, dict) or rpc.get("jsonrpc") != "2.0":
+        raise ValueError("not a JSON-RPC 2.0 request")
+    return rpc
+
+
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> JSONResponse:
     body_bytes = await request.body()
@@ -414,7 +424,7 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
         if v is not None:
             logger.info("  %-25s = %s", name, _redact_token(v))
     try:
-        rpc = parse_body(body_bytes)
+        rpc = parse_rpc(body_bytes)
         logger.info("  body.method               = %s", _log_safe(rpc.get("method")))
         params = rpc.get("params", {})
         logger.info("  body.params.name          = %s", _log_safe(params.get("name")))
