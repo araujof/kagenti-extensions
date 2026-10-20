@@ -1050,7 +1050,7 @@ func main() {
 		sessionLn := listeners.take("session-api")
 		go func() {
 			slog.Warn("session API listening — UNAUTHENTICATED; contains raw user content; never expose via ingress",
-				"addr", cfg.Listener.SessionAPIAddr)
+				"addr", sessionLn.Addr().String())
 			if err := sessionAPISrv.Server().Serve(sessionLn); err != nil && err != http.ErrServerClosed {
 				fatalf("session API: %v", err)
 			}
