@@ -246,10 +246,15 @@ def tool_adjust_compensation(args: dict[str, Any]) -> dict[str, Any]:
     # once the sidecar's policy has it; the tool just applies it.
     employee_id = args.get("employee_id", "")
     amount = args.get("amount")
-    # The policy's threshold reads an integer, so accept nothing else:
-    # coercing "15000" here would apply what the threshold never saw.
-    if type(amount) is not int:
-        return {"error": "amount must be an integer"}
+    # The policy accepts any JSON number. Refuse a string, so nothing the
+    # threshold did not see is applied, and refuse a fraction, because
+    # salaries are whole dollars.
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+        return {"error": "amount must be a number"}
+    if isinstance(amount, float):
+        if not amount.is_integer():
+            return {"error": "amount must be a whole number of dollars"}
+        amount = int(amount)
     employee = EMPLOYEES.get(employee_id)
     if not employee:
         return {"error": f"Employee {employee_id} not found"}
