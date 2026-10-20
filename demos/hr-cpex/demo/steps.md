@@ -16,7 +16,7 @@ scenario to all three.
 | 7 | Email | `07-bob-pii-deny.sh` | CEL PII check; deny on the session timeline |
 | 8 | Email | `08-bob-taint-deny.sh` | session taint blocks a clean email |
 | 9 | Email | `09-cross-principal-taint-isolation.sh` | taint is bound to the subject |
-| 10 | Approval | `10-adjust-under-threshold.sh` | small change applies; bad amount and unrouted tool refused |
+| 10 | Approval | `10-adjust-under-threshold.sh` | small change applies; bad amount, NaN body and unrouted tool refused |
 | 11 | Approval | `11-adjust-needs-approval.sh` | CIBA manager approval, single use, scoped |
 | 12 | Assertions | `12-assertions.sh` | engine identity headers; spoof overwritten |
 | 13 | Workload | `13-workload-delegation.sh` | SPIFFE client assertion, then exchange (needs `make spire`) |

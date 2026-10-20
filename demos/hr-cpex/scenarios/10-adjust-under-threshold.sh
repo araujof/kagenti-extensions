@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # adjust_compensation needs a manager's approval only over $10,000. At
 # $5,000, Bob (HR) passes the role gate and the change applies at once;
-# Alice (engineering) is stopped by the role gate. A string amount and a
-# tool name with no route are both refused.
+# Alice (engineering) is stopped by the role gate. A string amount, a
+# body only a lenient parser reads, and a tool name with no route are all
+# refused.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
@@ -39,6 +40,16 @@ seen=$(approvals_seen)
 call_adjust_compensation "$BOB" "$CLIENT" '"15000"'
 
 expect_deny cpex.routes_tool_adjust_compensation_args_amount
+expect_upstream_calls 0
+if [ "$(approvals_seen)" = "$seen" ]; then pass_ "no approval was requested"; else fail_ "an approval was requested"; fi
+
+step "Bob → adjust_compensation +\$50,000, with a NaN beside it"
+note "No JSON parser on the sidecar reads NaN; Python's would, so it is refused"
+reset_upstream
+seen=$(approvals_seen)
+call_tool "$BOB" "$CLIENT" adjust_compensation '{"employee_id":"EMP-001234","amount":50000,"note":NaN}'
+
+expect_deny cpex.unparseable_request
 expect_upstream_calls 0
 if [ "$(approvals_seen)" = "$seen" ]; then pass_ "no approval was requested"; else fail_ "an approval was requested"; fi
 
