@@ -354,6 +354,10 @@ func TestCredentialHostsAllows(t *testing.T) {
 		{"named", "10.96.0.10", false},
 		{"named", "0x0a.0x60.0.0x0a", false},
 		{"named", "1.svc", true},
+		{"named", "hr-mcp%00", false},
+		{"named", "[hr-mcp]", false},
+		{"workday-api", "10.96.0.256", false},
+		{"workday-api", "[10.96.0.10]", false},
 		{"named", "hr-mcp.", true},
 	} {
 		if got := ip.allows(tc.target, tc.host); got != tc.want {
@@ -385,13 +389,25 @@ func TestConfigure_StrictHosts(t *testing.T) {
 	for _, bad := range []string{`[""]`, `["*"]`, `["hr-mcp:9100"]`, `["["]`,
 		`["0.0.0.0/0"]`, `["::/0"]`, `["::ffff:0.0.0.0/96"]`, `["10.96.0.1:9100"]`, `["[fd00::1]:9100"]`,
 		`["10.96.0.0/33"]`, `["fe80::1%eth0"]`, `["10.96.0.0/12:80"]`,
-		`["10.96.*.*"]`, `["*.1"]`, `["0x0a.*"]`, `["10.96.0.*"]`} {
+		`["10.96.*.*"]`, `["*.1"]`, `["0x0a.*"]`, `["10.96.0.*"]`,
+		// Numeric or address-like, but neither a canonical IP nor a CIDR.
+		`["10.1"]`, `["010.96.0.1"]`, `["0x0a.0x60.0.1"]`, `["174063617"]`, `["10.96.0.1."]`,
+		`["10.96.0.1*"]`, `["10.96.0.[0-9]"]`, `["*.*"]`, `["**"]`, `["?"]`,
+		`["10.96.0.1/12"]`, `["fd00:10:96::1/112"]`, `["10.96.0.0/12/"]`, `["/12"]`, `["hr-mcp/16"]`,
+		`["[10.96.0.1]"]`, `["[hr-mcp]"]`, `["[fd00::1"]`, `["fd00::%25eth0"]`, `["10.96.0.1%eth0"]`,
+		`["hr mcp"]`, `["hr-mcp/"]`, `["hr_mcp@x"]`,
+		// Covers every address once unmapped.
+		`["::ffff:0:0/96"]`} {
 		if err := setupFake(&FakeManager{}).Configure([]byte(`{"strict_hosts":` + bad + `}`)); err == nil {
 			t.Errorf("strict_hosts %s: Configure accepted it", bad)
 		}
+		raw := `{"delegated_credentials":true,"delegated_credential_hosts":{"api":` + bad + `}}`
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("delegated_credential_hosts %s: Configure accepted it", bad)
+		}
 	}
 	p := setupFake(&FakeManager{})
-	if err := p.Configure([]byte(`{"strict_hosts":["hr-mcp","*.tools.svc","10.96.0.0/12","10.244.1.7","fd00:10:96::/112","[fd00::7]","::ffff:192.168.0.0/112"]}`)); err != nil {
+	if err := p.Configure([]byte(`{"strict_hosts":["hr-mcp","*.tools.svc"," 10.96.0.0/12 ","10.244.1.7","fd00:10:96::/112","[fd00::7]","::ffff:192.168.0.0/112"]}`)); err != nil {
 		t.Fatal(err)
 	}
 	for host, want := range map[string]bool{
@@ -413,6 +429,11 @@ func TestConfigure_StrictHosts(t *testing.T) {
 		"10.96.0.1%eth0": true, "[fe80::1%eth0]": false,
 		// A numeric host never matches a name glob.
 		"0x0a.0x60.0.0x1.tools.svc": false,
+		// A host the matcher cannot read is treated as strict, not as
+		// another destination.
+		"10.96.0.256": true, "1.2.3.4.5": true, "999999999999": true, "08.0.0.1": true, "0x.0.0.1": false, "0x1g.0.0.1": false, "10.96.0.1x": false,
+		"[10.96.0.1]": true, "[hr-mcp]": true, "[fd00::1": true, "hr mcp": true, "hr-mcp%00": true,
+		"hr-mcp/x": true, "@hr-mcp": true, "[]": true, "10.96.0.1%": true,
 	} {
 		if got := p.strictHosts.match(host); got != want {
 			t.Errorf("strictHosts.match(%q) = %v, want %v", host, got, want)
@@ -461,6 +482,8 @@ func TestOnRequest_UnparseableOnlyOnStrictHosts(t *testing.T) {
 		{"174063626:9100", "/mcp", body, "cpex.unparseable_request"},
 		{"10.96.0.10.:9100", "/mcp", body, "cpex.unparseable_request"},
 		{"HR-MCP.:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.96.0.256:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"[10.96.0.9]:9100", "/mcp", body, "cpex.unparseable_request"},
 		{"metrics.example", "/mcp", body, ""},
 		{"10.97.0.1:9100", "/mcp", body, ""},
 		{"[fd00:10:97::1]:9100", "/mcp", utf16, ""},

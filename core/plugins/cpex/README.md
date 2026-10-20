@@ -415,15 +415,25 @@ accept (`0x0a.0x60.0.10`, `012.0140.0.012`, `10.6291466`, `174063626`). A
 name is matched against the globs only. A name list alone does not cover a tool
 server reached by its cluster IP or pod IP, so list those addresses or ranges
 too; a DNS name that resolves to a listed address is not caught, so list it by
-name. A CIDR that covers every address (`0.0.0.0/0`, `::/0`), an entry carrying
-a port or a zone, and a glob shaped like an address (`10.96.*.*`; list a CIDR)
-are refused at Configure.
+name. A request host that is neither a name nor an address (characters outside
+a host name, misused brackets, an all-numeric host `inet_aton` refuses such as
+`10.96.0.256`) is treated as strict, so an odd spelling fails closed.
+
+Configure classifies every entry as exactly one of a CIDR (contains `/`; no
+host bits set), a canonical IP address (an IPv6 one optionally in brackets), or
+a name glob (letters, digits, `-`, `_`, `.`, `*` and `?`, with at least one
+label that is not a number or a wildcard), and refuses anything else rather
+than keep an entry that would never match: `10.1`, `010.96.0.1`,
+`10.96.0.1/12`, `10.96.*.*`, `*.*`, `[10.96.0.1]`. It also refuses a CIDR
+covering every address (`0.0.0.0/0`, `::/0`) and an entry with a port or a
+zone.
 
 `delegated_credential_hosts` takes the same entries but matches the other way
 round, because it decides where a credential may go rather than what to check:
 an address entry matches a canonical IP literal only, so a numeric spelling the
 resolver alone would read as that address is not bound and the credential is
-withheld, and a name entry never matches an address. The check runs
+withheld, a name entry never matches an address, and a host it cannot read
+matches nothing. The check runs
 before `bypass_hosts` and `bypass_paths`, so a destination on both lists is
 still checked. It is a backstop, not a substitute for a strict tool server:
 the server should also refuse what it cannot parse strictly, as the HR demo's
