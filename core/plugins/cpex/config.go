@@ -184,7 +184,8 @@ type cpexConfig struct {
 	// DelegatedCredentialHosts binds each delegation target (the target a
 	// delegate() step names, else its audience) to the hosts its
 	// credentials may be sent to, as `.`-delimited globs matched against
-	// the request's host without its port. Required with
+	// the request's host without its port, or IP addresses and CIDRs
+	// matched against a canonical IP literal only. Required with
 	// delegated_credentials: the caller picks the tool and the destination,
 	// so a credential whose target is not bound to the request's host
 	// denies it with cpex.delegation_destination_mismatch and nothing is

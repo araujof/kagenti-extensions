@@ -19,59 +19,110 @@ import (
 const codeDelegationDestinationMismatch = "delegation_destination_mismatch"
 
 // credentialHosts binds each delegation target to the hosts its
-// credentials may be sent to. Patterns are `.`-delimited globs, as in
-// skip_hosts and authproxy-routes, matched against the host without its
-// port.
-type credentialHosts map[string][]*glob.Pattern
+// credentials may be sent to: `.`-delimited globs, as in skip_hosts and
+// authproxy-routes, matched against the host without its port, and IP
+// addresses or CIDRs, matched against a host that is a canonical IP
+// literal (see hostSet.matchExact).
+type credentialHosts map[string]hostSet
 
-// hostPatterns is a compiled strict_hosts list: `.`-delimited host globs,
-// matched as credentialHosts matches them, and IP prefixes, matched
-// against a host that is an IP literal.
-type hostPatterns struct {
+// hostPatterns is the compiled strict_hosts list (see hostSet.matchAny).
+type hostPatterns = hostSet
+
+// hostSet is a compiled list of host patterns: `.`-delimited name globs,
+// and IP prefixes. A host that reads as an address is matched against the
+// prefixes only, never the globs, and a name against the globs only, so a
+// glob cannot be satisfied by a numeric spelling the dialer reads as an
+// address, and a name that resolves to a listed address is not taken for
+// it.
+type hostSet struct {
 	names    []*glob.Pattern
 	prefixes []netip.Prefix
 }
 
-// newHostPatterns compiles the patterns of the config key name. Each is a
+// newHostPatterns compiles the strict_hosts patterns.
+func newHostPatterns(name string, patterns []string) (hostPatterns, error) {
+	return compileHostSet(name, patterns)
+}
+
+// compileHostSet compiles the patterns of the config key key. Each is a
 // host glob, an IP address ("10.96.0.10", "fd00::a", "[fd00::a]") or a
 // CIDR ("10.96.0.0/12", "fd00:10:96::/112"). A pattern that is empty,
-// carries a port or a zone, or matches every host or every address is
-// refused.
-func newHostPatterns(name string, patterns []string) (hostPatterns, error) {
-	var out hostPatterns
+// carries a port or a zone, matches every host or every address, or is a
+// glob shaped like an address ("10.96.*.*", "*.1": use a CIDR) is refused.
+func compileHostSet(key string, patterns []string) (hostSet, error) {
+	var out hostSet
 	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
 		if p == "" {
-			return hostPatterns{}, fmt.Errorf("%s: empty pattern", name)
+			return hostSet{}, fmt.Errorf("%s: empty pattern", key)
 		}
 		if prefix, ok, err := parseIPPattern(p); ok {
 			if err != nil {
-				return hostPatterns{}, fmt.Errorf("%s: invalid pattern %q: %w", name, p, err)
+				return hostSet{}, fmt.Errorf("%s: invalid pattern %q: %w", key, p, err)
 			}
 			if prefix.Bits() == 0 {
-				return hostPatterns{}, fmt.Errorf("%s: pattern %q matches every address", name, p)
+				return hostSet{}, fmt.Errorf("%s: pattern %q matches every address", key, p)
 			}
 			out.prefixes = append(out.prefixes, prefix)
 			continue
 		}
 		if strings.Contains(p, ":") {
-			return hostPatterns{}, fmt.Errorf("%s: pattern %q must not carry a port", name, p)
+			return hostSet{}, fmt.Errorf("%s: pattern %q must not carry a port", key, p)
+		}
+		if addressShapedGlob(p) {
+			return hostSet{}, fmt.Errorf("%s: pattern %q is shaped like an address; list an IP address or CIDR instead", key, p)
 		}
 		g, err := hostglob.Compile(p)
 		if err != nil {
-			return hostPatterns{}, fmt.Errorf("%s: invalid pattern %q: %w", name, p, err)
+			return hostSet{}, fmt.Errorf("%s: invalid pattern %q: %w", key, p, err)
 		}
 		if hostglob.MatchesEverySingleLabel(g) {
-			return hostPatterns{}, fmt.Errorf("%s: pattern %q matches every host", name, p)
+			return hostSet{}, fmt.Errorf("%s: pattern %q matches every host", key, p)
 		}
 		out.names = append(out.names, g)
 	}
 	return out, nil
 }
 
+// addressShapedGlob reports whether a name glob is made of numeric and
+// wildcard labels only, with at least one numeric label: the shape of an
+// IPv4 address, which name globs never match (see hostSet).
+func addressShapedGlob(p string) bool {
+	numeric := false
+	for _, label := range strings.Split(p, ".") {
+		switch {
+		case numericLabel(label):
+			numeric = true
+		case strings.Trim(label, "*?") == "":
+		default:
+			return false
+		}
+	}
+	return numeric
+}
+
+// numericLabel reports whether label is an inet_aton number part:
+// decimal or octal digits, or 0x and hex digits.
+func numericLabel(label string) bool {
+	digits := label
+	hex := strings.HasPrefix(label, "0x")
+	if hex {
+		digits = label[2:]
+	}
+	if digits == "" {
+		return hex
+	}
+	for _, c := range digits {
+		if !(c >= '0' && c <= '9' || hex && c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // parseIPPattern reads p as an IP address or CIDR. ok is false when p is
 // neither and should be read as a host glob; err is set when p is meant as
-// one (it contains "/", or brackets) but does not parse. An IPv4-mapped
+// one (it contains "/" or brackets) but does not parse. An IPv4-mapped
 // IPv6 prefix is returned as the IPv4 prefix it covers, which is how a
 // host is matched against it.
 func parseIPPattern(p string) (netip.Prefix, bool, error) {
@@ -107,64 +158,120 @@ func unmapPrefix(p netip.Prefix) netip.Prefix {
 	return p
 }
 
-// match reports whether host, without its port, matches a pattern: a
-// host glob by name, or an IP prefix when host is an IP literal (v4, v6
-// in brackets or not, IPv4-mapped v6, or a numeric IPv4 spelling such as
-// "0x0a.0x60.0.1" or "174063617" that a resolver may dial as an address).
-func (h hostPatterns) match(host string) bool {
-	if host == "" {
-		return false
-	}
+// hostKind is how a request's host reads to the dialer.
+type hostKind int
+
+const (
+	hostName      hostKind = iota // a name, resolved by DNS
+	hostCanonical                 // an IP literal netip parses
+	hostAton                      // a numeric spelling inet_aton reads as an IPv4 address
+)
+
+// classifyHost removes the port, brackets and a zone ("%eth0", or "%25eth0"
+// as a URL spells it) from host and reads what remains. A trailing dot is
+// kept: "10.96.0.10." does not parse as an address, so the dialer may look
+// it up as a name, and it is classified as an inet_aton spelling instead.
+func classifyHost(host string) (hostKind, netip.Addr, string) {
 	if hh, _, err := net.SplitHostPort(host); err == nil {
 		host = hh
 	}
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if len(h.prefixes) > 0 {
-		if addr, ok := hostAddr(host); ok {
-			for _, p := range h.prefixes {
-				if p.Contains(addr) {
-					return true
-				}
-			}
-		}
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+	literal, zoned := host, false
+	if i := strings.IndexByte(literal, '%'); i >= 0 {
+		literal, zoned = literal[:i], true
 	}
+	if addr, err := netip.ParseAddr(literal); err == nil {
+		if !zoned || addr.Is6() {
+			return hostCanonical, addr.Unmap(), host
+		}
+		return hostAton, addr, host
+	}
+	if addr, ok := parseInetAton(strings.TrimSuffix(literal, ".")); ok {
+		return hostAton, addr, host
+	}
+	return hostName, netip.Addr{}, strings.TrimSuffix(host, ".")
+}
+
+// matchAny reports whether host may reach a listed destination: a name
+// matching a glob, or any spelling of an address the dialer may connect
+// to (an IP literal in any case, with leading zeros, IPv4-mapped, with a
+// zone or a trailing dot, or a numeric inet_aton form such as
+// "0x0a.0x60.0.1", "010.096.0.1", "10.6291457" or "174063617") inside a
+// listed prefix. strict_hosts uses it: it widens a check, so every
+// spelling that may arrive there must be caught. A name that DNS resolves
+// to a listed address is not caught; list it by name.
+func (h hostSet) matchAny(host string) bool {
+	if host == "" {
+		return false
+	}
+	kind, addr, name := classifyHost(host)
+	if kind == hostName {
+		return h.matchName(name)
+	}
+	return h.matchAddr(addr)
+}
+
+// matchExact reports whether host is certainly a listed destination: a
+// name matching a glob, or a canonical IP literal inside a listed prefix.
+// An inet_aton spelling matches nothing, since what it reaches depends on
+// the resolver. delegated_credential_hosts uses it: it decides where a
+// credential may go, so a spelling it cannot be sure of withholds it.
+func (h hostSet) matchExact(host string) bool {
+	if host == "" {
+		return false
+	}
+	switch kind, addr, name := classifyHost(host); kind {
+	case hostName:
+		return h.matchName(name)
+	case hostCanonical:
+		return h.matchAddr(addr)
+	}
+	return false
+}
+
+// match is matchAny, the strict_hosts rule.
+func (h hostSet) match(host string) bool { return h.matchAny(host) }
+
+func (h hostSet) matchName(name string) bool {
 	for _, g := range h.names {
-		if g.Match(host) {
+		if g.Match(name) {
 			return true
 		}
 	}
 	return false
 }
 
-// hostAddr reads host (port already removed) as an IP address.
-func hostAddr(host string) (netip.Addr, bool) {
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	if addr, err := netip.ParseAddr(host); err == nil {
-		return addr.WithZone("").Unmap(), true
+func (h hostSet) matchAddr(addr netip.Addr) bool {
+	for _, p := range h.prefixes {
+		if p.Contains(addr) {
+			return true
+		}
 	}
-	return parseInetAton(host)
+	return false
 }
 
-// parseInetAton reads the IPv4 spellings inet_aton accepts and
-// netip.ParseAddr does not: one to four parts, each decimal, octal
-// (leading 0) or hex (0x), the last filling the remaining bytes.
+// parseInetAton reads the IPv4 spellings inet_aton accepts: one to four
+// parts, each decimal, octal (leading 0) or hex (0x), the last filling
+// the remaining bytes.
 func parseInetAton(s string) (netip.Addr, bool) {
+	if s == "" {
+		return netip.Addr{}, false
+	}
 	parts := strings.Split(s, ".")
 	if len(parts) > 4 {
 		return netip.Addr{}, false
 	}
 	vals := make([]uint64, len(parts))
 	for i, part := range parts {
-		base := 10
-		digits := part
+		if !numericLabel(part) {
+			return netip.Addr{}, false
+		}
+		base, digits := 10, part
 		switch {
 		case strings.HasPrefix(part, "0x"):
 			base, digits = 16, part[2:]
 		case len(part) > 1 && part[0] == '0':
 			base, digits = 8, part[1:]
-		}
-		if digits == "" && base != 8 {
-			return netip.Addr{}, false
 		}
 		if digits == "" {
 			digits = "0"
@@ -191,8 +298,8 @@ func parseInetAton(s string) (netip.Addr, bool) {
 }
 
 // newCredentialHosts compiles delegated_credential_hosts. Every target
-// needs at least one pattern; a pattern that matches every in-cluster
-// host, or carries a port, is refused.
+// needs at least one pattern; patterns are refused as compileHostSet
+// refuses them.
 func newCredentialHosts(m map[string][]string) (credentialHosts, error) {
 	if len(m) == 0 {
 		return nil, nil
@@ -211,42 +318,23 @@ func newCredentialHosts(m map[string][]string) (credentialHosts, error) {
 		if len(patterns) == 0 {
 			return nil, fmt.Errorf("delegated_credential_hosts: target %q names no hosts", target)
 		}
-		for _, p := range patterns {
-			p = strings.ToLower(strings.TrimSpace(p))
-			switch {
-			case p == "":
-				return nil, fmt.Errorf("delegated_credential_hosts: target %q: empty pattern", target)
-			case strings.Contains(p, ":"):
-				return nil, fmt.Errorf("delegated_credential_hosts: target %q: pattern %q must not carry a port", target, p)
-			}
-			g, err := hostglob.Compile(p)
-			if err != nil {
-				return nil, fmt.Errorf("delegated_credential_hosts: target %q: invalid pattern %q: %w", target, p, err)
-			}
-			if hostglob.MatchesEverySingleLabel(g) {
-				return nil, fmt.Errorf("delegated_credential_hosts: target %q: pattern %q matches every host", target, p)
-			}
-			out[target] = append(out[target], g)
+		set, err := compileHostSet(fmt.Sprintf("delegated_credential_hosts: target %q", target), patterns)
+		if err != nil {
+			return nil, err
 		}
+		out[target] = set
 	}
 	return out, nil
 }
 
-// allows reports whether a credential for target may be sent to host.
+// allows reports whether a credential for target may be sent to host
+// (see hostSet.matchExact).
 func (h credentialHosts) allows(target, host string) bool {
 	if target == "" || host == "" {
 		return false
 	}
-	if hh, _, err := net.SplitHostPort(host); err == nil {
-		host = hh
-	}
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	for _, g := range h[target] {
-		if g.Match(host) {
-			return true
-		}
-	}
-	return false
+	set, ok := h[target]
+	return ok && set.matchExact(host)
 }
 
 // credentialTarget is the key a delegated credential is bound by: the

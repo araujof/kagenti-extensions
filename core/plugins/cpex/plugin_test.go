@@ -281,6 +281,10 @@ func TestConfigure_DelegatedCredentialHosts(t *testing.T) {
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["**"]}}`,
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example:443"]}}`,
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["[bad"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["0.0.0.0/0"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["::/0"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["10.96.*.*"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["10.96.0.10:9100"]}}`,
 	} {
 		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
 			t.Errorf("Configure(%s): want error", raw)
@@ -317,6 +321,45 @@ func TestCredentialHostsAllows(t *testing.T) {
 			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
 		}
 	}
+	// An address binding matches the canonical address however it is
+	// written as an IP literal, and nothing the resolver alone would read
+	// as that address; a name binding matches no address.
+	ip, err := newCredentialHosts(map[string][]string{
+		"workday-api": {"10.96.0.10", "fd00:10:96::/112"},
+		"named":       {"hr-mcp", "*.svc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		target, host string
+		want         bool
+	}{
+		{"workday-api", "10.96.0.10", true},
+		{"workday-api", "10.96.0.10:9100", true},
+		{"workday-api", "[::ffff:10.96.0.10]:9100", true},
+		{"workday-api", "[::ffff:a60:a]", true},
+		{"workday-api", "[FD00:10:96::A]:9100", true},
+		{"workday-api", "[fd00:0010:0096::000a]", true},
+		{"workday-api", "[fd00:10:96::a%25eth0]:9100", true},
+		{"workday-api", "10.96.0.11", false},
+		{"workday-api", "010.096.0.10", false},
+		{"workday-api", "012.0140.0.012", false},
+		{"workday-api", "0x0a.0x60.0.0x0a", false},
+		{"workday-api", "10.6291466", false},
+		{"workday-api", "174063626", false},
+		{"workday-api", "10.96.0.10.", false},
+		{"workday-api", "10.96.0.10%eth0", false},
+		{"workday-api", "hr-mcp", false},
+		{"named", "10.96.0.10", false},
+		{"named", "0x0a.0x60.0.0x0a", false},
+		{"named", "1.svc", true},
+		{"named", "hr-mcp.", true},
+	} {
+		if got := ip.allows(tc.target, tc.host); got != tc.want {
+			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
+		}
+	}
 	if credentialTarget("workday-api", "aud") != "workday-api" || credentialTarget("", "aud") != "aud" {
 		t.Fatal("credentialTarget: want Target, else Audience")
 	}
@@ -341,7 +384,8 @@ func TestConfigure_RejectsWildcardBypassPath(t *testing.T) {
 func TestConfigure_StrictHosts(t *testing.T) {
 	for _, bad := range []string{`[""]`, `["*"]`, `["hr-mcp:9100"]`, `["["]`,
 		`["0.0.0.0/0"]`, `["::/0"]`, `["::ffff:0.0.0.0/96"]`, `["10.96.0.1:9100"]`, `["[fd00::1]:9100"]`,
-		`["10.96.0.0/33"]`, `["fe80::1%eth0"]`, `["10.96.0.0/12:80"]`} {
+		`["10.96.0.0/33"]`, `["fe80::1%eth0"]`, `["10.96.0.0/12:80"]`,
+		`["10.96.*.*"]`, `["*.1"]`, `["0x0a.*"]`, `["10.96.0.*"]`} {
 		if err := setupFake(&FakeManager{}).Configure([]byte(`{"strict_hosts":` + bad + `}`)); err == nil {
 			t.Errorf("strict_hosts %s: Configure accepted it", bad)
 		}
@@ -361,6 +405,14 @@ func TestConfigure_StrictHosts(t *testing.T) {
 		// inet_aton spellings a resolver may still dial as the same address.
 		"0x0a.0x60.0.1": true, "012.0140.0.1": true, "10.6291457": true, "174063617": true,
 		"0xa600001": true, "174063617:9100": true, "1.2.3.4": false,
+		"10.6291457:9100": true, "012.0140.0.1:9100": true, "010.0140.0.1": false, "10.96.0.1.": true, "10.96.0.1.:9100": true,
+		"10.1": false, "0x0a.0x60.0.0xa": true,
+		"[::ffff:a60:a]:9100": true, "::ffff:10.96.0.10": true, "[::FFFF:10.96.0.10]": true,
+		"[fd00:0010:0096:0000::000a]:9100": true, "[FD00:10:96:0:0:0:0:A]": true,
+		"[fd00:10:96::a%eth0]:9100": true, "[fd00:10:96::a%25eth0]:9100": true, "fd00:10:96::a%25eth0": true,
+		"10.96.0.1%eth0": true, "[fe80::1%eth0]": false,
+		// A numeric host never matches a name glob.
+		"0x0a.0x60.0.0x1.tools.svc": false,
 	} {
 		if got := p.strictHosts.match(host); got != want {
 			t.Errorf("strictHosts.match(%q) = %v, want %v", host, got, want)
@@ -399,6 +451,16 @@ func TestOnRequest_UnparseableOnlyOnStrictHosts(t *testing.T) {
 		{"10.96.12.34:9100", "/mcp", utf16, "cpex.unparseable_request"},
 		{"[fd00:10:96::9]:9100", "/mcp", utf16, "cpex.unparseable_request"},
 		{"fd00:10:96::a", "/mcp", body, "cpex.unparseable_request"},
+		{"[::ffff:a60:a]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"::ffff:10.96.0.10", "/mcp", body, "cpex.unparseable_request"},
+		{"[fd00:10:96::a%25eth0]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"[FD00:0010:0096::000A]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"012.0140.0.012:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"0x0a.0x60.0.0xa:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.6291466:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"174063626:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.96.0.10.:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"HR-MCP.:9100", "/mcp", body, "cpex.unparseable_request"},
 		{"metrics.example", "/mcp", body, ""},
 		{"10.97.0.1:9100", "/mcp", body, ""},
 		{"[fd00:10:97::1]:9100", "/mcp", utf16, ""},

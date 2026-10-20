@@ -406,12 +406,24 @@ refused on a strict host either. None of these denials is subject to
 
 `strict_hosts` protects only the destinations it lists. An entry is a host glob
 (lowercased, matched without the port or a trailing dot), an IP address, or a
-CIDR such as `10.96.0.0/12` or `fd00:10:96::/112`, matched when the request's
-host is an IP literal (IPv4, IPv6 with or without brackets, IPv4-mapped IPv6, or
-a numeric IPv4 spelling such as `0x0a.0x60.0.1`), port removed. A name list
-alone does not cover a tool server reached by its cluster IP or pod IP, so list
-those addresses or ranges too. A CIDR that covers every address (`0.0.0.0/0`,
-`::/0`) and an entry carrying a port are refused at Configure. The check runs
+CIDR such as `10.96.0.0/12` or `fd00:10:96::/112`. A request whose host reads as
+an address is matched against the addresses and CIDRs only, by its canonical
+address, port removed: an IP literal in any case or with leading zeros,
+bracketed or not, IPv4-mapped IPv6, with a zone (`%eth0`, `%25eth0`) or a
+trailing dot, or a numeric spelling `inet_aton` and so the system resolver
+accept (`0x0a.0x60.0.10`, `012.0140.0.012`, `10.6291466`, `174063626`). A
+name is matched against the globs only. A name list alone does not cover a tool
+server reached by its cluster IP or pod IP, so list those addresses or ranges
+too; a DNS name that resolves to a listed address is not caught, so list it by
+name. A CIDR that covers every address (`0.0.0.0/0`, `::/0`), an entry carrying
+a port or a zone, and a glob shaped like an address (`10.96.*.*`; list a CIDR)
+are refused at Configure.
+
+`delegated_credential_hosts` takes the same entries but matches the other way
+round, because it decides where a credential may go rather than what to check:
+an address entry matches a canonical IP literal only, so a numeric spelling the
+resolver alone would read as that address is not bound and the credential is
+withheld, and a name entry never matches an address. The check runs
 before `bypass_hosts` and `bypass_paths`, so a destination on both lists is
 still checked. It is a backstop, not a substitute for a strict tool server:
 the server should also refuse what it cannot parse strictly, as the HR demo's
