@@ -268,8 +268,8 @@ const (
 	// codeUnparseableRequest: a body no parser claimed, sent to a
 	// strict_hosts destination, that is a JSON object the parsers cannot
 	// read (UTF-16 or UTF-32, a byte order mark, NaN, Infinity, a number
-	// out of float64 range, invalid UTF-8, a truncated object, colliding
-	// keys, a method that is not one string). The parsers decline such a
+	// out of float64 range, a truncated object, colliding keys, a method
+	// that is not one string). The parsers decline such a
 	// body, so it would reach CPEX as global traffic, while a lenient
 	// server (Python's json, for one) may still read it as the tool call
 	// no route judged.
@@ -314,11 +314,12 @@ func unpresentableRequest(pctx *pipeline.Context, strict bool) string {
 // parsers could not read as a lenient tool server might: one in UTF-16 or
 // UTF-32 or after a byte order mark (Python's json.loads(bytes) reads all
 // three; no parser here does), or whose first value encoding/json cannot
-// decode (NaN, Infinity, a number out of float64 range, invalid UTF-8, a
-// truncated object), or whose keys collide (see ambiguousJSON), or whose
-// top-level "method" key, in any case, does not decode as a string. A
-// parser declines such a body, so it would reach CPEX as global traffic
-// while the server may still run it as the tool call no route judged.
+// decode (NaN, Infinity, a number out of float64 range, a truncated
+// object; invalid UTF-8 it replaces with U+FFFD rather than rejects), or
+// whose keys collide (see ambiguousJSON), or whose top-level "method"
+// key, in any case, does not decode as a string. A parser declines such
+// a body, so it would reach CPEX as global traffic while the server may
+// still run it as the tool call no route judged.
 // Nothing about the body's own shape decides this, so a caller cannot opt
 // out by dropping or renaming a key; the caller limits it to strict_hosts
 // instead. Only the first value is read: what follows it (NDJSON, a stream

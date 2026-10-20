@@ -390,14 +390,17 @@ or the model's earlier call) only exact repeats count. An MCP `tools/call` or `p
 taking the global identification. An outbound request to a host listed in
 `strict_hosts` (empty by default) whose body no parser claimed is denied as
 `cpex.unparseable_request` when that body is a JSON object the parsers cannot
-read: one in UTF-16 or UTF-32 (detected as Python's `json` detects it) or after
-a byte order mark, or one whose first value `encoding/json` cannot decode
-(`NaN`, `Infinity`, a number out of float64 range, invalid UTF-8, a truncated
-object), whose keys collide, or whose top-level `method` key, in any case, does
-not decode as a string. A parser declines such a body, so it would otherwise
-take the global identification, while a lenient server (Python's `json` accepts
-all of these) may still run it as the tool call no route judged. List the tool
-servers that read JSON that way. The check is scoped by destination, not by the
+read: one in UTF-16 or UTF-32 or after a byte order mark, one whose first value
+`encoding/json` rejects (`NaN`, `Infinity`, a number out of float64 range, a
+truncated object), one whose keys collide, or one whose top-level `method` key,
+in any case, does not decode as a string. A parser declines such a body, so it
+would otherwise take the global identification, while a server may still run
+it as the tool call no route judged: Python's `json.loads` accepts `NaN`,
+`Infinity` and out-of-range numbers by default, and reads bytes in UTF-16 or
+UTF-32 and UTF-8 after a byte order mark (it rejects a byte order mark in a
+`str`, invalid UTF-8 and truncated JSON). Invalid UTF-8 inside a string is not
+refused: `encoding/json` replaces it with U+FFFD and parses the body. List the
+tool servers that read JSON leniently. The check is scoped by destination, not by the
 body's shape: a caller cannot avoid it by dropping or renaming `jsonrpc`, and
 traffic to every other host (a `{"loss": NaN}` metrics post, NDJSON uploads) is
 not checked. Only the first value is read, so trailing data and NDJSON are not
